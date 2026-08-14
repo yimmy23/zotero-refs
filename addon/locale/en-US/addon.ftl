@@ -32,3 +32,12 @@ related-count-suffix = related papers
 graph-loading = Building citation graph…
 graph-unavailable = Citation graph unavailable (needs a DOI known to OpenAlex)
 graph-rebuild = Rebuild
+
+menu-references =
+    .label = References
+menu-fetch-refs =
+    .label = Fetch & cache references
+menu-import-refs =
+    .label = Import all references
+menu-copy-refs =
+    .label = Copy references

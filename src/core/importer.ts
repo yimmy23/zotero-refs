@@ -2,6 +2,7 @@ import { isChinese } from "./text";
 import { libraryIndex, isRelated } from "./libmatch";
 import type { RefItem } from "./types";
 import { resolveDOIByTitle, sources } from "../sources";
+import { importCNKIItem, searchCNKI } from "../sources/cnki";
 
 /**
  * Import references into the library and manage bidirectional
@@ -94,9 +95,18 @@ export async function importReference(
   if (refItem) return refItem;
 
   const text = ref.text || ref.title || "";
-  // 2. Chinese reference -> CNKI (or Jasminum-created item)
+  // 2. Chinese reference -> CNKI: search, then import through Zotero's own
+  //    CNKI web translator (full metadata); scraped-metadata fallback.
   if (isChinese(text)) {
     onStatus?.(`CNKI: ${ref.title || text}`);
+    const rows = await searchCNKI(ref.title || text);
+    if (rows?.[0]) {
+      refItem = await importCNKIItem(rows[0], libraryID, cols);
+      if (refItem) {
+        libraryIndex.invalidate();
+        return refItem;
+      }
+    }
     const info = await sources.cnki.getInfoByTitle?.(ref.title || text, text);
     if (info) {
       refItem = await createItemFromInfo(

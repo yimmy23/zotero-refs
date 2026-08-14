@@ -10,6 +10,7 @@ import { registerRelatedSection, invalidateRelated } from "./ui/related";
 import { registerGraphSection, invalidateGraph } from "./ui/graphSection";
 import { registerStyles, unregisterStyles } from "./ui/styles";
 import { closePopup } from "./ui/rows";
+import { registerItemMenus, unregisterItemMenus } from "./modules/menus";
 import {
   attachAllReaders,
   detachAllReaders,
@@ -43,6 +44,7 @@ async function onStartup() {
   registerCitationsSection();
   registerRelatedSection();
   registerGraphSection();
+  registerItemMenus();
 
   // notifier: reader tabs + item changes
   notifierID = Zotero.Notifier.registerObserver(
@@ -86,6 +88,7 @@ async function onMainWindowUnload(win: Window): Promise<void> {
 
 function onShutdown(): void {
   closePopup();
+  unregisterItemMenus();
   detachAllReaders();
   libraryIndex.unregister();
   void refStorage.flush();

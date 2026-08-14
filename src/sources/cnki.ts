@@ -4,63 +4,382 @@ import { http } from "../core/http";
 import { getPref, setPref } from "../utils/prefs";
 
 /**
- * 中国知网 CNKI — no public API, ported from zotero-reference's HTML-scraping
- * + "知网研学" (CNKI Scholar) reader-token flow.
+ * 中国知网 CNKI — no public API.
+ *
+ * Search uses the endpoints current jasminum (v1.1.37, 2026) uses:
+ *   - mainland:  POST https://kns.cnki.net/kns8s/brief/grid
+ *   - oversea:   POST https://chn.oversea.cnki.net/kns/Brief/GetGridTableHtml
+ * (the 2023-era kns8/Brief/GetGridTableHtml endpoint is dead for mainland
+ * users). Item import goes through Zotero's own CNKI web translator with an
+ * EndNote-export fallback. Reference lists still use the 知网研学 reader API
+ * (account required).
  */
 
 const USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-  "(KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36";
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:147.0) " +
+  "Gecko/20100101 Firefox/147.0";
+
+/** Zotero's built-in CNKI web translator */
+const CNKI_WEB_TRANSLATOR = "5c95b67b-41c5-4f55-b71a-48d5d7183063";
+/** Zotero's built-in Refer/BibIX (EndNote) import translator */
+const ENDNOTE_IMPORT_TRANSLATOR = "7b6b135a-ed39-4d90-8e38-65516671c5bc";
+
+export interface CNKISearchRow {
+  url: string;
+  title: string;
+  authors: string[];
+  venue?: string;
+  date?: string;
+  citation?: string;
+  dbname?: string;
+  filename?: string;
+  exportID?: string;
+}
+
+/** top-level keys form-urlencoded; nested objects JSON-stringified */
+function jsonToFormUrlEncoded(json: Record<string, any>): string {
+  return Object.keys(json)
+    .map(
+      (key) =>
+        encodeURIComponent(key) +
+        "=" +
+        encodeURIComponent(
+          typeof json[key] === "object" ? JSON.stringify(json[key]) : json[key],
+        ),
+    )
+    .join("&");
+}
+
+function buildSearchExp(title: string, author?: string): string {
+  let exp = title.includes(" ") ? `(TI %= '${title}')` : `TI %= '${title}'`;
+  if (author) exp += ` AND AU='${author}'`;
+  return exp;
+}
+
+function mainlandOptions(title: string, author?: string) {
+  const searchExp = buildSearchExp(title, author);
+  return {
+    url: "https://kns.cnki.net/kns8s/brief/grid",
+    headers: {
+      "User-Agent": USER_AGENT,
+      Accept: "*/*",
+      "Accept-Language": "zh-CN,en-US;q=0.9,en;q=0.8",
+      "X-Requested-With": "XMLHttpRequest",
+      Origin: "https://kns.cnki.net",
+      Referer:
+        "https://kns.cnki.net/kns8s/defaultresult/index?crossids=YSTT4HG0%2C" +
+        "LSTPFY1C%2CJUP3MUPD%2CMPMFIG1A%2CWQ0UVIAA%2CBLZOG7CK%2CPWFIRAGL%2C" +
+        "EMRPGLPA%2CNLBO1Z6R%2CNN3FJMUV&korder=SU&kw=",
+    },
+    body: jsonToFormUrlEncoded({
+      boolSearch: "true",
+      QueryJson: {
+        Platform: "",
+        Resource: "CROSSDB",
+        Classid: "WD0FTY92",
+        Products: "",
+        QNode: {
+          QGroup: [
+            {
+              Key: "Subject",
+              Title: "",
+              Logic: 0,
+              Items: [
+                {
+                  Key: "Expert",
+                  Title: "",
+                  Logic: 0,
+                  Field: "EXPERT",
+                  Operator: 0,
+                  Value: searchExp,
+                  Value2: "",
+                },
+              ],
+              ChildItems: [],
+            },
+            { Key: "ControlGroup", Title: "", Logic: 0, Items: [], ChildItems: [] },
+          ],
+        },
+        ExScope: "1",
+        SearchType: 4,
+        Rlang: "CHINESE",
+        KuaKuCode:
+          "YSTT4HG0,LSTPFY1C,JUP3MUPD,MPMFIG1A,WQ0UVIAA,BLZOG7CK,PWFIRAGL," +
+          "EMRPGLPA,NLBO1Z6R,NN3FJMUV",
+        SearchFrom: 1,
+      },
+      pageNum: "1",
+      pageSize: "20",
+      sortField: "",
+      sortType: "",
+      dstyle: "listmode",
+      productStr:
+        "YSTT4HG0,LSTPFY1C,RMJLXHZ3,JQIRZIYA,JUP3MUPD,1UR4K4HZ,BPBAFJ5S," +
+        "R79MZMCB,MPMFIG1A,WQ0UVIAA,NB3BWEHK,XVLO76FD,HR1YT1Z9,BLZOG7CK," +
+        "PWFIRAGL,EMRPGLPA,J708GVCE,ML4DRIDX,NLBO1Z6R,NN3FJMUV,",
+      aside: `(${searchExp.replace(/'/g, "&#39;")})`,
+      searchFrom: "资源范围：总库;++中英文扩展;++时间范围：更新时间：不限;++",
+      CurPage: "1",
+    }),
+  };
+}
+
+function overseaOptions(title: string, author?: string) {
+  const searchExp = buildSearchExp(title, author);
+  return {
+    url: "https://chn.oversea.cnki.net/kns/Brief/GetGridTableHtml",
+    headers: {
+      "User-Agent": USER_AGENT,
+      Accept: "text/html, */*; q=0.01",
+      "Accept-Language": "zh-CN,zh;q=0.9",
+      "X-Requested-With": "XMLHttpRequest",
+      Origin: "https://www.cnki.net",
+      Referer: "https://www.cnki.net/kns/defaultresult/index",
+    },
+    body: jsonToFormUrlEncoded({
+      IsSearch: "true",
+      QueryJson: {
+        Platform: "",
+        DBCode: "CFLS",
+        KuaKuCode:
+          "CJFQ,CDMD,CIPD,CCND,CYFD,CCJD,BDZK,CISD,CJFQ,CDMD,CIPD,CCND," +
+          "CYFD,CCJD,BDZK,CISD,CJFN",
+        QNode: {
+          QGroup: [
+            {
+              Key: "Subject",
+              Title: "",
+              Logic: 4,
+              Items: [
+                {
+                  Key: "Expert",
+                  Title: "",
+                  Logic: 0,
+                  Name: "",
+                  Operate: "",
+                  Value: searchExp,
+                  ExtendType: 12,
+                  ExtendValue: "中英文对照",
+                  Value2: "",
+                  BlurType: "",
+                },
+              ],
+              ChildItems: [],
+            },
+            { Key: "ControlGroup", Title: "", Logic: 1, Items: [], ChildItems: [] },
+          ],
+        },
+        ExScope: 1,
+        CodeLang: "",
+      },
+      PageName: "AdvSearch",
+      DBCode: "CFLS",
+      KuaKuCodes:
+        "CJFQ,CDMD,CIPD,CCND,CYFD,CCJD,BDZK,CISD,CJFQ,CDMD,CIPD,CCND,CYFD," +
+        "CCJD,BDZK,CISD,CJFN",
+      CurPage: "1",
+      RecordsCntPerPage: "20",
+      CurDisplayMode: "listmode",
+      CurrSortField: "",
+      CurrSortFieldType: "desc",
+      IsSentenceSearch: "false",
+      Subject: "",
+    }),
+  };
+}
+
+function parseSearchRows(html: string, overseaHost: boolean): CNKISearchRow[] {
+  const doc = ztoolkit.getDOMParser().parseFromString(html, "text/html");
+  const rows = doc.querySelectorAll("table.result-table-list > tbody > tr");
+  const results: CNKISearchRow[] = [];
+  rows.forEach((row: Element) => {
+    try {
+      const link = row.querySelector("a.fz14");
+      if (!link) return;
+      let url = link.getAttribute("href") || "";
+      if (!url) return;
+      if (!url.startsWith("http")) {
+        url = (overseaHost ? "https://chn.oversea.cnki.net" : "https://kns.cnki.net") + url;
+      }
+      const text = (sel: string) =>
+        (row.querySelector(sel)?.textContent || "").trim();
+      const op = row.querySelector("td.operat > [data-dbname]");
+      results.push({
+        url,
+        title: text("td.name a"),
+        authors: text("td.author")
+          .split(/[;,\s]+/)
+          .filter(Boolean),
+        venue: text("td.source"),
+        date: text("td.date"),
+        citation: text("td.quote"),
+        dbname: op?.getAttribute("data-dbname") || undefined,
+        filename: op?.getAttribute("data-filename") || undefined,
+        exportID:
+          row
+            .querySelector("td.seq input")
+            ?.getAttribute("value") || undefined,
+      });
+    } catch {
+      /* skip malformed row */
+    }
+  });
+  return results;
+}
 
 /**
- * Search CNKI by keywords (typically a title) and return the canonical
- * detail-page URL of the first hit, or null on any failure.
+ * Search CNKI by title. Tries the mainland endpoint first, then the
+ * oversea mirror. Returns parsed result rows or null.
  */
-export async function getCNKIURL(keywords: string): Promise<string | null> {
-  const body =
-    `IsSearch=true&QueryJson={"Platform":"","DBCode":"CFLS",` +
-    `"KuaKuCode":"CJFQ,CDMD,CIPD,CCND,CISD,SNAD,BDZK,CCJD,CCVD,CJFN",` +
-    `"QNode":{"QGroup":[{"Key":"Subject","Title":"","Logic":1,` +
-    `"Items":[{"Title":"主题","Name":"SU","Value":"${keywords}",` +
-    `"Operate":"%=","BlurType":""}],"ChildItems":[]}]},"CodeLang":"ch"}` +
-    `&PageName=defaultresult&DBCode=CFLS&CurPage=1&RecordsCntPerPage=20` +
-    `&CurDisplayMode=listmode&CurrSortField=&CurrSortFieldType=desc` +
-    `&IsSentenceSearch=false&Subject=`;
-
-  const html = await http.postForm<string>(
-    "https://kns.cnki.net/kns8/Brief/GetGridTableHtml",
-    body,
-    {
+export async function searchCNKI(
+  title: string,
+  author?: string,
+): Promise<CNKISearchRow[] | null> {
+  for (const [build, oversea] of [
+    [mainlandOptions, false],
+    [overseaOptions, true],
+  ] as const) {
+    const opt = build(title, author);
+    const html = await http.postForm<string>(opt.url, opt.body, {
       credentials: true,
       responseType: "text",
-      headers: {
-        Accept: "text/html, */*; q=0.01",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,zh-TW;q=0.7",
-        Referer:
-          "https://kns.cnki.net/kns8/AdvSearch?dbprefix=SCDB&&crossDbcodes=" +
-          "CJFQ%2CCDMD%2CCIPD%2CCCND%2CCISD%2CSNAD%2CBDZK%2CCJFN%2CCCJD",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-origin",
-        "X-Requested-With": "XMLHttpRequest",
-      },
-    },
-  );
-  if (!html) return null;
+      headers: opt.headers,
+      retries: 0,
+    });
+    if (!html) continue;
+    try {
+      const rows = parseSearchRows(html, oversea);
+      if (rows.length) return rows;
+    } catch (e) {
+      ztoolkit.log("[cnki] search parse failed", e);
+    }
+  }
+  return null;
+}
 
+/**
+ * Canonical detail-page URL of the best CNKI hit for the keywords,
+ * or null on any failure.
+ */
+export async function getCNKIURL(keywords: string): Promise<string | null> {
+  const rows = await searchCNKI(keywords);
+  return rows?.[0]?.url || null;
+}
+
+/** fetch a URL as a translator-ready Document (location wrapped) */
+async function requestDocument(url: string): Promise<Document | null> {
   try {
-    const hrefMatch = html.match(/href='(.+FileName=.+?&DbName=.+?)'/i);
-    if (!hrefMatch) return null;
-    const args = parseCNKIURL(hrefMatch[1]);
-    if (!args) return null;
-    return (
-      `https://kns.cnki.net/kcms/detail/detail.aspx?FileName=${args.fileName}` +
-      `&DbName=${args.dbName}&DbCode=${args.dbCode}`
-    );
+    const xhr = await Zotero.HTTP.request("GET", url, {
+      responseType: "document",
+      headers: {
+        Accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        Referer: "https://kns.cnki.net/kns8s/AdvSearch",
+        "Accept-Language": "zh-CN,en-US;q=0.7,en;q=0.3",
+        "User-Agent": USER_AGENT,
+      },
+      timeout: 15000,
+    });
+    let doc: Document | null = xhr.response;
+    if (doc && !(doc as any).location) {
+      doc = (Zotero.HTTP as any).wrapDocument(doc, xhr.responseURL || url);
+    }
+    return doc;
   } catch (e) {
-    ztoolkit.log("[cnki] getCNKIURL parse failed", e);
+    ztoolkit.log("[cnki] requestDocument failed", e);
     return null;
   }
+}
+
+/** EndNote export text for a search row (mainland API), or null */
+async function getEndNoteText(row: CNKISearchRow): Promise<string | null> {
+  if (!row.exportID && !row.filename) return null;
+  const postData =
+    (row.exportID
+      ? `filename=${encodeURIComponent(row.exportID)}&uniplatform=NZKPT`
+      : `filename=${row.dbname}!${row.filename}!1!0`) +
+    "&displaymode=GBTREFER%2Celearning%2CEndNote";
+  try {
+    const xhr = await Zotero.HTTP.request(
+      "POST",
+      "https://kns.cnki.net/dm8/API/GetExport",
+      {
+        body: postData,
+        headers: {
+          Accept: "text/plain, */*; q=0.01",
+          "Content-Type": "application/x-www-form-urlencoded",
+          Origin: "https://www.cnki.net",
+          Referer: row.url,
+          "User-Agent": USER_AGENT,
+        },
+        timeout: 10000,
+        successCodes: [200],
+      },
+    );
+    const json = JSON.parse(xhr.responseText || "{}");
+    if (String(json.code) !== "1") return null;
+    const endnote = (json.data || []).find(
+      (i: Record<string, any>) => i.key === "EndNote",
+    );
+    return endnote?.value?.[0]?.replace(/<br>/g, "\n") || null;
+  } catch (e) {
+    ztoolkit.log("[cnki] EndNote export failed", e);
+    return null;
+  }
+}
+
+/**
+ * Import a CNKI paper as a proper Zotero item:
+ * detail page -> Zotero's CNKI web translator; on captcha/failure ->
+ * EndNote export -> import translator. Returns the created item or null.
+ */
+export async function importCNKIItem(
+  row: CNKISearchRow,
+  libraryID: number,
+  collections: number[] = [],
+): Promise<Zotero.Item | null> {
+  // 1. web translator on the detail page
+  try {
+    const doc = await requestDocument(row.url);
+    if (doc && doc.title !== "知网节超时验证" && doc.title !== "captcha") {
+      const translator = new (Zotero.Translate as any).Web();
+      translator.setTranslator(CNKI_WEB_TRANSLATOR);
+      translator.setDocument(doc);
+      const items: Zotero.Item[] = await translator.translate({
+        libraryID,
+        collections,
+        saveAttachments: false,
+      });
+      if (items?.length) return items[0];
+    }
+  } catch (e) {
+    ztoolkit.log("[cnki] web translation failed", e);
+  }
+  // 2. EndNote export fallback
+  try {
+    const endnote = await getEndNoteText(row);
+    if (endnote) {
+      const translate = new (Zotero.Translate as any).Import();
+      translate.setTranslator(ENDNOTE_IMPORT_TRANSLATOR);
+      translate.setString(endnote);
+      const items: Zotero.Item[] = await translate.translate({
+        libraryID,
+        collections,
+        saveAttachments: false,
+      });
+      if (items?.length) {
+        const item = items[0];
+        if (row.url && !item.getField("url")) {
+          item.setField("url", row.url);
+          await item.saveTx();
+        }
+        return item;
+      }
+    }
+  } catch (e) {
+    ztoolkit.log("[cnki] EndNote import failed", e);
+  }
+  return null;
 }
 
 async function getInfoByTitle(
@@ -69,55 +388,63 @@ async function getInfoByTitle(
 ): Promise<RefItem | null> {
   if (!isChinese(refText || title)) return null;
 
-  const url = await getCNKIURL(title);
-  if (!url) return null;
+  const rows = await searchCNKI(title);
+  const row = rows?.[0];
+  if (!row) return null;
 
-  const html = await http.getText(url, { credentials: true });
-  if (!html) return null;
-
-  try {
-    const doc = ztoolkit.getDOMParser().parseFromString(html, "text/html");
-    const titleText = doc.querySelector(".brief h1")!.textContent!.trim();
-    const abstract = doc
-      .querySelector("span#ChDivSummary")
-      ?.textContent?.trim();
-    const authors = Array.from(doc.querySelectorAll("#authorpart span a")).map(
-      (a: any) => (a.textContent || "").trim(),
-    );
-    const topTip = doc.querySelectorAll(".top-tip span a");
-    const primaryVenue = (topTip[0] as any)?.textContent?.trim();
-    const year = (topTip[1] as any)?.textContent?.trim()?.split(",")[0];
-
-    const tags: (RefTag | string)[] = Array.from(
-      doc.querySelectorAll(".keywords a"),
-    ).map((a: any) => (a.textContent || "").replace(/(\n|\s+|;)/g, ""));
-
-    const downloadText = Array.from(
-      doc.querySelectorAll("p.total-inform span"),
-    )
-      .map((s: any) => s.textContent || "")
-      .find((t: string) => t.includes("下载"));
-    const downloadCount = downloadText?.match(/\d+/)?.[0];
-    if (downloadCount) {
-      tags.push({ text: downloadCount, color: "#cc7c08", tip: "知网下载量" });
-    }
-
-    return {
-      identifiers: { CNKI: url },
-      title: titleText,
-      abstract,
-      authors,
-      type: "journalArticle",
-      primaryVenue,
-      year,
-      url,
-      source: "cnki",
-      tags,
-    };
-  } catch (e) {
-    ztoolkit.log("[cnki] getInfoByTitle parse failed", e);
-    return null;
+  // base info straight from the result row (survives captcha-gated details)
+  const tags: (RefTag | string)[] = [];
+  if (row.citation && /\d/.test(row.citation)) {
+    tags.push({ text: row.citation, color: "#1b66e6", tip: "知网被引" });
   }
+  const info: RefItem = {
+    identifiers: { CNKI: row.url },
+    title: row.title || title,
+    authors: row.authors,
+    type: "journalArticle",
+    primaryVenue: row.venue,
+    year: row.date?.match(/\d{4}/)?.[0],
+    url: row.url,
+    source: "cnki",
+    tags,
+  };
+
+  // enrich with abstract/keywords from the detail page, best effort
+  const html = await http.getText(row.url, {
+    credentials: true,
+    headers: { "User-Agent": USER_AGENT },
+  });
+  if (html) {
+    try {
+      const doc = ztoolkit.getDOMParser().parseFromString(html, "text/html");
+      const abstract =
+        doc.querySelector("span#ChDivSummary")?.textContent?.trim() ||
+        doc.querySelector("#ChDivSummary")?.textContent?.trim();
+      if (abstract) info.abstract = abstract;
+      const detailTitle = doc.querySelector(".brief h1, .wx-tit h1");
+      if (detailTitle?.textContent?.trim()) {
+        info.title = detailTitle.textContent.trim();
+      }
+      doc.querySelectorAll(".keywords a").forEach((a: Element) => {
+        const kw = (a.textContent || "").replace(/[\n\s;]+/g, "");
+        if (kw) tags.push(kw);
+      });
+      const downloadText = (
+        Array.from(
+          doc.querySelectorAll("p.total-inform span"),
+        ) as Element[]
+      )
+        .map((s) => s.textContent || "")
+        .find((t) => t.includes("下载"));
+      const downloadCount = downloadText?.match(/\d+/)?.[0];
+      if (downloadCount) {
+        tags.push({ text: downloadCount, color: "#cc7c08", tip: "知网下载量" });
+      }
+    } catch (e) {
+      ztoolkit.log("[cnki] detail parse failed", e);
+    }
+  }
+  return info;
 }
 
 function randomIP(): string {
@@ -258,8 +585,9 @@ async function getReferences(
 
   let fileName = parseCNKIURL(ids.CNKI)?.fileName;
   if (!fileName && title) {
-    const url = await getCNKIURL(title);
-    fileName = parseCNKIURL(url || undefined)?.fileName;
+    const rows = await searchCNKI(title);
+    const url = rows?.[0]?.url;
+    fileName = rows?.[0]?.filename || parseCNKIURL(url || undefined)?.fileName;
   }
   if (!fileName) return null;
 

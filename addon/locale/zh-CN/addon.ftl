@@ -32,3 +32,12 @@ related-count-suffix = 篇相关文献
 graph-loading = 正在构建引文图谱…
 graph-unavailable = 无法构建引文图谱（需要 OpenAlex 收录的 DOI）
 graph-rebuild = 重新构建
+
+menu-references =
+    .label = 参考文献
+menu-fetch-refs =
+    .label = 抓取并缓存参考文献
+menu-import-refs =
+    .label = 导入全部参考文献
+menu-copy-refs =
+    .label = 复制参考文献
