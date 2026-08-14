@@ -1,0 +1,187 @@
+<linkset>
+  <html:link rel="localization" href="__addonRef__-preferences.ftl" />
+</linkset>
+<vbox onload="Zotero.__addonInstance__.hooks.onPrefsEvent('load', { window })">
+  <groupbox>
+    <label><html:h2 data-l10n-id="pref-group-refresh"></html:h2></label>
+    <checkbox
+      id="zotero-prefpane-__addonRef__-autoRefresh"
+      preference="autoRefresh"
+      data-l10n-id="pref-autoRefresh"
+      native="true"
+    />
+    <hbox align="center">
+      <html:label data-l10n-id="pref-notAutoRefreshItemTypes"></html:label>
+      <html:input
+        type="text"
+        style="flex: 1"
+        preference="notAutoRefreshItemTypes"
+      ></html:input>
+    </hbox>
+    <hbox align="center">
+      <html:label data-l10n-id="pref-prioritySource"></html:label>
+      <radiogroup orient="horizontal" preference="prioritySource">
+        <radio value="PDF" data-l10n-id="pref-source-pdf" native="true" />
+        <radio value="API" data-l10n-id="pref-source-api" native="true" />
+      </radiogroup>
+    </hbox>
+    <hbox align="center">
+      <html:label data-l10n-id="pref-preLoadingPageNum"></html:label>
+      <html:input
+        type="number"
+        min="1"
+        max="50"
+        preference="preLoadingPageNum"
+      ></html:input>
+    </hbox>
+    <checkbox
+      preference="savePDFReferences"
+      data-l10n-id="pref-savePDFReferences"
+      native="true"
+    />
+    <checkbox
+      preference="saveAPIReferences"
+      data-l10n-id="pref-saveAPIReferences"
+      native="true"
+    />
+    <hbox align="center">
+      <html:label data-l10n-id="pref-notInLibraryOpacity"></html:label>
+      <html:input type="text" preference="notInLibraryOpacity"></html:input>
+    </hbox>
+  </groupbox>
+
+  <groupbox>
+    <label><html:h2 data-l10n-id="pref-group-popup"></html:h2></label>
+    <checkbox
+      preference="showPopup"
+      data-l10n-id="pref-showPopup"
+      native="true"
+    />
+    <hbox align="center">
+      <html:label data-l10n-id="pref-popupDelay"></html:label>
+      <html:input type="number" min="0" preference="popupDelay"></html:input>
+      <html:label data-l10n-id="pref-popupRemoveDelay"></html:label>
+      <html:input
+        type="number"
+        min="0"
+        preference="popupRemoveDelay"
+      ></html:input>
+    </hbox>
+    <checkbox
+      preference="ctrlClickTranslate"
+      data-l10n-id="pref-ctrlClickTranslate"
+      native="true"
+    />
+  </groupbox>
+
+  <groupbox>
+    <label><html:h2 data-l10n-id="pref-group-reader"></html:h2></label>
+    <checkbox
+      preference="clickLink"
+      data-l10n-id="pref-clickLink"
+      native="true"
+    />
+    <hbox align="center">
+      <html:label data-l10n-id="pref-clickLinkCmd"></html:label>
+      <radiogroup orient="horizontal" preference="clickLinkCmd">
+        <radio
+          value="splitHorizontally"
+          data-l10n-id="pref-split-horizontally"
+          native="true"
+        />
+        <radio
+          value="splitVertically"
+          data-l10n-id="pref-split-vertically"
+          native="true"
+        />
+      </radiogroup>
+    </hbox>
+    <checkbox
+      preference="hoverLink"
+      data-l10n-id="pref-hoverLink"
+      native="true"
+    />
+  </groupbox>
+
+  <groupbox>
+    <label><html:h2 data-l10n-id="pref-group-sections"></html:h2></label>
+    <checkbox
+      preference="loadingRelated"
+      data-l10n-id="pref-loadingRelated"
+      native="true"
+    />
+    <checkbox
+      preference="loadingCitations"
+      data-l10n-id="pref-loadingCitations"
+      native="true"
+    />
+    <hbox align="center">
+      <html:label data-l10n-id="pref-citationsPageSize"></html:label>
+      <html:input
+        type="number"
+        min="5"
+        max="100"
+        preference="citationsPageSize"
+      ></html:input>
+    </hbox>
+    <checkbox
+      preference="graphEnable"
+      data-l10n-id="pref-graphEnable"
+      native="true"
+    />
+    <hbox align="center">
+      <html:label data-l10n-id="pref-graphMaxNodes"></html:label>
+      <html:input
+        type="number"
+        min="10"
+        max="200"
+        preference="graphMaxNodes"
+      ></html:input>
+    </hbox>
+  </groupbox>
+
+  <groupbox>
+    <label><html:h2 data-l10n-id="pref-group-network"></html:h2></label>
+    <hbox align="center">
+      <html:label data-l10n-id="pref-email"></html:label>
+      <html:input
+        type="text"
+        style="flex: 1"
+        preference="email"
+      ></html:input>
+    </hbox>
+    <hbox align="center">
+      <html:label data-l10n-id="pref-s2ApiKey"></html:label>
+      <html:input
+        type="password"
+        style="flex: 1"
+        preference="s2ApiKey"
+      ></html:input>
+    </hbox>
+    <hbox align="center">
+      <html:label data-l10n-id="pref-cacheTTLHours"></html:label>
+      <html:input
+        type="number"
+        min="0"
+        preference="cacheTTLHours"
+      ></html:input>
+    </hbox>
+  </groupbox>
+
+  <groupbox>
+    <label><html:h2 data-l10n-id="pref-group-cnki"></html:h2></label>
+    <hbox align="center">
+      <html:label data-l10n-id="pref-cnki-username"></html:label>
+      <html:input type="text" preference="CNKI.username"></html:input>
+      <html:label data-l10n-id="pref-cnki-password"></html:label>
+      <html:input type="password" preference="CNKI.password"></html:input>
+    </hbox>
+  </groupbox>
+
+  <vbox>
+    <html:label
+      data-l10n-id="pref-help"
+      data-l10n-args='{"time": "__buildTime__","name": "__addonName__","version":"__buildVersion__"}'
+    ></html:label>
+  </vbox>
+</vbox>

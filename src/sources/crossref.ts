@@ -1,0 +1,141 @@
+import { http, politeEmail } from "../core/http";
+import { htmlToText, identifiersToURL, refTextToInfo } from "../core/text";
+import type { Identifiers, MetaSource, RefItem, RefTag } from "../core/types";
+
+/**
+ * Crossref (api.crossref.org) — the official DOI registration agency
+ * metadata source. Free, no key required; a `mailto` param buys access to
+ * Crossref's "polite pool" (faster, more reliable rate limits).
+ */
+
+const BASE = "https://api.crossref.org";
+
+const TYPE_MAP: Record<string, string> = {
+  "journal-article": "journalArticle",
+  report: "report",
+  "posted-content": "preprint",
+  "book-chapter": "bookSection",
+  "proceedings-article": "conferencePaper",
+  book: "book",
+};
+
+function withMailto(url: string): string {
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}mailto=${encodeURIComponent(politeEmail())}`;
+}
+
+/** Map a single `message.reference[]` entry to a RefItem. */
+function mapReference(item: any, index: number): RefItem {
+  let text: string;
+  let textInfo: Partial<RefItem> = {};
+  if (item.unstructured) {
+    text = item.unstructured;
+    textInfo = refTextToInfo(text);
+  } else if (item["article-title"] && item.year && item.author) {
+    text = `${item.author} et al., ${item.year}, ${item["article-title"]}`;
+  } else {
+    const parts: string[] = [];
+    for (const key in item) {
+      parts.push(`${key}: ${item[key]}`);
+    }
+    text = parts.join("; ");
+  }
+
+  let identifiers: Identifiers = textInfo.identifiers || {};
+  let url: string | undefined = textInfo.url;
+  if (item.DOI) {
+    identifiers = { ...identifiers, DOI: item.DOI };
+    url = identifiersToURL(identifiers);
+  }
+
+  return {
+    identifiers,
+    title: item["article-title"] || textInfo.title,
+    authors: item.author ? [item.author] : textInfo.authors || [],
+    year: item.year || textInfo.year,
+    text,
+    type: TYPE_MAP[item.type] || textInfo.type || "journalArticle",
+    url,
+    number: index + 1,
+  };
+}
+
+/** Map a Crossref `message` (work) object to a RefItem. */
+function mapWork(w: any): RefItem {
+  const doi: string | undefined = w.DOI;
+  const identifiers: Identifiers = doi ? { DOI: doi } : {};
+
+  const title = Array.isArray(w.title) ? w.title[0] : w.title;
+  const authors: string[] = Array.isArray(w.author)
+    ? w.author.map((a: any) => a.family || a.name).filter(Boolean)
+    : [];
+
+  const dateParts =
+    w.published?.["date-parts"]?.[0] || w.created?.["date-parts"]?.[0];
+  const year =
+    dateParts?.[0] !== undefined ? String(dateParts[0]) : undefined;
+  const publishDate = dateParts?.length ? dateParts.join("-") : undefined;
+
+  const refCount = w["is-referenced-by-count"];
+  const tags: RefTag[] =
+    typeof refCount === "number" && refCount > 0
+      ? [{ text: refCount, color: "#2fb8cb", tip: "is-referenced-by-count" }]
+      : [];
+
+  const references: RefItem[] | undefined = Array.isArray(w.reference)
+    ? w.reference.map((r: any, i: number) => mapReference(r, i))
+    : undefined;
+
+  return {
+    identifiers,
+    title,
+    authors,
+    year,
+    type: TYPE_MAP[w.type] || "journalArticle",
+    url: w.URL,
+    abstract: w.abstract ? htmlToText(w.abstract) : undefined,
+    publishDate,
+    primaryVenue: Array.isArray(w["container-title"])
+      ? w["container-title"][0]
+      : undefined,
+    source: "crossref",
+    citationCount: typeof refCount === "number" ? refCount : undefined,
+    tags: tags.length ? tags : undefined,
+    references,
+  };
+}
+
+export const crossref: MetaSource & {
+  getInfoByDOI(doi: string): Promise<RefItem | null>;
+  getInfoByTitle(title: string, refText?: string): Promise<RefItem | null>;
+  getReferences(ids: Identifiers): Promise<RefItem[] | null>;
+} = {
+  id: "crossref",
+
+  async getInfoByDOI(doi: string): Promise<RefItem | null> {
+    const url = withMailto(`${BASE}/works/${encodeURIComponent(doi)}`);
+    const res = await http.getJSON(url);
+    const message = res?.message;
+    if (!message) return null;
+    return mapWork(message);
+  },
+
+  async getInfoByTitle(title: string): Promise<RefItem | null> {
+    const url = withMailto(
+      `${BASE}/works?query.bibliographic=${encodeURIComponent(
+        title,
+      )}&rows=5`,
+    );
+    const res = await http.getJSON(url);
+    const items: any[] = res?.message?.items;
+    if (!Array.isArray(items) || !items.length) return null;
+    const item = items.find((it) => it.type !== "component");
+    return item ? mapWork(item) : null;
+  },
+
+  async getReferences(ids: Identifiers): Promise<RefItem[] | null> {
+    if (!ids.DOI) return null;
+    const info = await crossref.getInfoByDOI(ids.DOI);
+    return info?.references?.length ? info.references : null;
+  },
+};

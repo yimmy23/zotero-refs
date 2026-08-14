@@ -1,0 +1,59 @@
+{
+  "name": "zotero-references",
+  "type": "module",
+  "version": "1.0.0",
+  "description": "References for Zotero — parse, explore, and import the references, citations and related papers of your library items",
+  "config": {
+    "addonName": "References",
+    "addonID": "references@zotero-references.dev",
+    "addonRef": "references",
+    "addonInstance": "References",
+    "prefsPrefix": "extensions.zotero.references"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yim/zotero-references.git"
+  },
+  "author": "yim",
+  "bugs": {
+    "url": "https://github.com/yim/zotero-references/issues"
+  },
+  "homepage": "https://github.com/yim/zotero-references#readme",
+  "license": "AGPL-3.0-or-later",
+  "scripts": {
+    "start": "zotero-plugin serve",
+    "build": "zotero-plugin build && tsc --noEmit",
+    "lint:check": "prettier --check . && eslint .",
+    "lint:fix": "prettier --write . && eslint . --fix",
+    "release": "zotero-plugin release",
+    "test": "zotero-plugin test",
+    "update-deps": "npm update --save"
+  },
+  "dependencies": {
+    "d3-force": "^3.0.0",
+    "zotero-plugin-toolkit": "^5.2.0"
+  },
+  "devDependencies": {
+    "@types/d3-force": "^3.0.10",
+    "@types/node": "^24.10.0",
+    "@zotero-plugin/eslint-config": "^0.6.7",
+    "eslint": "^9.39.2",
+    "prettier": "^3.7.4",
+    "typescript": "^5.9.3",
+    "zotero-plugin-scaffold": "^0.8.8",
+    "zotero-types": "^4.1.3"
+  },
+  "prettier": {
+    "printWidth": 80,
+    "tabWidth": 2,
+    "endOfLine": "lf",
+    "overrides": [
+      {
+        "files": ["*.xhtml"],
+        "options": {
+          "htmlWhitespaceSensitivity": "css"
+        }
+      }
+    ]
+  }
+}
