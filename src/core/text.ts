@@ -38,9 +38,7 @@ export function extractURL(text: string): string | undefined {
   return res ? res[0] : undefined;
 }
 
-export function identifiersToURL(
-  identifiers: Identifiers,
-): string | undefined {
+export function identifiersToURL(identifiers: Identifiers): string | undefined {
   if (identifiers.DOI) return `https://doi.org/${identifiers.DOI}`;
   if (identifiers.arXiv) return `https://arxiv.org/abs/${identifiers.arXiv}`;
   if (identifiers.PMID)
@@ -102,7 +100,10 @@ export function parseRefText(text: string): {
   publicationVenue?: string;
 } {
   try {
-    text = text.replace(/^\[\d+?\]/, "").replace(/\s+/g, " ").trim();
+    text = text
+      .replace(/^\[\d+?\]/, "")
+      .replace(/\s+/g, " ")
+      .trim();
     let title: string;
     let titleMatch: string;
     const quoted = text.match(/[“"](.+?)[”"]/);

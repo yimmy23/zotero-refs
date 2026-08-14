@@ -1,6 +1,7 @@
 import { config } from "../../package.json";
 import { getLocaleID, getString } from "../utils/locale";
 import { getPref } from "../utils/prefs";
+import { itemCacheKey } from "../core/storage";
 import type { Identifiers, RefItem } from "../core/types";
 import { getCitationsByAPI } from "../sources";
 import { renderRefRow } from "./rows";
@@ -9,6 +10,10 @@ import type { RowContext } from "./rows";
 /**
  * "Cited By" item pane section (new feature): works citing the current
  * item, paged, with the same row interactions (popup / import / locate).
+ *
+ * The section body is shared across item switches — loadMore works only
+ * against the DOM elements captured at its own render, and bails out once
+ * they are detached.
  */
 
 interface CitationsState {
@@ -34,8 +39,15 @@ function idsOf(item: Zotero.Item): Identifiers | null {
   return Object.keys(ids).length ? ids : null;
 }
 
+/** DOM handles of one concrete render of the section body */
+interface PanelDOM {
+  list: HTMLElement;
+  count: HTMLElement;
+  more: HTMLButtonElement;
+}
+
 async function loadMore(
-  body: HTMLElement,
+  dom: PanelDOM,
   item: Zotero.Item,
   state: CitationsState,
   setSectionSummary: (s: string) => void,
@@ -44,56 +56,57 @@ async function loadMore(
   const ids = idsOf(item);
   if (!ids) return;
   state.loading = true;
-  const button = body.querySelector<HTMLButtonElement>(
-    ".references-load-more",
-  );
-  if (button) button.disabled = true;
+  dom.more.disabled = true;
+  let failed = false;
   try {
     const pageSize = Number(getPref("citationsPageSize")) || 25;
     const page = await getCitationsByAPI(ids, state.nextOffset, pageSize);
-    if (!page || !page.items.length) {
+    if (page === null) {
+      // transient API failure — keep the button so the user can retry
+      failed = true;
+    } else if (!page.items.length) {
       state.exhausted = true;
     } else {
-      const list = body.querySelector<HTMLElement>(".references-list");
-      if (!list) return;
-      const ctx: RowContext = {
-        hostItem: item,
-        list,
-        numbered: false,
-        editable: false,
-      };
-      const start = state.refs.length;
-      state.refs.push(...page.items);
-      for (let i = start; i < state.refs.length; i++) {
-        renderRefRow(ctx, state.refs, i);
-      }
       state.total = page.total ?? state.total;
       state.nextOffset =
         page.nextOffset ?? state.nextOffset + page.items.length;
       if (
         page.items.length < pageSize ||
-        (state.total !== undefined && state.refs.length >= state.total)
+        (state.total !== undefined &&
+          state.refs.length + page.items.length >= state.total)
       ) {
         state.exhausted = true;
+      }
+      const start = state.refs.length;
+      state.refs.push(...page.items);
+      // the user may have switched items while the request ran
+      if (dom.list.isConnected) {
+        const ctx: RowContext = {
+          hostItem: item,
+          list: dom.list,
+          numbered: false,
+          editable: false,
+        };
+        for (let i = start; i < state.refs.length; i++) {
+          renderRefRow(ctx, state.refs, i);
+        }
       }
     }
   } catch (e) {
     ztoolkit.log("[citations] load failed", e);
+    failed = true;
   } finally {
     state.loading = false;
-    if (button) {
-      button.disabled = false;
-      button.style.display = state.exhausted ? "none" : "";
-    }
-    const count = body.querySelector<HTMLElement>(".references-count");
-    if (count) {
-      count.textContent = `${state.refs.length}${
+    if (dom.list.isConnected) {
+      dom.more.disabled = false;
+      dom.more.style.display = state.exhausted ? "none" : "";
+      dom.count.textContent = `${state.refs.length}${
         state.total ? ` / ${state.total}` : ""
-      } ${getString("citations-count-suffix")}`;
+      } ${getString("citations-count-suffix")}${failed ? " ⚠" : ""}`;
+      setSectionSummary(
+        `${state.total ?? state.refs.length}${state.total ? "" : "+"}`,
+      );
     }
-    setSectionSummary(
-      `${state.total ?? state.refs.length}${state.total ? "" : "+"}`,
-    );
   }
 }
 
@@ -116,7 +129,8 @@ export function registerCitationsSection() {
     onRender: () => {},
     onAsyncRender: async ({ body, item, setSectionSummary }) => {
       if (!item?.isRegularItem?.()) return;
-      let state = states.get(item.key);
+      const stateKey = itemCacheKey(item);
+      let state = states.get(stateKey);
       const doc = body.ownerDocument!;
       body.textContent = "";
       (body as HTMLElement).classList.add("references-panel");
@@ -136,10 +150,12 @@ export function registerCitationsSection() {
       const more = doc.createElement("button");
       more.className = "references-button references-load-more";
       more.textContent = getString("citations-load-more");
-      more.addEventListener("click", () =>
-        loadMore(body as HTMLElement, item, state!, setSectionSummary),
-      );
       body.append(more);
+
+      const dom: PanelDOM = { list, count, more };
+      more.addEventListener("click", () =>
+        loadMore(dom, item, state!, setSectionSummary),
+      );
 
       if (!state) {
         state = {
@@ -148,7 +164,7 @@ export function registerCitationsSection() {
           exhausted: false,
           loading: false,
         };
-        states.set(item.key, state);
+        states.set(stateKey, state);
       } else if (state.refs.length) {
         // re-render existing page(s)
         const ctx: RowContext = {
@@ -163,17 +179,20 @@ export function registerCitationsSection() {
         count.textContent = `${state.refs.length}${
           state.total ? ` / ${state.total}` : ""
         } ${getString("citations-count-suffix")}`;
+        setSectionSummary(
+          `${state.total ?? state.refs.length}${state.total ? "" : "+"}`,
+        );
         more.style.display = state.exhausted ? "none" : "";
         return;
       }
       if (getPref("loadingCitations")) {
-        await loadMore(body as HTMLElement, item, state, setSectionSummary);
+        await loadMore(dom, item, state, setSectionSummary);
       }
     },
   });
 }
 
-export function invalidateCitations(itemKeys?: string[]) {
-  if (!itemKeys) states.clear();
-  else for (const key of itemKeys) states.delete(key);
+export function invalidateCitations(stateKeys?: string[]) {
+  if (!stateKeys) states.clear();
+  else for (const key of stateKeys) states.delete(key);
 }

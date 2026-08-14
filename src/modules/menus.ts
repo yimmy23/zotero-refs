@@ -18,13 +18,13 @@ let usedFallback = false;
 async function refsFor(item: Zotero.Item): Promise<RefItem[] | null> {
   // cached first (either slot), then API
   for (const slot of ["API", "PDF"]) {
-    const cached = await refStorage.get(item.key, slot);
+    const cached = await refStorage.get(item, slot);
     if (cached?.length) return cached;
   }
   const result = await getReferencesByAPI(item);
   if (result?.refs.length) {
     if (getPref("saveAPIReferences")) {
-      void refStorage.set(item.key, "API", result.refs);
+      void refStorage.set(item, "API", result.refs);
     }
     return result.refs;
   }
@@ -34,10 +34,13 @@ async function refsFor(item: Zotero.Item): Promise<RefItem[] | null> {
 /** batch pre-fetch references of the selected items into the cache */
 async function fetchAction(items: Zotero.Item[]) {
   const targets = items.filter((i) => i.isRegularItem());
-  const popupWin = new ztoolkit.ProgressWindow(getString("menu-fetch-refs", "label"), {
-    closeTime: -1,
-    closeOtherProgressWindows: true,
-  })
+  const popupWin = new ztoolkit.ProgressWindow(
+    getString("menu-fetch-refs", "label"),
+    {
+      closeTime: -1,
+      closeOtherProgressWindows: true,
+    },
+  )
     .createLine({ text: `0/${targets.length}`, type: "default", progress: 0 })
     .show();
   let ok = 0;
@@ -82,11 +85,15 @@ async function importAction(items: Zotero.Item[]) {
     )
       .createLine({ text: `0/${refs.length}`, type: "default", progress: 0 })
       .show();
-    const { ok, fail } = await importAll(item, refs, undefined, (done, total, msg) =>
-      popupWin.changeLine({
-        text: `${done}/${total} ${msg}`,
-        progress: (done / total) * 100,
-      }),
+    const { ok, fail } = await importAll(
+      item,
+      refs,
+      undefined,
+      (done, total, msg) =>
+        popupWin.changeLine({
+          text: `${done}/${total} ${msg}`,
+          progress: (done / total) * 100,
+        }),
     );
     popupWin.changeHeadline("[Done]");
     popupWin.changeLine({
@@ -204,9 +211,7 @@ export function unregisterItemMenus() {
   }
   if (usedFallback) {
     for (const win of Zotero.getMainWindows()) {
-      win.document
-        ?.getElementById(`${config.addonRef}-item-menu-z7`)
-        ?.remove();
+      win.document?.getElementById(`${config.addonRef}-item-menu-z7`)?.remove();
     }
     usedFallback = false;
   }

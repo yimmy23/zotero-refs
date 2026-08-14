@@ -15,9 +15,11 @@ import {
   attachAllReaders,
   detachAllReaders,
   onReaderTabSelect,
+  sweepReaders,
 } from "./pdf/readerHook";
 
 let notifierID: string | undefined;
+let pluginsObserverAdded = false;
 
 async function onStartup() {
   await Promise.all([
@@ -56,16 +58,21 @@ async function onStartup() {
     },
     ["tab", "item"],
   );
-  Zotero.Plugins.addObserver({
-    shutdown: ({ id }: { id: string }) => {
-      if (id === config.addonID && notifierID) {
-        Zotero.Notifier.unregisterObserver(notifierID);
-        notifierID = undefined;
-      }
-    },
-  });
+  if (!pluginsObserverAdded) {
+    pluginsObserverAdded = true;
+    Zotero.Plugins.addObserver({
+      shutdown: ({ id }: { id: string }) => {
+        if (id === config.addonID && notifierID) {
+          Zotero.Notifier.unregisterObserver(notifierID);
+          notifierID = undefined;
+        }
+      },
+    });
+  }
 
-  await Promise.all(Zotero.getMainWindows().map((win) => onMainWindowLoad(win)));
+  await Promise.all(
+    Zotero.getMainWindows().map((win) => onMainWindowLoad(win)),
+  );
 
   // readers already open at startup
   void attachAllReaders();
@@ -74,7 +81,6 @@ async function onStartup() {
 }
 
 async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
-  addon.data.ztoolkit = createZToolkit();
   win.MozXULElement.insertFTLIfNeeded(`${config.addonRef}-addon.ftl`);
   registerStyles(win as unknown as Window);
 }
@@ -82,7 +88,6 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
 async function onMainWindowUnload(win: Window): Promise<void> {
   closePopup();
   unregisterStyles(win);
-  ztoolkit.unregisterAll();
   addon.data.dialog?.window?.close();
 }
 
@@ -115,6 +120,9 @@ async function onNotify(
         onReaderTabSelect(String(id));
       }
     }
+  }
+  if (type === "tab" && event === "close") {
+    sweepReaders();
   }
   if (type === "item" && (event === "delete" || event === "trash")) {
     // dropped items: clear cached panel state (keys unknown -> clear all)

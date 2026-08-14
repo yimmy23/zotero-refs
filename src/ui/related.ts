@@ -1,6 +1,7 @@
 import { config } from "../../package.json";
 import { getLocaleID, getString } from "../utils/locale";
 import { getPref } from "../utils/prefs";
+import { itemCacheKey } from "../core/storage";
 import type { Identifiers, RefItem } from "../core/types";
 import { getRelatedByAPI } from "../sources";
 import { renderRefRow } from "./rows";
@@ -55,11 +56,11 @@ export function registerRelatedSection() {
     pluginID: config.addonID,
     header: {
       l10nID: getLocaleID("item-section-related-head-text"),
-      icon: "chrome://zotero/skin/16/universal/attachment-link.svg",
+      icon: "chrome://zotero/skin/16/universal/link.svg",
     },
     sidenav: {
       l10nID: getLocaleID("item-section-related-sidenav-tooltip"),
-      icon: "chrome://zotero/skin/20/universal/attachment-link.svg",
+      icon: "chrome://zotero/skin/20/universal/magic-wand.svg",
     },
     onItemChange: ({ item, setEnabled }) => {
       setEnabled(!!item?.isRegularItem?.());
@@ -104,17 +105,19 @@ export function registerRelatedSection() {
       if (!getPref("loadingRelated")) return;
       const ids = idsOf(item);
       if (!ids) return;
-      let recommended = cache.get(item.key);
+      const cacheKey = itemCacheKey(item);
+      let recommended = cache.get(cacheKey);
       if (!recommended) {
-        recommended = (await getRelatedByAPI(ids, 20)) || [];
-        cache.set(item.key, recommended);
+        // cache only real results — a transient API failure must stay
+        // retryable on the next render
+        const fetched = await getRelatedByAPI(ids, 20);
+        recommended = fetched || [];
+        if (fetched) cache.set(cacheKey, fetched);
       }
       if (!list.isConnected) return;
       const start = refs.length;
       // skip recommendations that duplicate existing related items
-      const seen = new Set(
-        refs.map((r) => (r.title || "").toLowerCase()),
-      );
+      const seen = new Set(refs.map((r) => (r.title || "").toLowerCase()));
       for (const rec of recommended) {
         if (seen.has((rec.title || "").toLowerCase())) continue;
         refs.push(rec);
@@ -127,7 +130,7 @@ export function registerRelatedSection() {
   });
 }
 
-export function invalidateRelated(itemKeys?: string[]) {
-  if (!itemKeys) cache.clear();
-  else for (const key of itemKeys) cache.delete(key);
+export function invalidateRelated(stateKeys?: string[]) {
+  if (!stateKeys) cache.clear();
+  else for (const key of stateKeys) cache.delete(key);
 }

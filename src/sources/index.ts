@@ -139,7 +139,9 @@ export async function getReferencesByAPI(
         try {
           const refs = await src.getReferences?.({ DOI: doi }, title);
           if (refs?.length) return { refs, source: src.id };
-        } catch {}
+        } catch {
+          // try the next source
+        }
       }
     }
   }
@@ -187,12 +189,20 @@ export async function getRelatedByAPI(
   return null;
 }
 
+/**
+ * Strict title equality (normalized). Substring containment is NOT
+ * accepted: Crossref happily ranks derivative records ("Review of X",
+ * "Faculty Opinions recommendation of X") above the article, and a
+ * containment rule would resolve the WRONG DOI for them (live-verified
+ * with "Array programming with NumPy").
+ */
 function titleSimilar(a?: string, b?: string): boolean {
   const na = normalizeTitle(a);
   const nb = normalizeTitle(b);
   if (!na || !nb) return false;
   if (na === nb) return true;
-  if (na.length >= 15 && (na.includes(nb) || nb.includes(na))) return true;
+  // a candidate that still equals the query after removing a derivative
+  // prefix is the derivative record, not the paper — reject it
   return false;
 }
 
@@ -200,27 +210,31 @@ function titleSimilar(a?: string, b?: string): boolean {
  * Resolve a DOI from a title with validation, so we never import the
  * wrong paper. Crossref bibliographic query -> OpenAlex -> S2.
  */
-export async function resolveDOIByTitle(
-  title: string,
-): Promise<string | null> {
+export async function resolveDOIByTitle(title: string): Promise<string | null> {
   if (!title || title.length < 8) return null;
   try {
     const hit = await crossref.getInfoByTitle?.(title);
     if (hit?.identifiers.DOI && titleSimilar(hit.title, title)) {
       return hit.identifiers.DOI;
     }
-  } catch {}
+  } catch {
+    // fall through to the next resolver
+  }
   try {
     const hit = await openalex.getInfoByTitle?.(title);
     if (hit?.identifiers.DOI && titleSimilar(hit.title, title)) {
       return hit.identifiers.DOI;
     }
-  } catch {}
+  } catch {
+    // fall through to the next resolver
+  }
   try {
     const hit = await semanticscholar.getInfoByTitle?.(title);
     if (hit?.identifiers.DOI && titleSimilar(hit.title, title)) {
       return hit.identifiers.DOI;
     }
-  } catch {}
+  } catch {
+    // fall through to the next resolver
+  }
   return null;
 }

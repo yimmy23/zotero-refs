@@ -141,10 +141,7 @@ export interface GraphData {
   originId: string;
 }
 
-export const SOURCE_BADGE: Record<
-  string,
-  { color: string; tip?: string }
-> = {
+export const SOURCE_BADGE: Record<string, { color: string; tip?: string }> = {
   pdf: { color: "#a05a2c", tip: "Parsed from the PDF text layer" },
   arxiv: { color: "#b31b1b", tip: "arXiv — open-access preprint archive" },
   arXiv: { color: "#b31b1b", tip: "arXiv — open-access preprint archive" },
@@ -175,5 +172,10 @@ export const SOURCE_BADGE: Record<
     color: "#d63b3b",
     tip: "This reference is in your Zotero library",
   },
+  zotero: {
+    color: "#d63b3b",
+    tip: "This reference is in your Zotero library",
+  },
   CNKI: { color: "#1b66e6", tip: "中国知网 CNKI" },
+  cnki: { color: "#1b66e6", tip: "中国知网 CNKI" },
 };

@@ -2,11 +2,16 @@ import { config } from "../../package.json";
 import { setTimeout, clearTimeout } from "../utils/window";
 import type { RefItem } from "./types";
 
+/** stable per-item cache key — item keys are only unique per library */
+export function itemCacheKey(item: Zotero.Item): string {
+  return `${item.libraryID}/${item.key}`;
+}
+
 /**
  * Persistent per-item reference cache, stored as one JSON file in the
  * Zotero data directory. Writes are debounced.
  *
- * Layout: { [itemKey]: { [slot]: { t: epochMs, refs: RefItem[] } } }
+ * Layout: { [libraryID/itemKey]: { [slot]: { t: epochMs, refs: RefItem[] } } }
  * slot is "PDF" or "API".
  */
 class RefStorage {
@@ -38,13 +43,14 @@ class RefStorage {
     }
   }
 
-  async get(itemKey: string, slot: string): Promise<RefItem[] | undefined> {
+  async get(item: Zotero.Item, slot: string): Promise<RefItem[] | undefined> {
     await this.ready;
-    return this.cache[itemKey]?.[slot]?.refs;
+    return this.cache[itemCacheKey(item)]?.[slot]?.refs;
   }
 
-  async set(itemKey: string, slot: string, refs: RefItem[]) {
+  async set(item: Zotero.Item, slot: string, refs: RefItem[]) {
     await this.ready;
+    const itemKey = itemCacheKey(item);
     // strip runtime-only fields before persisting
     const clean = refs.map((r) => {
       const { libItemID: _drop, ...rest } = r;
@@ -54,8 +60,9 @@ class RefStorage {
     this.scheduleWrite();
   }
 
-  async remove(itemKey: string, slot?: string) {
+  async remove(item: Zotero.Item, slot?: string) {
     await this.ready;
+    const itemKey = itemCacheKey(item);
     if (slot) {
       delete this.cache[itemKey]?.[slot];
     } else {
@@ -78,6 +85,9 @@ class RefStorage {
   }
 
   async flush() {
+    // never write before the initial load resolved — a flush racing the
+    // load would persist an empty cache over the existing file
+    await this.ready;
     if (!this.path) return;
     await Zotero.File.putContentsAsync(this.path, JSON.stringify(this.cache));
   }

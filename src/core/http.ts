@@ -27,9 +27,12 @@ interface CacheEntry {
   t: number;
   ttl: number;
   v: any;
+  bytes: number;
 }
 
 const MAX_CACHE_ENTRIES = 500;
+const MAX_ENTRY_BYTES = 2 * 1024 * 1024;
+const MAX_CACHE_BYTES = 50 * 1024 * 1024;
 const DEFAULT_TIMEOUT = 15000;
 const HOST_LIMITS: Record<string, number> = {
   "api.crossref.org": 3,
@@ -57,7 +60,9 @@ class HostGate {
 
   release() {
     this.active--;
-    const next = this.queue.shift();
+    // LIFO: wake the most recently queued waiter first, so the newest
+    // user action (e.g. the currently hovered popup) jumps the queue
+    const next = this.queue.pop();
     if (next) next();
   }
 }
@@ -76,7 +81,9 @@ class Http {
     let host = "default";
     try {
       host = new URL(url).host;
-    } catch {}
+    } catch {
+      // not a URL — use the default gate
+    }
     let gate = this.gates.get(host);
     if (!gate) {
       gate = new HostGate(HOST_LIMITS[host] ?? HOST_LIMITS.default);
@@ -90,6 +97,7 @@ class Http {
     if (!entry) return undefined;
     if (Date.now() - entry.t > entry.ttl) {
       this.cache.delete(key);
+      this.cacheBytes -= entry.bytes;
       return undefined;
     }
     // LRU: refresh position
@@ -98,17 +106,33 @@ class Http {
     return entry.v;
   }
 
+  private cacheBytes = 0;
+
   private cacheSet(key: string, v: any, ttl: number) {
     if (ttl <= 0) return;
-    if (this.cache.size >= MAX_CACHE_ENTRIES) {
-      const oldest = this.cache.keys().next().value;
-      if (oldest !== undefined) this.cache.delete(oldest);
+    let bytes: number;
+    try {
+      bytes = typeof v === "string" ? v.length : JSON.stringify(v)?.length || 0;
+    } catch {
+      bytes = 0;
     }
-    this.cache.set(key, { t: Date.now(), ttl, v });
+    if (bytes > MAX_ENTRY_BYTES) return;
+    while (
+      this.cache.size >= MAX_CACHE_ENTRIES ||
+      this.cacheBytes + bytes > MAX_CACHE_BYTES
+    ) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest === undefined) break;
+      this.cacheBytes -= this.cache.get(oldest)?.bytes || 0;
+      this.cache.delete(oldest);
+    }
+    this.cache.set(key, { t: Date.now(), ttl, v, bytes });
+    this.cacheBytes += bytes;
   }
 
   clearCache() {
     this.cache.clear();
+    this.cacheBytes = 0;
   }
 
   async request<T = any>(
@@ -117,21 +141,22 @@ class Http {
     options: RequestOptions = {},
   ): Promise<T | null> {
     const key = `${method} ${url} ${options.body || ""}`;
-    if (!options.noCache) {
-      const cached = this.cacheGet(key);
-      if (cached !== undefined) return cached;
-      const pending = this.inflight.get(key);
-      if (pending) return pending;
+    if (options.noCache) {
+      return this.doRequest(method, url, options);
     }
+    const cached = this.cacheGet(key);
+    if (cached !== undefined) return cached;
+    const pending = this.inflight.get(key);
+    if (pending) return pending;
     const promise = this.doRequest(method, url, options)
       .then((result) => {
-        if (result !== null && !options.noCache) {
+        if (result !== null) {
           this.cacheSet(key, result, options.ttl ?? this.defaultTTL());
         }
         return result;
       })
       .finally(() => {
-        this.inflight.delete(key);
+        if (this.inflight.get(key) === promise) this.inflight.delete(key);
       });
     this.inflight.set(key, promise);
     return promise;
@@ -146,7 +171,8 @@ class Http {
     const maxRetries = options.retries ?? 2;
     for (let attempt = 0; ; attempt++) {
       await gate.acquire();
-      let retryWait = -1;
+      // every path that falls through to the delay assigns retryWait first
+      let retryWait!: number;
       try {
         const xhr = await Zotero.HTTP.request(method, url, {
           headers: options.headers,

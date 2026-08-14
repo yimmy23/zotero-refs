@@ -40,9 +40,7 @@ function mapPaper(item: any): RefItem {
   return {
     identifiers: { DOI: item.doiInfo?.doi },
     title: item.title?.text,
-    authors: (item.authors || [])
-      .map((a: any) => a?.[0]?.name)
-      .filter(Boolean),
+    authors: (item.authors || []).map((a: any) => a?.[0]?.name).filter(Boolean),
     year: item.year?.text,
     type: "journalArticle",
     text: item.title?.text,

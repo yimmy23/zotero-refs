@@ -17,7 +17,7 @@ A ground-up rebuild of [zotero-reference](https://github.com/MuiseDestiny/zotero
   - **Search box** filters rows by keywords; double-click the count label to copy everything
   - Per-item persistent cache of parsed/fetched references
 - **Hover popup card** — hover a reference to get title / venue / authors / abstract from several sources at once, with the little **source dots** to switch source (choice remembered per identifier type). Tags for DOI / arXiv / PMID / CNKI / OA-PDF links, citation counts. Text selectable, `Ctrl+wheel` zoom, `Ctrl+click` translation (via Translate for Zotero), dark-mode aware.
-- **PDF reader citation links** — click an in-text link (Fig/Eq/citation) to jump in a **split view** instead of losing your place; hover an in-text citation to see the reference card. Split view toolbar buttons included.
+- **PDF reader citation links** — hooked into Zotero 7+'s native reader overlay system (the pdf.js annotation layer is hidden in modern Zotero): hovering an in-text citation shows our multi-source reference card in place of the native preview; clicking an in-text link (Fig/Eq/citation) jumps in a **split view** instead of losing your reading position (outline/back navigation untouched).
 - **Related papers** — recommendations via the official Semantic Scholar recommendations API with OpenAlex fallback (the original readcube/connectedpapers endpoints are dead), merged with your Zotero related items.
 
 ### New
@@ -61,7 +61,7 @@ License: AGPL-3.0-or-later
 
 - **参考文献面板**（条目面板 + 阅读器右侧栏）：PDF 文本层解析（分栏识别、页眉页脚去除、跨页合并、`Ctrl+刷新` 学位论文模式）或 API 获取（Crossref → Semantic Scholar → OpenAlex → 知网）；单击刷新、再次单击切换 PDF/API、长按忽略缓存；行内操作：单击复制、长按编辑、`Ctrl+单击` 定位/打开、`+` 导入并双向关联（`Ctrl+单击+` 选择分类）、`−` 取消关联；关键词筛选；双击数字复制全部；本地缓存。
 - **悬浮卡片**：多源并发获取标题/期刊/作者/摘要，顶部圆点切换数据源并记忆偏好；DOI/arXiv/PMID/知网/OA-PDF 标签；`Ctrl+滚轮` 缩放、`Ctrl+单击` 翻译（需 Translate for Zotero）；适配深色模式。
-- **阅读器引文链接**：正文跳转链接在**分栏**中打开不丢失阅读位置；悬停正文引文显示参考文献卡片；工具栏分栏按钮。
+- **阅读器引文链接**：接入 Zotero 7+ 阅读器原生 overlay 管线（现代 Zotero 已隐藏 pdf.js 注释层）：悬停正文引文显示多源参考文献卡片（替代原生预览）；点击正文跳转链接在**分栏**中打开、主视图不动（目录/后退导航不受影响）。
 - **相关文献**：官方 Semantic Scholar 推荐 API + OpenAlex 兜底（原 readcube/connectedpapers 接口已失效），并合并 Zotero 已有关联条目。
 
 **新增**：被引用列表（分页）、引文图谱（OpenAlex 数据 + 共被引边的力导向图）、批量导入、导出（文本/Markdown/CSV）、PubMed/OpenAlex/Unpaywall 数据源、请求去重/限速/重试/缓存、O(1) 文库匹配索引。

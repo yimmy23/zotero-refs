@@ -2,7 +2,8 @@ import { config } from "../../package.json";
 import { getLocaleID, getString } from "../utils/locale";
 import { getPref } from "../utils/prefs";
 import { setTimeout, clearTimeout } from "../utils/window";
-import { refStorage } from "../core/storage";
+import { refStorage, itemCacheKey } from "../core/storage";
+import { isChinese } from "../core/text";
 import type { RefItem } from "../core/types";
 import { getReferencesByAPI } from "../sources";
 import { parsePDFReferences } from "../pdf/parser";
@@ -21,42 +22,57 @@ import type { RowContext } from "./rows";
  *   - double-click on the count label: copy all references
  *   - per-row: copy / edit / locate / import(+) / unlink(−) / hover popup
  * New: import-all button, export menu, cached-state indicator, search box.
+ *
+ * The section body is shared and re-rendered as the user switches items, so
+ * every async completion is guarded by an item stamp on the body — a slow
+ * fetch for item A must never paint into item B's panel.
  */
 
 type SourceKind = "PDF" | "API";
 
 interface PanelState {
-  itemKey: string;
+  stateKey: string;
   refs: RefItem[];
+  /** source used for the NEXT fetch */
   source: SourceKind;
+  /** cache slot the currently displayed refs were loaded from */
+  loadedSlot?: SourceKind;
   sourceUsed?: string;
   loading: boolean;
+  importing: boolean;
   loadedOnce: boolean;
 }
 
 const states = new Map<string, PanelState>();
 
 function getState(item: Zotero.Item): PanelState {
-  let state = states.get(item.key);
+  const stateKey = itemCacheKey(item);
+  let state = states.get(stateKey);
   if (!state) {
     state = {
-      itemKey: item.key,
+      stateKey,
       refs: [],
       source: (getPref("prioritySource") as SourceKind) || "PDF",
       loading: false,
+      importing: false,
       loadedOnce: false,
     };
-    states.set(item.key, state);
+    states.set(stateKey, state);
   }
   return state;
+}
+
+/** does the shared section body still show this item? */
+function isCurrent(body: HTMLElement, state: PanelState): boolean {
+  return body.isConnected && body.dataset.itemKey === state.stateKey;
 }
 
 /** the attachment reader open for this top-level item, if any */
 function findReaderForItem(item: Zotero.Item): any {
   try {
     for (const reader of (Zotero.Reader as any)._readers || []) {
-      const readerItem = (Zotero.Items.get(reader.itemID) ||
-        undefined) as Zotero.Item | undefined;
+      const readerItem = (Zotero.Items.get(reader.itemID) || undefined) as
+        Zotero.Item | undefined;
       if (
         readerItem?.parentItem?.key === item.key ||
         readerItem?.key === item.key
@@ -77,7 +93,7 @@ async function fetchReferences(
 ): Promise<RefItem[]> {
   const slot = state.source;
   if (options.useCache) {
-    const cached = await refStorage.get(item.key, slot);
+    const cached = await refStorage.get(item, slot);
     if (cached?.length) {
       new ztoolkit.ProgressWindow(`[Local] ${slot}`, {
         closeOtherProgressWindows: true,
@@ -88,6 +104,7 @@ async function fetchReferences(
         })
         .show();
       state.sourceUsed = `${slot} (cached)`;
+      state.loadedSlot = slot;
       return cached;
     }
   }
@@ -129,8 +146,9 @@ async function fetchReferences(
       popupWin.startCloseTimer(3000);
     }
     state.sourceUsed = "PDF";
+    state.loadedSlot = "PDF";
     if (refs.length && getPref("savePDFReferences")) {
-      void refStorage.set(item.key, "PDF", refs);
+      void refStorage.set(item, "PDF", refs);
     }
     return refs;
   }
@@ -157,8 +175,9 @@ async function fetchReferences(
   });
   popupWin.startCloseTimer(3000);
   state.sourceUsed = result.source;
+  state.loadedSlot = "API";
   if (result.refs.length && getPref("saveAPIReferences")) {
-    void refStorage.set(item.key, "API", result.refs);
+    void refStorage.set(item, "API", result.refs);
   }
   return result.refs;
 }
@@ -174,7 +193,7 @@ function copyAll(state: PanelState) {
 }
 
 function exportRefs(state: PanelState, format: "text" | "markdown" | "csv") {
-  let out = "";
+  let out: string;
   if (format === "text") {
     out = state.refs
       .map((r, i) => `[${r.number || i + 1}] ${r.text || r.title || ""}`)
@@ -219,13 +238,27 @@ function exportRefs(state: PanelState, format: "text" | "markdown" | "csv") {
     .show();
 }
 
+/** keyword AND-filter over refs (same semantics as filterRows) */
+function matchesKeyword(ref: RefItem, index: number, keyword: string): boolean {
+  const keywords = keyword
+    .split(/[ ,，]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => s.toLowerCase());
+  if (!keywords.length) return true;
+  const content = `[${ref.number || index + 1}] ${
+    ref.text || ref.title || ""
+  }`.toLowerCase();
+  return keywords.every((k) => content.includes(k));
+}
+
 function renderList(
   body: HTMLElement,
   item: Zotero.Item,
   state: PanelState,
   setSectionSummary: (s: string) => void,
 ) {
-  const doc = body.ownerDocument!;
+  if (!isCurrent(body, state)) return;
   const list = body.querySelector<HTMLElement>(".references-list");
   const count = body.querySelector<HTMLElement>(".references-count");
   if (!list || !count) return;
@@ -242,28 +275,28 @@ function renderList(
     editable: true,
     onEdited: (ref, index) => {
       state.refs[index] = ref;
-      void refStorage.set(item.key, state.source, state.refs);
+      // persist into the slot the refs were LOADED from — the badge only
+      // selects the next fetch and must not redirect edits
+      void refStorage.set(item, state.loadedSlot ?? state.source, state.refs);
     },
   };
   // chunked rendering keeps the pane responsive for long bibliographies
   const CHUNK = 25;
   let i = 0;
   const renderChunk = () => {
-    if (!list.isConnected) return;
+    if (!list.isConnected || !isCurrent(body, state)) return;
     const end = Math.min(i + CHUNK, state.refs.length);
     for (; i < end; i++) {
       renderRefRow(ctx, state.refs, i);
     }
+    // keep the active filter applied to every chunk as it lands
+    const search = body.querySelector<HTMLInputElement>(
+      ".references-search input",
+    );
+    if (search?.value) filterRows(list, search.value);
     if (i < state.refs.length) setTimeout(renderChunk, 0);
-    else {
-      const search = body.querySelector<HTMLInputElement>(
-        ".references-search input",
-      );
-      if (search?.value) filterRows(list, search.value);
-    }
   };
   renderChunk();
-  void doc;
 }
 
 async function refresh(
@@ -283,6 +316,10 @@ async function refresh(
   state.loading = true;
   try {
     const refs = await fetchReferences(item, state, options);
+    if (!refs.length && !state.refs.length) {
+      state.loadedOnce = true;
+      return;
+    }
     state.refs = refs;
     state.loadedOnce = true;
     renderList(body, item, state, setSectionSummary);
@@ -375,47 +412,50 @@ function buildToolbar(
     getString("refs-import-all-tip"),
   );
   importButton.addEventListener("click", async () => {
-    if (!state.refs.length) return;
-    const search = body.querySelector<HTMLInputElement>(
-      ".references-search input",
+    if (!state.refs.length || state.importing) return;
+    const keyword =
+      body.querySelector<HTMLInputElement>(".references-search input")?.value ||
+      "";
+    // filter applied to the DATA, not to rendered rows (chunked rendering
+    // may not have painted everything yet)
+    const targets = state.refs.filter((ref, i) =>
+      matchesKeyword(ref, i, keyword),
     );
-    // import respects the current filter: only visible rows
-    const list = body.querySelector<HTMLElement>(".references-list")!;
-    const visible: RefItem[] = [];
-    const rows = [...list.querySelectorAll<HTMLElement>(".references-row")];
-    rows.forEach((row, i) => {
-      if (row.style.display !== "none" && state.refs[i]) {
-        visible.push(state.refs[i]);
-      }
-    });
-    const targets = search?.value ? visible : state.refs;
-    const popupWin = new ztoolkit.ProgressWindow(
-      getString("refs-import-all"),
-      { closeTime: -1, closeOtherProgressWindows: true },
-    )
+    if (!targets.length) return;
+    state.importing = true;
+    importButton.disabled = true;
+    const popupWin = new ztoolkit.ProgressWindow(getString("refs-import-all"), {
+      closeTime: -1,
+      closeOtherProgressWindows: true,
+    })
       .createLine({
         text: `0/${targets.length}`,
         type: "default",
         progress: 0,
       })
       .show();
-    const { ok, fail } = await importAll(
-      item,
-      targets,
-      undefined,
-      (done, total, msg) =>
-        popupWin.changeLine({
-          text: `${done}/${total} ${msg}`,
-          progress: (done / total) * 100,
-        }),
-    );
-    popupWin.changeHeadline("[Done] Import");
-    popupWin.changeLine({
-      text: `✓ ${ok}  ✗ ${fail}`,
-      type: fail ? "fail" : "success",
-      progress: 100,
-    });
-    popupWin.startCloseTimer(5000);
+    try {
+      const { ok, fail } = await importAll(
+        item,
+        targets,
+        undefined,
+        (done, total, msg) =>
+          popupWin.changeLine({
+            text: `${done}/${total} ${msg}`,
+            progress: (done / total) * 100,
+          }),
+      );
+      popupWin.changeHeadline("[Done] Import");
+      popupWin.changeLine({
+        text: `✓ ${ok}  ✗ ${fail}`,
+        type: fail ? "fail" : "success",
+        progress: 100,
+      });
+      popupWin.startCloseTimer(5000);
+    } finally {
+      state.importing = false;
+      importButton.disabled = false;
+    }
     renderList(body, item, state, setSectionSummary);
   });
 
@@ -461,8 +501,9 @@ export function registerReferencesSection() {
     onAsyncRender: async ({ body, item, setSectionSummary }) => {
       if (!item?.isRegularItem?.()) return;
       const state = getState(item);
-      // (re)build DOM for this item
+      // (re)build DOM for this item; the stamp guards all later async work
       body.textContent = "";
+      (body as HTMLElement).dataset.itemKey = state.stateKey;
       (body as HTMLElement).classList.add("references-panel");
       buildToolbar(body as HTMLElement, item, state, setSectionSummary);
       const list = body.ownerDocument!.createElement("div");
@@ -472,12 +513,14 @@ export function registerReferencesSection() {
         renderList(body as HTMLElement, item, state, setSectionSummary);
         return;
       }
-      // auto refresh (cache-first) on first view
       if (state.loadedOnce) return;
-      const cached = await refStorage.get(item.key, state.source);
+      // cache-first initial fill
+      const cached = await refStorage.get(item, state.source);
+      if (!isCurrent(body as HTMLElement, state)) return;
       if (cached?.length) {
         state.refs = cached;
         state.loadedOnce = true;
+        state.loadedSlot = state.source;
         state.sourceUsed = `${state.source} (cached)`;
         renderList(body as HTMLElement, item, state, setSectionSummary);
         return;
@@ -486,29 +529,40 @@ export function registerReferencesSection() {
         const excluded = (getPref("notAutoRefreshItemTypes") as string)
           .split(/,\s*/)
           .map((s) => s.trim());
-        if (!excluded.includes(item.itemType)) {
-          await refresh(body as HTMLElement, item, state, setSectionSummary, {
-            useCache: true,
-            fromCurrentPage: false,
-            toggle: false,
-          });
+        if (excluded.includes(item.itemType)) return;
+        // without an open reader the PDF source can only fail — fall back
+        // to API when it can answer, else skip silently (no popup spam
+        // while browsing the library)
+        if (state.source === "PDF" && !findReaderForItem(item)) {
+          const hasDOI = !!(item.getField("DOI") as string)?.trim();
+          const title = (item.getField("title") as string) || "";
+          if (hasDOI || isChinese(title)) {
+            state.source = "API";
+          } else {
+            return;
+          }
         }
+        await refresh(body as HTMLElement, item, state, setSectionSummary, {
+          useCache: true,
+          fromCurrentPage: false,
+          toggle: false,
+        });
       }
     },
   });
 }
 
 /** current parsed references of an item (used by the reader link hover) */
-export function getRefsForItem(itemKey: string): RefItem[] | undefined {
-  const state = states.get(itemKey);
+export function getRefsForItem(item: Zotero.Item): RefItem[] | undefined {
+  const state = states.get(itemCacheKey(item));
   return state?.refs.length ? state.refs : undefined;
 }
 
 /** drop cached panel state (called on notifier item deletes) */
-export function invalidatePanelState(itemKeys?: string[]) {
-  if (!itemKeys) {
+export function invalidatePanelState(stateKeys?: string[]) {
+  if (!stateKeys) {
     states.clear();
     return;
   }
-  for (const key of itemKeys) states.delete(key);
+  for (const key of stateKeys) states.delete(key);
 }

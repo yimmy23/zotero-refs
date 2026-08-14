@@ -51,8 +51,13 @@ function jsonToFormUrlEncoded(json: Record<string, any>): string {
 }
 
 function buildSearchExp(title: string, author?: string): string {
-  let exp = title.includes(" ") ? `(TI %= '${title}')` : `TI %= '${title}'`;
-  if (author) exp += ` AND AU='${author}'`;
+  // quotes would terminate the expert-search string literal
+  const t = title
+    .replace(/['"‘’“”]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  let exp = t.includes(" ") ? `(TI %= '${t}')` : `TI %= '${t}'`;
+  if (author) exp += ` AND AU='${author.replace(/['"]/g, "")}'`;
   return exp;
 }
 
@@ -97,7 +102,13 @@ function mainlandOptions(title: string, author?: string) {
               ],
               ChildItems: [],
             },
-            { Key: "ControlGroup", Title: "", Logic: 0, Items: [], ChildItems: [] },
+            {
+              Key: "ControlGroup",
+              Title: "",
+              Logic: 0,
+              Items: [],
+              ChildItems: [],
+            },
           ],
         },
         ExScope: "1",
@@ -166,7 +177,13 @@ function overseaOptions(title: string, author?: string) {
               ],
               ChildItems: [],
             },
-            { Key: "ControlGroup", Title: "", Logic: 1, Items: [], ChildItems: [] },
+            {
+              Key: "ControlGroup",
+              Title: "",
+              Logic: 1,
+              Items: [],
+              ChildItems: [],
+            },
           ],
         },
         ExScope: 1,
@@ -199,7 +216,10 @@ function parseSearchRows(html: string, overseaHost: boolean): CNKISearchRow[] {
       let url = link.getAttribute("href") || "";
       if (!url) return;
       if (!url.startsWith("http")) {
-        url = (overseaHost ? "https://chn.oversea.cnki.net" : "https://kns.cnki.net") + url;
+        url =
+          (overseaHost
+            ? "https://chn.oversea.cnki.net"
+            : "https://kns.cnki.net") + url;
       }
       const text = (sel: string) =>
         (row.querySelector(sel)?.textContent || "").trim();
@@ -216,9 +236,7 @@ function parseSearchRows(html: string, overseaHost: boolean): CNKISearchRow[] {
         dbname: op?.getAttribute("data-dbname") || undefined,
         filename: op?.getAttribute("data-filename") || undefined,
         exportID:
-          row
-            .querySelector("td.seq input")
-            ?.getAttribute("value") || undefined,
+          row.querySelector("td.seq input")?.getAttribute("value") || undefined,
       });
     } catch {
       /* skip malformed row */
@@ -430,9 +448,7 @@ async function getInfoByTitle(
         if (kw) tags.push(kw);
       });
       const downloadText = (
-        Array.from(
-          doc.querySelectorAll("p.total-inform span"),
-        ) as Element[]
+        Array.from(doc.querySelectorAll("p.total-inform span")) as Element[]
       )
         .map((s) => s.textContent || "")
         .find((t) => t.includes("下载"));

@@ -34,9 +34,9 @@ async function getInfoByArXiv(arxiv: string): Promise<RefItem | null> {
   if (!title) return null;
 
   const abstract = tagText(entry, "summary")?.replace(/\n/g, " ");
-  const authors: string[] = Array.from(entry.getElementsByTagName("author")).map(
-    (a: any) => tagText(a, "name") || "",
-  ).filter(Boolean);
+  const authors: string[] = Array.from(entry.getElementsByTagName("author"))
+    .map((a: any) => tagText(a, "name") || "")
+    .filter(Boolean);
 
   const published = tagText(entry, "published");
   const year = published?.slice(0, 4);

@@ -1,7 +1,8 @@
 import { ReaderLinks } from "./readerLinks";
 import { getRefsForItem } from "../ui/section";
-import { showRefPopup } from "../ui/rows";
+import { getCurrentPopup, showRefPopup } from "../ui/rows";
 import type { RefItem } from "../core/types";
+import { setTimeout } from "../utils/window";
 
 /**
  * Attaches the in-PDF citation link enhancement (split-view jump + hover
@@ -12,11 +13,11 @@ const links = new ReaderLinks();
 
 function refsForReader(reader: any): RefItem[] | undefined {
   try {
-    const readerItem = (Zotero.Items.get(reader.itemID) ||
-      undefined) as Zotero.Item | undefined;
-    const key = readerItem?.parentItem?.key ?? readerItem?.key;
-    if (!key) return undefined;
-    return getRefsForItem(key);
+    const readerItem = (Zotero.Items.get(reader.itemID) || undefined) as
+      Zotero.Item | undefined;
+    const topItem = readerItem?.parentItem ?? readerItem;
+    if (!topItem) return undefined;
+    return getRefsForItem(topItem);
   } catch {
     return undefined;
   }
@@ -30,6 +31,15 @@ export function attachReader(reader: any) {
     (rect, ref) => {
       showRefPopup(ref, rect, "top center");
     },
+    () => {
+      // pointer left the citation link with the card showing: schedule its
+      // removal; entering the card cancels this timer (popup mouseenter)
+      const popup = getCurrentPopup();
+      if (!popup) return;
+      popup.tipTimer = setTimeout(() => {
+        popup.clear();
+      }, popup.removeTipAfterMillisecond);
+    },
   );
 }
 
@@ -37,7 +47,9 @@ export async function attachAllReaders() {
   for (const reader of (Zotero.Reader as any)._readers || []) {
     try {
       await reader._initPromise;
-    } catch {}
+    } catch {
+      // reader init failed — attach will retry on next select
+    }
     attachReader(reader);
   }
 }
@@ -48,7 +60,9 @@ export function onReaderTabSelect(tabID: string) {
     void (async () => {
       try {
         await (reader as any)._initPromise;
-      } catch {}
+      } catch {
+        // reader init failed — attach will retry on next select
+      }
       attachReader(reader);
     })();
   }
@@ -56,4 +70,9 @@ export function onReaderTabSelect(tabID: string) {
 
 export function detachAllReaders() {
   links.detachAll();
+}
+
+/** prune state for readers whose tabs were closed */
+export function sweepReaders() {
+  links.sweep();
 }

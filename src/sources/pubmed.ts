@@ -68,12 +68,26 @@ export const pubmed: MetaSource & {
   },
 
   async getInfoByTitle(title: string): Promise<RefItem | null> {
+    // default esearch order is most-recent-first, which ranks "Author
+    // Correction: X" above X — ask for relevance and skip errata
     const searchUrl =
       `${BASE}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(title)}` +
-      `[Title]&retmode=json&retmax=1`;
+      `[Title]&retmode=json&retmax=3&sort=relevance`;
     const res = await http.getJSON(searchUrl);
     const ids: string[] = res?.esearchresult?.idlist;
     if (!Array.isArray(ids) || !ids.length) return null;
-    return pubmed.getInfoByPMID(ids[0]);
+    for (const id of ids) {
+      const info = await pubmed.getInfoByPMID(id);
+      if (!info) continue;
+      if (
+        /^(author correction|correction|erratum|retraction)/i.test(
+          info.title || "",
+        )
+      ) {
+        continue;
+      }
+      return info;
+    }
+    return null;
   },
 };

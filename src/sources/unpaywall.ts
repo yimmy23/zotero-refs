@@ -28,8 +28,12 @@ export const unpaywall: MetaSource & {
     if (!data) return null;
 
     const identifiers: Identifiers = { DOI: doi };
+    // current (OpenAlex-backed) Unpaywall returns raw_author_name only;
+    // family/name cover the legacy shape
     const authors: string[] = Array.isArray(data.z_authors)
-      ? data.z_authors.map((a: any) => a.family).filter(Boolean)
+      ? data.z_authors
+          .map((a: any) => a.raw_author_name ?? a.family ?? a.name)
+          .filter(Boolean)
       : [];
 
     const oaUrl: string | undefined =
@@ -42,7 +46,7 @@ export const unpaywall: MetaSource & {
       identifiers,
       authors,
       title: data.title,
-      year: data.year !== undefined ? String(data.year) : undefined,
+      year: data.year != null ? String(data.year) : undefined,
       type: TYPE_MAP[data.genre] || "journalArticle",
       primaryVenue: data.journal_name,
       source: "unpaywall",

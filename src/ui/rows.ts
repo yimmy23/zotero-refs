@@ -9,11 +9,7 @@ import {
   extractIdentifiers,
 } from "../core/text";
 import { libraryIndex, isRelated } from "../core/libmatch";
-import {
-  addRelation,
-  importReference,
-  removeRelation,
-} from "../core/importer";
+import { addRelation, importReference, removeRelation } from "../core/importer";
 import { SOURCE_BADGE } from "../core/types";
 import type { RefItem, RefTag } from "../core/types";
 import { infoCandidates } from "../sources";
@@ -43,6 +39,10 @@ export interface RowContext {
 
 let currentPopup: PopupCard | undefined;
 
+export function getCurrentPopup(): PopupCard | undefined {
+  return currentPopup;
+}
+
 export function closePopup() {
   currentPopup?.clear();
   currentPopup = undefined;
@@ -64,13 +64,19 @@ async function localInfo(ref: RefItem, idText?: string): Promise<RefItem> {
       identifiers: ref.identifiers,
       authors: item
         .getCreators()
-        .map((c: any) =>
-          [c.firstName, c.lastName].filter(Boolean).join(" "),
-        ),
+        .map((c: any) => [c.firstName, c.lastName].filter(Boolean).join(" ")),
       tags: item.getTags().map((t: any) => {
-        const colored = ((item.getColoredTags() as unknown as any[]) || []).find(
-          (ct: any) => ct.tag === t.tag,
-        );
+        let colored: any;
+        try {
+          colored =
+            typeof (item as any).getColoredTags === "function"
+              ? (((item as any).getColoredTags() as any[]) || []).find(
+                  (ct: any) => ct.tag === t.tag,
+                )
+              : undefined;
+        } catch {
+          colored = undefined;
+        }
         return colored
           ? ({ text: t.tag, color: colored.color } as RefTag)
           : t.tag;
@@ -374,13 +380,9 @@ function pickCollectionAndAdd(
   try {
     const menuPopup = doc.createXULElement("menupopup") as any;
     doc.documentElement!.append(menuPopup);
-    const collections = Zotero.Collections.getByLibrary(
-      ctx.hostItem.libraryID,
-    );
+    const collections = Zotero.Collections.getByLibrary(ctx.hostItem.libraryID);
     for (const col of collections) {
-      const menuItem = (
-        Zotero.Utilities.Internal as any
-      ).createMenuForTarget(
+      const menuItem = (Zotero.Utilities.Internal as any).createMenuForTarget(
         col,
         menuPopup,
         null,
@@ -417,9 +419,9 @@ export function renderRefRow(
   refIndex: number,
 ): HTMLElement {
   const doc = ctx.list.ownerDocument!;
-  const ref = refs[refIndex];
+  let ref = refs[refIndex];
   const prefixed = ctx.numbered !== false;
-  const refText = prefixed
+  let refText = prefixed
     ? `[${ref.number || refIndex + 1}] ${ref.text || ref.title || ""}`
     : ref.text || ref.title || "";
   const idText =
@@ -427,6 +429,19 @@ export function renderRefRow(
       Object.keys(ref.identifiers).length > 0 &&
       `${Object.keys(ref.identifiers)[0]}: ${Object.values(ref.identifiers)[0]}`) ||
     "Reference";
+
+  // skip rows whose normalized text is already rendered (the original
+  // plugin suppressed duplicates the same way)
+  const normalize = (t: string) => t.replace(/[^一-龥a-zA-Z0-9]/g, "");
+  const dupOf = normalize(refText);
+  if (dupOf) {
+    const labels = ctx.list.querySelectorAll(".references-row-label");
+    for (let li = 0; li < labels.length; li++) {
+      if (normalize(labels[li].textContent || "") === dupOf) {
+        return labels[li].parentElement as HTMLElement;
+      }
+    }
+  }
 
   let opacity = Number(getPref("notInLibraryOpacity"));
   if (!(opacity > 0 && opacity <= 1)) opacity = 1;
@@ -472,9 +487,7 @@ export function renderRefRow(
     const textarea = doc.createElement("textarea");
     textarea.className = "references-row-edit";
     textarea.rows = 4;
-    textarea.value = prefixed
-      ? refText.replace(/^\[\d+\]\s+/, "")
-      : refText;
+    textarea.value = prefixed ? refText.replace(/^\[\d+\]\s+/, "") : refText;
     row.insertBefore(textarea, label);
     textarea.focus();
     const exitEdit = () => {
@@ -492,7 +505,10 @@ export function renderRefRow(
         text: inputText,
         libItemID: undefined,
       };
-      ctx.onEdited?.(refs[refIndex], refIndex);
+      // re-bind the closure so hover/locate/import use the edited data
+      ref = refs[refIndex];
+      refText = label.textContent || inputText;
+      ctx.onEdited?.(ref, refIndex);
     };
     textarea.addEventListener("blur", exitEdit);
     textarea.addEventListener("keydown", (e: KeyboardEvent) => {
@@ -553,6 +569,7 @@ export function renderRefRow(
     row.classList.add("active");
     const delay = Number(getPref("popupDelay")) || 233;
     hoverTimer = setTimeout(() => {
+      if (!row.isConnected) return;
       const rect = row.getBoundingClientRect();
       const position =
         Zotero.Prefs.get("extensions.zotero.layout", true) === "stacked"
@@ -581,7 +598,15 @@ export function renderRefRow(
     if (!popup) return;
     const timeout = popup.removeTipAfterMillisecond;
     popup.tipTimer = setTimeout(() => {
-      if (!ctx.list.querySelector(".active")) popup.clear();
+      // another section may have opened a newer popup meanwhile — only the
+      // instance this timer belongs to may be cleared, and only when no
+      // reference row anywhere is being hovered
+      if (
+        currentPopup === popup &&
+        !doc.querySelector(".references-row.active")
+      ) {
+        popup.clear();
+      }
     }, timeout);
   });
 

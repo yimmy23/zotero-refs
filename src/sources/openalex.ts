@@ -93,18 +93,14 @@ function mapWork(w: any): RefItem {
       ? [{ text: citationCount, color: "#e8710a", tip: "cited_by_count" }]
       : [];
 
-  const oaUrl: string | undefined =
-    w.open_access?.oa_url || undefined;
+  const oaUrl: string | undefined = w.open_access?.oa_url || undefined;
   const url = doi ? `https://doi.org/${doi}` : w.id;
 
   return {
     identifiers,
     title: w.display_name,
     authors,
-    year:
-      w.publication_year !== undefined
-        ? String(w.publication_year)
-        : undefined,
+    year: w.publication_year != null ? String(w.publication_year) : undefined,
     publishDate: w.publication_date,
     primaryVenue: w.primary_location?.source?.display_name,
     citationCount,
@@ -142,10 +138,14 @@ export async function getWorkFull(ids: Identifiers): Promise<OAWork | null> {
   return {
     ref: mapWork(w),
     referencedWorks: Array.isArray(w.referenced_works)
-      ? (w.referenced_works.map((u: string) => bareId(u)).filter(Boolean) as string[])
+      ? (w.referenced_works
+          .map((u: string) => bareId(u))
+          .filter(Boolean) as string[])
       : [],
     relatedWorks: Array.isArray(w.related_works)
-      ? (w.related_works.map((u: string) => bareId(u)).filter(Boolean) as string[])
+      ? (w.related_works
+          .map((u: string) => bareId(u))
+          .filter(Boolean) as string[])
       : [],
   };
 }

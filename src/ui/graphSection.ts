@@ -2,6 +2,7 @@ import { config } from "../../package.json";
 import { getLocaleID, getString } from "../utils/locale";
 import { getPref } from "../utils/prefs";
 import { getWin } from "../utils/window";
+import { itemCacheKey } from "../core/storage";
 import type { GraphData, GraphNode } from "../core/types";
 import { buildGraph } from "../graph/build";
 import { GraphView } from "../graph/view";
@@ -15,6 +16,7 @@ import { identifiersToURL } from "../core/text";
  */
 
 const dataCache = new Map<string, GraphData>();
+/** live GraphView per section body (the body persists across renders) */
 const views = new WeakMap<HTMLElement, GraphView>();
 
 function nodeClicked(node: GraphNode) {
@@ -43,7 +45,7 @@ async function renderGraph(
   const status = body.querySelector<HTMLElement>(".references-graph-status");
   if (!container || !status) return;
 
-  let data = force ? undefined : dataCache.get(item.key);
+  let data = force ? undefined : dataCache.get(itemCacheKey(item));
   if (!data) {
     status.textContent = getString("graph-loading");
     status.style.display = "";
@@ -53,16 +55,24 @@ async function renderGraph(
         status.textContent = msg;
       },
     });
+    // the user may have switched items while OpenAlex was queried
+    if (!container.isConnected) return;
     if (!built) {
       status.textContent = getString("graph-unavailable");
       setSectionSummary("—");
       return;
     }
     data = built;
-    dataCache.set(item.key, data);
+    dataCache.set(itemCacheKey(item), data);
   }
   status.style.display = "none";
-  let view = views.get(container);
+  // one live view per body: destroy the previous render's view (its
+  // simulation, ResizeObserver and theme listener) before creating a new one
+  let view = views.get(body);
+  if (view && (view as any).container !== container) {
+    view.destroy();
+    view = undefined;
+  }
   if (!view) {
     view = new GraphView(container, {
       onSelect: nodeClicked,
@@ -80,7 +90,7 @@ async function renderGraph(
         }
       },
     });
-    views.set(container, view);
+    views.set(body, view);
   }
   view.setData(data);
   setSectionSummary(`${data.nodes.length}`);
@@ -145,7 +155,7 @@ export function registerGraphSection() {
   });
 }
 
-export function invalidateGraph(itemKeys?: string[]) {
-  if (!itemKeys) dataCache.clear();
-  else for (const key of itemKeys) dataCache.delete(key);
+export function invalidateGraph(stateKeys?: string[]) {
+  if (!stateKeys) dataCache.clear();
+  else for (const key of stateKeys) dataCache.delete(key);
 }

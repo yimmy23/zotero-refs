@@ -1,5 +1,10 @@
 import { http, politeEmail } from "../core/http";
-import { htmlToText, identifiersToURL, refTextToInfo } from "../core/text";
+import {
+  htmlToText,
+  identifiersToURL,
+  normalizeTitle,
+  refTextToInfo,
+} from "../core/text";
 import type { Identifiers, MetaSource, RefItem, RefTag } from "../core/types";
 
 /**
@@ -72,8 +77,7 @@ function mapWork(w: any): RefItem {
 
   const dateParts =
     w.published?.["date-parts"]?.[0] || w.created?.["date-parts"]?.[0];
-  const year =
-    dateParts?.[0] !== undefined ? String(dateParts[0]) : undefined;
+  const year = dateParts?.[0] !== undefined ? String(dateParts[0]) : undefined;
   const publishDate = dateParts?.length ? dateParts.join("-") : undefined;
 
   const refCount = w["is-referenced-by-count"];
@@ -122,15 +126,21 @@ export const crossref: MetaSource & {
 
   async getInfoByTitle(title: string): Promise<RefItem | null> {
     const url = withMailto(
-      `${BASE}/works?query.bibliographic=${encodeURIComponent(
-        title,
-      )}&rows=5`,
+      `${BASE}/works?query.bibliographic=${encodeURIComponent(title)}&rows=5`,
     );
     const res = await http.getJSON(url);
     const items: any[] = res?.message?.items;
     if (!Array.isArray(items) || !items.length) return null;
-    const item = items.find((it) => it.type !== "component");
-    return item ? mapWork(item) : null;
+    // derivative records (peer reviews, datasets like Faculty Opinions
+    // recommendations) often outrank the actual article
+    const SKIP_TYPES = new Set(["component", "peer-review", "dataset"]);
+    const candidates = items.filter((it) => !SKIP_TYPES.has(it.type));
+    if (!candidates.length) return null;
+    const want = normalizeTitle(title);
+    const exact = candidates.find(
+      (it) => normalizeTitle(it.title?.[0]) === want,
+    );
+    return mapWork(exact || candidates[0]);
   },
 
   async getReferences(ids: Identifiers): Promise<RefItem[] | null> {

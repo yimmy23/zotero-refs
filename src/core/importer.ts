@@ -39,13 +39,33 @@ export async function createItemFromInfo(
   if (info.title) item.setField("title", info.title);
   if (info.year) item.setField("date", String(info.year));
   if (info.publishDate) item.setField("date", String(info.publishDate));
-  if (info.primaryVenue && item.itemType === "journalArticle") {
+  const typeID = item.itemTypeID;
+  const validField = (field: string) => {
+    try {
+      return Zotero.ItemFields.isValidForType(
+        Zotero.ItemFields.getID(field),
+        typeID,
+      );
+    } catch {
+      return false;
+    }
+  };
+  if (info.primaryVenue && validField("publicationTitle")) {
     item.setField("publicationTitle", info.primaryVenue);
   }
   if (info.abstract) item.setField("abstractNote", info.abstract);
   if (info.url) item.setField("url", info.url);
-  if (info.identifiers.DOI && item.itemType === "journalArticle") {
-    item.setField("DOI", info.identifiers.DOI);
+  if (info.identifiers.DOI) {
+    // preprint / conferencePaper also carry DOI fields in Zotero 7+
+    if (validField("DOI")) {
+      item.setField("DOI", info.identifiers.DOI);
+    } else {
+      const extra = item.getField("extra") as string;
+      item.setField(
+        "extra",
+        `${extra ? extra + "\n" : ""}DOI: ${info.identifiers.DOI}`,
+      );
+    }
   }
   const creators: any[] = [];
   for (const name of info.authors || []) {
@@ -102,19 +122,19 @@ export async function importReference(
     const rows = await searchCNKI(ref.title || text);
     if (rows?.[0]) {
       refItem = await importCNKIItem(rows[0], libraryID, cols);
-      if (refItem) {
-        libraryIndex.invalidate();
-        return refItem;
-      }
+      if (refItem) return refItem;
     }
     const info = await sources.cnki.getInfoByTitle?.(ref.title || text, text);
     if (info) {
       refItem = await createItemFromInfo(
-        { ...ref, ...info, identifiers: { ...ref.identifiers, ...info.identifiers } },
+        {
+          ...ref,
+          ...info,
+          identifiers: { ...ref.identifiers, ...info.identifiers },
+        },
         cols,
         libraryID,
       );
-      libraryIndex.invalidate();
       return refItem;
     }
     return null;
@@ -141,17 +161,13 @@ export async function importReference(
       ztoolkit.log("[importer] translate failed", e);
       refItem = null;
     }
-    if (refItem) {
-      libraryIndex.invalidate();
-      return refItem;
-    }
+    if (refItem) return refItem;
   }
 
   // 4. last resort: create from whatever metadata we have
   if (ref.title && (ref.authors?.length || ref.year)) {
     onStatus?.(`Creating item: ${ref.title}`);
     refItem = await createItemFromInfo(ref, cols, libraryID);
-    libraryIndex.invalidate();
     return refItem;
   }
   return null;

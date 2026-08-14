@@ -232,7 +232,9 @@ export class GraphView {
     this.resizeObs = null;
     try {
       this.darkQuery?.removeEventListener("change", this.onThemeChange);
-    } catch {}
+    } catch {
+      // ignore: view may already be torn down
+    }
     this.darkQuery = null;
     this.svg.removeEventListener("wheel", this.onWheel);
     this.svg.removeEventListener("pointerdown", this.onBackgroundDown);
@@ -442,11 +444,15 @@ export class GraphView {
       this.svg.removeEventListener("pointercancel", up);
       try {
         this.svg.releasePointerCapture(ev.pointerId);
-      } catch {}
+      } catch {
+        // ignore: view may already be torn down
+      }
     };
     try {
       this.svg.setPointerCapture(ev.pointerId);
-    } catch {}
+    } catch {
+      // ignore: view may already be torn down
+    }
     this.svg.addEventListener("pointermove", move);
     this.svg.addEventListener("pointerup", up);
     this.svg.addEventListener("pointercancel", up);
@@ -485,7 +491,9 @@ export class GraphView {
         circle.removeEventListener("pointercancel", up);
         try {
           circle.releasePointerCapture(ev.pointerId);
-        } catch {}
+        } catch {
+          // ignore: view may already be torn down
+        }
         dragOccurred = dragging;
         if (dragging) {
           this.sim?.alphaTarget(0);
@@ -499,7 +507,9 @@ export class GraphView {
       };
       try {
         circle.setPointerCapture(ev.pointerId);
-      } catch {}
+      } catch {
+        // ignore: view may already be torn down
+      }
       circle.addEventListener("pointermove", move);
       circle.addEventListener("pointerup", up);
       circle.addEventListener("pointercancel", up);
