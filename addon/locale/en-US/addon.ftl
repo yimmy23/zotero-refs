@@ -59,3 +59,16 @@ graph-legend-reference = references
 graph-legend-citation = citing works
 graph-legend-related = related
 graph-legend-hint = solid = in your library
+
+import-confirm = Import { $count } references into your library and relate them to this item? Attachments are downloaded per your Zotero settings. Click the progress window to stop midway.
+import-cancel-hint = Click here to stop
+import-cancelled = Stopped — { $ok } imported, { $left } left untouched
+
+row-tip = Click: copy · Hold: edit · Ctrl/⌘+click: locate in library or open online · Hover: details
+row-tip-readonly = Click: copy · Ctrl/⌘+click: locate in library or open online · Hover: details
+row-import-tip = Import into library and relate to this item · Ctrl/⌘+click: choose collection
+row-unlink-tip = Remove the relation (the item stays in your library)
+retracted-badge = RETRACTED
+retracted-tip = Flagged as retracted by OpenAlex / PubMed
+retracted-import-confirm = This work is flagged as RETRACTED. Import it anyway?
+citations-filter-placeholder = Filter citing works…

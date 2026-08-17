@@ -1,4 +1,4 @@
-pref-title = References Settings
+pref-title = Refs Settings
 
 pref-group-refresh = Reference List
 pref-autoRefresh =
@@ -14,7 +14,7 @@ pref-savePDFReferences =
     .label = Cache references parsed from PDF
 pref-saveAPIReferences =
     .label = Cache references fetched from web APIs
-pref-notInLibraryOpacity = Row opacity for references not in the library (0–1)
+pref-notInLibraryOpacity = Row opacity for references not in your library (0.1–1)
 
 pref-group-popup = Hover Popup
 pref-showPopup =
@@ -46,9 +46,9 @@ pref-graphEnable =
 pref-graphMaxNodes = Maximum nodes in the graph
 
 pref-group-network = Network
-pref-email = Contact email for polite API pools (Crossref / OpenAlex / Unpaywall)
+pref-email = Contact email (Crossref / OpenAlex / Unpaywall grant faster, more reliable access — the "polite pool")
 pref-s2ApiKey = Semantic Scholar API key (optional)
-pref-cacheTTLHours = API cache lifetime (hours)
+pref-cacheTTLHours = Network response cache lifetime (hours, this session only; reference lists are cached separately)
 
 pref-group-cnki = CNKI 知网研学 (only for CNKI reference lists)
 pref-cnki-username = Username

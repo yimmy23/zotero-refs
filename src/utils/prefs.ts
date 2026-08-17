@@ -34,3 +34,13 @@ export function setPref<K extends keyof PluginPrefsMap>(
 export function clearPref(key: string) {
   return Zotero.Prefs.clear(`${PREFS_PREFIX}.${key}`, true);
 }
+
+/**
+ * Numeric pref with explicit-zero support: `Number(v) || dflt` treats a
+ * deliberate 0 as "unset", which silently re-enables delays the user
+ * turned off. NaN / negative fall back to the default.
+ */
+export function getNumPref(key: Parameters<typeof getPref>[0], dflt: number): number {
+  const v = Number(getPref(key));
+  return Number.isFinite(v) && v >= 0 ? v : dflt;
+}

@@ -1,4 +1,4 @@
-import { getPref } from "../utils/prefs";
+import { getNumPref, getPref } from "../utils/prefs";
 
 /**
  * HTTP layer shared by all metadata sources.
@@ -21,6 +21,8 @@ interface RequestOptions {
   /** include credentials (cookies) */
   credentials?: boolean;
   noCache?: boolean;
+  /** max bytes of the request body Zotero.HTTP may write to debug logs (0 = none) */
+  logBodyLength?: number;
 }
 
 interface CacheEntry {
@@ -67,14 +69,17 @@ class HostGate {
   }
 }
 
+/** cached marker for "this lookup failed recently" */
+const NULL_SENTINEL = Object.freeze({ __refsNull: true });
+const NULL_TTL = 10 * 60 * 1000;
+
 class Http {
   private cache = new Map<string, CacheEntry>();
   private inflight = new Map<string, Promise<any>>();
   private gates = new Map<string, HostGate>();
 
   private defaultTTL() {
-    const hours = Number(getPref("cacheTTLHours")) || 168;
-    return hours * 3600 * 1000;
+    return getNumPref("cacheTTLHours", 168) * 3600 * 1000;
   }
 
   private gateFor(url: string) {
@@ -145,6 +150,7 @@ class Http {
       return this.doRequest(method, url, options);
     }
     const cached = this.cacheGet(key);
+    if (cached === NULL_SENTINEL) return null;
     if (cached !== undefined) return cached;
     const pending = this.inflight.get(key);
     if (pending) return pending;
@@ -152,6 +158,10 @@ class Http {
       .then((result) => {
         if (result !== null) {
           this.cacheSet(key, result, options.ttl ?? this.defaultTTL());
+        } else if (options.ttl !== 0) {
+          // negative cache: a 404 / failed lookup is not retried on every
+          // re-hover; short TTL so a transient outage heals itself
+          this.cacheSet(key, NULL_SENTINEL, NULL_TTL);
         }
         return result;
       })
@@ -180,6 +190,9 @@ class Http {
           responseType: options.responseType ?? "json",
           timeout: options.timeout ?? DEFAULT_TIMEOUT,
           successCodes: false,
+          ...(options.logBodyLength !== undefined
+            ? { logBodyLength: options.logBodyLength }
+            : {}),
           ...(options.credentials ? { credentials: "include" as any } : {}),
         });
         const status = xhr.status;

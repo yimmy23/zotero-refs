@@ -36,7 +36,7 @@ panel-export-tip = 复制列表 — 单击：纯文本 · Ctrl+单击：Markdown
 panel-export-done = 参考文献已复制
 panel-search-placeholder = 筛选参考文献…
 
-citations-count-suffix = 条被引
+citations-count-suffix = 篇引证文献
 citations-load-more = 加载更多
 
 related-count-suffix = 篇相关文献
@@ -56,6 +56,19 @@ menu-copy-refs =
 
 graph-legend-origin = 本文
 graph-legend-reference = 参考文献
-graph-legend-citation = 被引
+graph-legend-citation = 引证文献
 graph-legend-related = 相关
 graph-legend-hint = 实心 = 已在文库
+
+import-confirm = 将 { $count } 条参考文献导入文库并与本条目关联？附件按 Zotero 设置自动下载。导入过程中点击进度窗口可随时停止。
+import-cancel-hint = 点击此处停止
+import-cancelled = 已停止——已导入 { $ok } 条，其余 { $left } 条未处理
+
+row-tip = 单击：复制 · 长按：编辑 · Ctrl/⌘+单击：在文库中定位或在线打开 · 悬停：详情
+row-tip-readonly = 单击：复制 · Ctrl/⌘+单击：在文库中定位或在线打开 · 悬停：详情
+row-import-tip = 导入文库并与本条目关联 · Ctrl/⌘+单击：选择分类
+row-unlink-tip = 取消关联（条目仍保留在文库中）
+retracted-badge = 已撤稿
+retracted-tip = OpenAlex / PubMed 标记为已撤稿
+retracted-import-confirm = 该文献已被标记为撤稿，仍要导入吗？
+citations-filter-placeholder = 筛选引证文献…

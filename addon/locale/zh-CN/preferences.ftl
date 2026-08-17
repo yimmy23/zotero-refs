@@ -1,10 +1,10 @@
-pref-title = References 设置
+pref-title = Refs 设置
 
 pref-group-refresh = 参考文献列表
 pref-autoRefresh =
-    .label = 打开条目时自动抓取参考文献
-pref-notAutoRefreshItemTypes = 下述条目类型不自动抓取（英文类型名，逗号分隔）
-pref-prioritySource = 首次抓取的优先数据源
+    .label = 打开条目时自动获取参考文献
+pref-notAutoRefreshItemTypes = 以下条目类型不自动获取（英文类型名，逗号分隔）
+pref-prioritySource = 首次获取的优先数据源
 pref-source-pdf =
     .label = PDF
 pref-source-api =
@@ -14,7 +14,7 @@ pref-savePDFReferences =
     .label = 缓存 PDF 解析出的参考文献
 pref-saveAPIReferences =
     .label = 缓存 API 获取的参考文献
-pref-notInLibraryOpacity = 未入库参考文献的行透明度（0–1）
+pref-notInLibraryOpacity = 未入库参考文献行的不透明度（0.1–1，1 为完全不透明）
 
 pref-group-popup = 悬浮卡片
 pref-showPopup =
@@ -37,18 +37,18 @@ pref-hoverLink =
 
 pref-group-sections = 扩展面板
 pref-loadingRelated =
-    .label = 加载相关文献推荐
+    .label = 自动获取相关文献推荐
 pref-loadingCitations =
-    .label = 自动加载“被引用”列表
-pref-citationsPageSize = 每页被引条数
+    .label = 自动获取“被引用”列表
+pref-citationsPageSize = “被引用”每页条数
 pref-graphEnable =
     .label = 启用引文图谱面板
 pref-graphMaxNodes = 图谱最大节点数
 
 pref-group-network = 网络
-pref-email = API 礼貌池联系邮箱（Crossref / OpenAlex / Unpaywall）
+pref-email = 联系邮箱（Crossref / OpenAlex / Unpaywall 据此提高请求配额与稳定性）
 pref-s2ApiKey = Semantic Scholar API 密钥（可选）
-pref-cacheTTLHours = API 缓存有效期（小时）
+pref-cacheTTLHours = 网络响应缓存有效期（小时，仅本次运行；参考文献列表另有持久缓存）
 
 pref-group-cnki = 知网研学（仅用于获取知网参考文献列表）
 pref-cnki-username = 用户名

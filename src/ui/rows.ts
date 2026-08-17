@@ -1,4 +1,4 @@
-import { getPref } from "../utils/prefs";
+import { getNumPref, getPref } from "../utils/prefs";
 import { getString } from "../utils/locale";
 import { getWin, setTimeout, clearTimeout } from "../utils/window";
 import {
@@ -6,6 +6,7 @@ import {
   htmlToText,
   identifiersToURL,
   isChinese,
+  isHttpUrl,
   refTextToInfo,
   extractIdentifiers,
 } from "../core/text";
@@ -39,6 +40,10 @@ export interface RowContext {
 }
 
 let currentPopup: PopupCard | undefined;
+
+/** per-list normalized-text -> row, for O(1) duplicate suppression */
+const seenByList = new WeakMap<HTMLElement, Map<string, HTMLElement>>();
+let pendingSeenKey: string | undefined;
 
 export function getCurrentPopup(): PopupCard | undefined {
   return currentPopup;
@@ -143,7 +148,7 @@ export function showRefPopup(
         );
         if (info.source) {
           tags.push({
-            text: info.source,
+            text: SOURCE_NAME[info.source] || info.source,
             color: SOURCE_BADGE[info.source]?.color || "#59C1BD",
             tip: SOURCE_BADGE[info.source]?.tip,
             source: info.source,
@@ -188,6 +193,16 @@ export function showRefPopup(
             color: "#00b8a9",
             tip: "Open Access PDF",
             url: info.oaUrl,
+          });
+        }
+        if (info.retracted) {
+          // remember on the row's ref so the row badge and import warning
+          // pick it up even when the list source didn't know
+          ref.retracted = true;
+          tags.unshift({
+            text: getString("retracted-badge"),
+            color: "#c8102e",
+            tip: getString("retracted-tip"),
           });
         }
         if (ref.libItemID) {
@@ -248,6 +263,13 @@ export function showRefPopup(
 
 function setActionState(action: HTMLElement, state: "+" | "-" | "") {
   action.textContent = state;
+  action.title =
+    state === "+"
+      ? getString("row-import-tip")
+      : state === "-"
+        ? getString("row-unlink-tip")
+        : "";
+  action.setAttribute("aria-label", action.title);
   action.style.opacity = state === "" ? "0.23" : "1";
   action.classList.toggle("is-plus", state === "+");
   action.classList.toggle("is-minus", state === "-");
@@ -267,7 +289,7 @@ async function locateReference(ref: RefItem, libraryID: number) {
     win.ZoteroPane.selectItem(local.id);
     return;
   }
-  let url = ref.url || identifiersToURL(ref.identifiers);
+  let url = (isHttpUrl(ref.url) ? ref.url : undefined) || identifiersToURL(ref.identifiers);
   if (!url) {
     const popupWin = new ztoolkit.ProgressWindow("Searching URL", {
       closeTime: -1,
@@ -288,12 +310,7 @@ async function locateReference(ref: RefItem, libraryID: number) {
       popupWin.close();
     }
   }
-  if (url) {
-    new ztoolkit.ProgressWindow("Launching URL", {
-      closeOtherProgressWindows: true,
-    })
-      .createLine({ text: url, type: "default" })
-      .show();
+  if (isHttpUrl(url)) {
     Zotero.launchURL(url);
   } else {
     new ztoolkit.ProgressWindow("References")
@@ -465,12 +482,17 @@ export function renderRefRow(
   const normalize = (t: string) => t.replace(/[^一-龥a-zA-Z0-9]/g, "");
   const dupOf = normalize(refText);
   if (dupOf) {
-    const labels = ctx.list.querySelectorAll(".references-row-label");
-    for (let li = 0; li < labels.length; li++) {
-      if (normalize(labels[li].textContent || "") === dupOf) {
-        return labels[li].parentElement as HTMLElement;
-      }
+    // O(1) membership on a per-list set (reset whenever the list is
+    // emptied) instead of re-normalizing every rendered label per row
+    let seenSet = seenByList.get(ctx.list);
+    if (!seenSet || !ctx.list.childElementCount) {
+      seenSet = new Map();
+      seenByList.set(ctx.list, seenSet);
     }
+    const dup = seenSet.get(dupOf);
+    if (dup?.isConnected) return dup;
+    // registered below once the row exists
+    pendingSeenKey = dupOf;
   }
 
   let opacity = Number(getPref("notInLibraryOpacity"));
@@ -478,6 +500,10 @@ export function renderRefRow(
 
   const row = doc.createElement("div");
   row.className = "references-row zotero-clicky";
+  if (pendingSeenKey) {
+    seenByList.get(ctx.list)?.set(pendingSeenKey, row);
+    pendingSeenKey = undefined;
+  }
   if (ctx.compact) row.classList.add("compact");
   row.style.opacity = String(opacity);
 
@@ -489,7 +515,17 @@ export function renderRefRow(
   const label = doc.createElement("div");
   label.className = "references-row-label";
   label.textContent = refText;
+  label.title = getString(ctx.editable ? "row-tip" : "row-tip-readonly");
   row.append(label);
+  const markRetracted = () => {
+    if (!ref.retracted || row.querySelector(".references-retracted")) return;
+    const flag = doc.createElement("span");
+    flag.className = "references-retracted";
+    flag.textContent = getString("retracted-badge");
+    flag.title = getString("retracted-tip");
+    label.prepend(flag, " ");
+  };
+  markRetracted();
 
   const action = doc.createElement("span");
   action.className = "references-row-action zotero-clicky";
@@ -590,6 +626,16 @@ export function renderRefRow(
     event.stopPropagation();
     const state = action.textContent;
     if (state === "+") {
+      if (
+        ref.retracted &&
+        !Services.prompt.confirm(
+          getWin() as any,
+          getString("retracted-badge"),
+          getString("retracted-import-confirm"),
+        )
+      ) {
+        return;
+      }
       if (event.ctrlKey || event.metaKey) {
         pickCollectionAndAdd(ctx, ref, action, row);
       } else {
@@ -605,7 +651,7 @@ export function renderRefRow(
   row.addEventListener("mouseenter", () => {
     if (!getPref("showPopup")) return;
     row.classList.add("active");
-    const delay = Number(getPref("popupDelay")) || 233;
+    const delay = getNumPref("popupDelay", 233);
     hoverTimer = setTimeout(() => {
       if (!row.isConnected) return;
       const rect = row.getBoundingClientRect();

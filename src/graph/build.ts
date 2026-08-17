@@ -1,4 +1,5 @@
 import { libraryIndex } from "../core/libmatch";
+import { hostIdentifiers } from "../core/text";
 import type { GraphData, GraphEdge, GraphNode } from "../core/types";
 import { getWorkFull, getWorksBatch, openalex } from "../sources/openalex";
 
@@ -24,16 +25,16 @@ export async function buildGraph(
 ): Promise<GraphData | null> {
   const onStatus = opts.onStatus;
   try {
-    const DOI = ((item.getField("DOI") as string) || "").trim();
-    if (!DOI) {
-      ztoolkit.log("[graph] item has no DOI, cannot build graph");
+    const hostIds = hostIdentifiers(item);
+    if (!hostIds.DOI && !hostIds.PMID) {
+      ztoolkit.log("[graph] item has no DOI/PMID, cannot build graph");
       return null;
     }
 
     onStatus?.("Looking up work on OpenAlex…");
-    const origin = await getWorkFull({ DOI });
+    const origin = await getWorkFull(hostIds);
     if (!origin) {
-      ztoolkit.log(`[graph] OpenAlex work not found for DOI ${DOI}`);
+      ztoolkit.log(`[graph] OpenAlex work not found for`, hostIds);
       return null;
     }
     const originId = origin.ref.identifiers.openAlex;
@@ -58,7 +59,9 @@ export async function buildGraph(
     const refWorksOf = new Map<string, Set<string>>();
 
     onStatus?.(`Loading ${origin.referencedWorks.length} references…`);
-    const refMap = await getWorksBatch(origin.referencedWorks, true);
+    const refMap = await getWorksBatch(origin.referencedWorks, true, {
+      lean: true,
+    });
     for (const [wid, work] of refMap) {
       if (wid === originId || nodes.has(wid)) continue;
       nodes.set(wid, {
@@ -85,6 +88,8 @@ export async function buildGraph(
     onStatus?.("Loading related works…");
     const relMap = await getWorksBatch(
       origin.relatedWorks.slice(0, RELATED_LIMIT),
+      false,
+      { lean: true },
     );
     for (const [wid, work] of relMap) {
       if (wid === originId || nodes.has(wid)) continue;

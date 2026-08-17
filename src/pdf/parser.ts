@@ -1,4 +1,4 @@
-import { refTextToInfo } from "../core/text";
+import { refTextToInfo, isHttpUrl } from "../core/text";
 import type { RefItem } from "../core/types";
 import { getPref } from "../utils/prefs";
 
@@ -300,7 +300,11 @@ function updateItemsAnnotions(items: PDFItem[], annotations: PDFAnnotation[]) {
       const [x, y] = item.transform.slice(4);
       const itemBox = toBox([x, y, x + item.width, y + item.height]);
       if (isIntersect(annoBox, itemBox)) {
-        item.url = annotation.url || annotation.unsafeUrl;
+        // pdf.js `url` is scheme-whitelisted; `unsafeUrl` is the raw /URI
+        // string of an untrusted PDF — never let file:/smb:/custom
+        // schemes into a reference (they get persisted and launched)
+        const raw = annotation.url || annotation.unsafeUrl;
+        if (isHttpUrl(raw)) item.url = raw;
       }
     });
   });
@@ -745,6 +749,7 @@ export async function parsePDFReferences(
         ...refTextToInfo(text),
         x: line._x,
         y: line.y + line.height,
+        page: line.pageNum,
         number: numMatch ? Number(numMatch[1]) : i + 1,
       };
       // a link annotation on the line beats the URL parsed from the text

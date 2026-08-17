@@ -2,7 +2,7 @@ import { config } from "../../package.json";
 import { getLocaleID, getString } from "../utils/locale";
 import { getPref } from "../utils/prefs";
 import { refStorage } from "../core/storage";
-import { importAll } from "../core/importer";
+import { runBatchImport } from "../ui/batchImport";
 import { getReferencesByAPI } from "../sources";
 import type { RefItem } from "../core/types";
 
@@ -79,29 +79,15 @@ async function importAction(items: Zotero.Item[]) {
         .show();
       continue;
     }
-    const popupWin = new ztoolkit.ProgressWindow(
-      getString("menu-import-refs", "label"),
-      { closeTime: -1, closeOtherProgressWindows: true },
-    )
-      .createLine({ text: `0/${refs.length}`, type: "default", progress: 0 })
-      .show();
-    const { ok, fail } = await importAll(
+    const result = await runBatchImport(
       item,
       refs,
-      undefined,
-      (done, total, msg) =>
-        popupWin.changeLine({
-          text: `${done}/${total} ${msg}`,
-          progress: (done / total) * 100,
-        }),
+      `${getString("menu-import-refs", "label")} · ${(
+        item.getField("title") as string
+      ).slice(0, 40)}`,
     );
-    popupWin.changeHeadline("[Done]");
-    popupWin.changeLine({
-      text: `✓ ${ok}  ✗ ${fail}`,
-      type: fail ? "fail" : "success",
-      progress: 100,
-    });
-    popupWin.startCloseTimer(4000);
+    // declined or cancelled: stop the whole multi-item run, not just this one
+    if (!result || result.stopped) break;
   }
 }
 

@@ -1,4 +1,4 @@
-import { isChinese, normalizeTitle } from "../core/text";
+import { hostIdentifiers, isChinese, normalizeTitle } from "../core/text";
 import type {
   Identifiers,
   MetaSource,
@@ -107,15 +107,17 @@ export async function getReferencesByAPI(
   item: Zotero.Item,
   onStatus?: (msg: string) => void,
 ): Promise<{ refs: RefItem[]; source: string } | null> {
-  const DOI = (item.getField("DOI") as string)?.trim();
   const title = (item.getField("title") as string) || "";
   const url = (item.getField("url") as string) || "";
-  const ids: Identifiers = {};
-  if (DOI) ids.DOI = DOI;
+  const ids: Identifiers = hostIdentifiers(item);
   if (/cnki/i.test(url)) ids.CNKI = url;
 
-  if (ids.DOI) {
-    for (const src of [crossref, semanticscholar, openalex]) {
+  if (ids.DOI || ids.PMID || ids.arXiv) {
+    // Crossref only knows DOIs; S2 / OpenAlex resolve PMID and arXiv too
+    const chain = ids.DOI
+      ? [crossref, semanticscholar, openalex]
+      : [semanticscholar, openalex];
+    for (const src of chain) {
       onStatus?.(`Requesting ${src.id} references…`);
       try {
         const refs = await src.getReferences?.(ids, title);

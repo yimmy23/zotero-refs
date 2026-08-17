@@ -49,19 +49,39 @@ interface ReaderState {
   pointerListener?: (event: any) => void;
 }
 
-/** reference whose stored PDF anchor (x, y) is nearest to the destination */
-function nearestRef(refs: RefItem[], x: number, y: number): RefItem | null {
+/**
+ * Reference whose stored PDF anchor is nearest to the link destination.
+ * Anchors are page-local PDF-space coordinates, so the page must match
+ * when both sides know it (multi-page bibliographies), and the hit must be
+ * genuinely close: a figure/equation/section link points nowhere near a
+ * bibliography entry and must keep Zotero's native preview instead.
+ */
+const MAX_ANCHOR_DIST = 60; // PDF points (~2 text lines)
+function nearestRef(
+  refs: RefItem[],
+  x: number,
+  y: number,
+  pageIndex?: number,
+): RefItem | null {
   let best: RefItem | null = null;
   let bestD = Infinity;
   for (const ref of refs) {
     if (typeof ref.x !== "number" || typeof ref.y !== "number") continue;
-    const d = (x - ref.x) ** 2 + (y - ref.y) ** 2;
+    if (
+      typeof pageIndex === "number" &&
+      typeof ref.page === "number" &&
+      ref.page !== pageIndex
+    ) {
+      continue;
+    }
+    // vertical distance dominates: entries stack; x differs only by indent
+    const d = (x - ref.x) ** 2 * 0.25 + (y - ref.y) ** 2;
     if (d < bestD) {
       bestD = d;
       best = ref;
     }
   }
-  return best;
+  return best && Math.sqrt(bestD) <= MAX_ANCHOR_DIST ? best : null;
 }
 
 /** [x1,y1,x2,y2] | DOMRect-ish -> {x1,y1,x2,y2} */
@@ -274,7 +294,14 @@ export class ReaderLinks {
             const destPos = overlayDestPosition(overlayPopup);
             const destRect = destPos?.rects?.[0];
             if (refs?.length && Array.isArray(destRect)) {
-              const ref = nearestRef(refs, destRect[0], destRect[3]);
+              const ref = nearestRef(
+                refs,
+                destRect[0],
+                destRect[3],
+                typeof destPos.pageIndex === "number"
+                  ? destPos.pageIndex
+                  : undefined,
+              );
               if (ref) {
                 const rect = toMainWindowRect(win, overlayPopup.rect);
                 if (rect) {

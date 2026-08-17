@@ -40,6 +40,12 @@ npm start         # dev build + hot reload in an ISOLATED Zotero profile
 8. **Reader integration must go through the overlay pipeline** (`_onSetOverlayPopup` + `navigate` wrap). The pdf.js annotation layer is hidden in Zotero 7+ (`display:none`) and `reader.menuCmd` / `secondViewIframeWindow` no longer exist in Z9. Teardown must restore every monkey-patched original and sweep closed readers.
 9. **zotero-plugin-toolkit ≥5**: no `ZoteroToolkit` main export, no `ztoolkit.Menu`. We compose `MyToolkit` from BasicTool/UITool/ProgressWindowHelper/ClipboardHelper and use the native `Zotero.MenuManager` (Z8+) with a DOM fallback for Z7.
 10. **AGPL-3.0**: the PDF parser is ported from AGPL zotero-reference — the project cannot be relicensed permissively. Keep the license header intact.
+11. **URLs from outside are hostile.** Anything that came from a PDF (`unsafeUrl`), a remote API, or the cache file must pass `isHttpUrl()` (core/text.ts) before it is persisted, written into an item, or handed to `Zotero.launchURL` — Zotero forwards file:/smb:/custom schemes to the OS. `storage.ts` re-sanitizes every ref on load and save.
+12. **Never `await` a settle-delay or a network fetch inside `onAsyncRender`.** Zotero awaits each pane's asyncRender in sequence; schedule the fetch with `setTimeout` and return. Item-switch detection = the render's `list.isConnected` (the shared body is wiped by every render).
+13. **Icons are `context-fill` / `context-stroke` SVGs** (16px header, 20px sidenav under `icons/20/`, 1px / 1.25px on the pixel grid, no dark twins). Zotero's `.btn[custom]` and `collapsible-section[custom] .head .title::before` supply `-moz-context-properties`; our own toolbar buttons set them in styles.ts.
+14. **Host identifiers come from `hostIdentifiers(item)`** (DOI field/Extra, PMID/arXiv from Extra/URL) — never read `getField("DOI")` alone in a section; PubMed-imported items have no DOI field.
+15. **Batch imports go through `runBatchImport`** (confirmation + click-to-stop). Never call `importAll` from a UI path directly.
+16. **CNKI credential POST must pass `logBodyLength: 0`** — Zotero's debug-log redaction is case-sensitive and misses `"Password"`.
 
 ## Testing checklist for non-trivial changes
 

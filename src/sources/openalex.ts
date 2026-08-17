@@ -20,8 +20,16 @@ const BASE = "https://api.openalex.org";
 const SELECT =
   "id,doi,title,display_name,publication_year,publication_date," +
   "authorships,primary_location,cited_by_count,ids,open_access," +
-  "abstract_inverted_index,type";
+  "abstract_inverted_index,type,is_retracted";
 const FULL_SELECT = `${SELECT},referenced_works,related_works`;
+/**
+ * Lean projection for graph-node hydration: no abstracts / institutions /
+ * locations (a graph node shows title · year · citations, nothing more).
+ * Cuts the payload of a 200-reference hydration by roughly an order of
+ * magnitude.
+ */
+const GRAPH_SELECT =
+  "id,doi,title,display_name,publication_year,authorships,cited_by_count,ids,type,is_retracted";
 
 const TYPE_MAP: Record<string, string> = {
   article: "journalArticle",
@@ -108,6 +116,7 @@ function mapWork(w: any): RefItem {
     oaUrl,
     url,
     abstract: reconstructAbstract(w.abstract_inverted_index),
+    retracted: w.is_retracted === true ? true : undefined,
     source: "openalex",
     type: TYPE_MAP[w.type] || "journalArticle",
   };
@@ -157,18 +166,26 @@ export async function getWorkFull(ids: Identifiers): Promise<OAWork | null> {
 export async function getWorksBatch(
   wids: string[],
   withRefs = false,
+  opts: { lean?: boolean } = {},
 ): Promise<Map<string, { ref: RefItem; referencedWorks: string[] }>> {
   const result = new Map<string, { ref: RefItem; referencedWorks: string[] }>();
-  const select = withRefs ? `${SELECT},referenced_works` : SELECT;
+  const base = opts.lean ? GRAPH_SELECT : SELECT;
+  const select = withRefs ? `${base},referenced_works` : base;
+  const urls: string[] = [];
   for (let i = 0; i < wids.length; i += 50) {
     const batch = wids.slice(i, i + 50).filter(Boolean);
     if (!batch.length) continue;
-    const url = withMailto(
-      `${BASE}/works?filter=openalex_id:${batch.join(
-        "|",
-      )}&per-page=50&select=${select}`,
+    urls.push(
+      withMailto(
+        `${BASE}/works?filter=openalex_id:${batch.join(
+          "|",
+        )}&per-page=50&select=${select}`,
+      ),
     );
-    const res = await http.getJSON(url);
+  }
+  // pages in parallel — the per-host gate already bounds concurrency
+  const pages = await Promise.all(urls.map((u) => http.getJSON(u)));
+  for (const res of pages) {
     const results: any[] = res?.results;
     if (!Array.isArray(results)) continue;
     for (const w of results) {

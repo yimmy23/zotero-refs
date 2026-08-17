@@ -479,6 +479,9 @@ async function updateToken(
   const res = await http.postJSON<{ Content?: string }>(
     "https://apix.cnki.net/databusapi/api/v1.0/credential/namepasswithcleartext/personalaccount",
     { Username: username, Password: password, Clientip: randomIP() },
+    // Zotero's debug-log redaction only matches lowercase `password":"` —
+    // this body must never reach the log users paste into bug reports
+    { logBodyLength: 0, ttl: 0 },
   );
   const token = res?.Content;
   if (!token) return null;

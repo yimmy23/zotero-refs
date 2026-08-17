@@ -1,5 +1,3 @@
-pref("enable", true);
-
 // Reference list behavior
 pref("prioritySource", "PDF");
 pref("preLoadingPageNum", 4);

@@ -77,6 +77,10 @@ export interface RefItem {
   /** PDF anchor position of the reference entry (PDF source only) */
   x?: number;
   y?: number;
+  /** 0-based PDF page index of the anchor (PDF source only) */
+  page?: number;
+  /** flagged as retracted by a metadata source (OpenAlex / PubMed) */
+  retracted?: boolean;
 }
 
 /** Paged result for citations ("cited by") queries. */

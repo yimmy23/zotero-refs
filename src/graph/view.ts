@@ -41,8 +41,10 @@ const KIND_COLOR: Record<GraphNode["kind"], string> = {
 const SETTLE_TICKS = 150;
 /** simulation steps per animation frame */
 const TICKS_PER_FRAME = 3;
-/** how many of the largest nodes get a label (origin always labeled) */
-const LABEL_COUNT = 12;
+/** label budget scales with canvas width (origin always labeled) */
+const LABEL_MIN = 4;
+const LABEL_MAX = 12;
+const PX_PER_LABEL = 45;
 const MIN_SCALE = 0.2;
 const MAX_SCALE = 5;
 /** pointer movement (px) below which a press counts as a click */
@@ -113,6 +115,8 @@ export class GraphView {
   private resizeObs: ResizeObserver | null = null;
   private darkQuery: MediaQueryList | null = null;
   private onThemeChange = () => this.applyTheme();
+  /** ids of nodes that carry a caption (collision radius is larger) */
+  private labeledIds = new Set<string>();
 
   constructor(container: HTMLElement, handlers: GraphHandlers = {}) {
     liveViews.add(this);
@@ -204,18 +208,24 @@ export class GraphView {
       this.nodeEls.set(node.id, c);
     }
 
-    // labels: origin + the largest nodes
+    // labels: origin + the largest nodes, as many as the width can hold
+    // without piling up (a 300px pane gets ~6, a wide one 12)
+    const labelBudget = Math.max(
+      LABEL_MIN,
+      Math.min(LABEL_MAX, Math.round(this.width / PX_PER_LABEL)),
+    );
     const largest = data.nodes
       .filter((n) => n.kind !== "origin")
       .sort((a, b) => nodeRadius(b) - nodeRadius(a))
-      .slice(0, LABEL_COUNT);
+      .slice(0, labelBudget);
     const labeled = origin ? [origin, ...largest] : largest;
+    this.labeledIds = new Set(labeled.map((n) => n.id));
     for (const node of labeled) {
       const t = this.createSVG<SVGTextElement>("text");
       t.textContent = nodeLabel(node);
       t.setAttribute("text-anchor", "middle");
-      t.setAttribute("font-size", "9");
-      t.setAttribute("font-family", "sans-serif");
+      t.setAttribute("font-size", "10.5");
+      t.setAttribute("font-family", "system-ui, -apple-system, sans-serif");
       t.setAttribute("paint-order", "stroke");
       t.setAttribute("stroke-width", "2.5");
       t.setAttribute("stroke-linejoin", "round");
@@ -242,7 +252,10 @@ export class GraphView {
       .force("center", forceCenter<GraphNode>(0, 0))
       .force(
         "collide",
-        forceCollide<GraphNode>((n) => nodeRadius(n) + 5).strength(0.9),
+        // labeled nodes reserve room for their caption below the circle
+        forceCollide<GraphNode>((n) =>
+          this.labeledIds.has(n.id) ? nodeRadius(n) + 13 : nodeRadius(n) + 5,
+        ).strength(0.9),
       )
       // weak pull keeps disconnected components on screen
       .force("x", forceX<GraphNode>(0).strength(0.02))

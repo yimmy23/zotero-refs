@@ -33,6 +33,30 @@ export function extractIdentifiers(text: string): Identifiers {
   return identifiers;
 }
 
+/**
+ * Identifiers of a library item as the sources need them: DOI from the
+ * field or Extra, PMID / arXiv from Extra or URL. Shared by every section
+ * so a PubMed-imported item without a DOI field still gets references,
+ * related works and a graph via PMID lookups.
+ */
+export function hostIdentifiers(item: Zotero.Item): Identifiers {
+  const ids: Identifiers = {};
+  const extra = (item.getField("extra") as string) || "";
+  const url = (item.getField("url") as string) || "";
+  let doi = ((item.getField("DOI") as string) || "").trim();
+  if (!doi) doi = extra.match(/^DOI:\s*(10\.\S+)/im)?.[1] || "";
+  if (doi) ids.DOI = doi;
+  const arxiv =
+    url.match(/arxiv\.org\/(?:abs|pdf)\/([^\s?#]+?)(?:\.pdf)?$/i)?.[1] ||
+    extra.match(REGEX.arXiv)?.[1];
+  if (arxiv) ids.arXiv = arxiv;
+  const pmid =
+    extra.match(/^PMID:\s*(\d+)/im)?.[1] ||
+    url.match(/pubmed\.ncbi\.nlm\.nih\.gov\/(\d+)/)?.[1];
+  if (pmid) ids.PMID = pmid;
+  return ids;
+}
+
 export function extractURL(text: string): string | undefined {
   const res = text.match(REGEX.URL);
   return res ? res[0] : undefined;
@@ -47,6 +71,16 @@ export function identifiersToURL(identifiers: Identifiers): string | undefined {
   if (identifiers.openAlex)
     return `https://openalex.org/${identifiers.openAlex}`;
   return undefined;
+}
+
+/**
+ * Only http(s) URLs may be persisted, written to items, or launched.
+ * Remote APIs and untrusted PDFs can hand us file:/smb:/custom-scheme
+ * URIs; Zotero.launchURL forwards anything but javascript/data/chrome to
+ * the OS protocol handler.
+ */
+export function isHttpUrl(s?: string): s is string {
+  return typeof s === "string" && /^https?:\/\/\S+$/i.test(s);
 }
 
 export function isDOI(text?: string): boolean {

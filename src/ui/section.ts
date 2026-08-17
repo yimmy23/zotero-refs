@@ -3,12 +3,12 @@ import { getLocaleID, getString } from "../utils/locale";
 import { getPref } from "../utils/prefs";
 import { setTimeout, clearTimeout } from "../utils/window";
 import { refStorage, itemCacheKey } from "../core/storage";
-import { isChinese } from "../core/text";
+import { hostIdentifiers, isChinese } from "../core/text";
 import type { RefItem } from "../core/types";
 import { SOURCE_NAME } from "../core/types";
 import { getReferencesByAPI } from "../sources";
 import { parsePDFReferences } from "../pdf/parser";
-import { importAll } from "../core/importer";
+import { runBatchImport } from "./batchImport";
 import { renderRefRow, filterRows, closePopup } from "./rows";
 import { guard, guardAsync } from "../utils/guard";
 import type { RowContext } from "./rows";
@@ -70,6 +70,17 @@ function getState(item: Zotero.Item): PanelState {
     states.set(stateKey, state);
   }
   return state;
+}
+
+/** reflect state.source in the PDF | API segmented control */
+function syncSourceControl(body: HTMLElement, state: PanelState) {
+  body
+    .querySelectorAll<HTMLElement>(".references-source-opt")
+    .forEach((opt: HTMLElement) => {
+      const on = opt.dataset.src === state.source;
+      opt.classList.toggle("is-on", on);
+      opt.setAttribute("aria-checked", on ? "true" : "false");
+    });
 }
 
 /** does the shared section body still show this item? */
@@ -294,8 +305,14 @@ function renderList(
     onEdited: (ref, index) => {
       state.refs[index] = ref;
       // persist into the slot the refs were LOADED from — the badge only
-      // selects the next fetch and must not redirect edits
-      void refStorage.set(item, state.loadedSlot ?? state.source, state.refs);
+      // selects the next fetch and must not redirect edits — and only if
+      // the user has caching for that slot enabled
+      const slot = state.loadedSlot ?? state.source;
+      const allowed =
+        slot === "PDF"
+          ? getPref("savePDFReferences")
+          : getPref("saveAPIReferences");
+      if (allowed) void refStorage.set(item, slot, state.refs);
     },
   };
   // chunked rendering keeps the pane responsive for long bibliographies.
@@ -330,8 +347,7 @@ async function refresh(
   options: { useCache: boolean; fromCurrentPage: boolean },
 ) {
   if (state.loading) return;
-  const badge = body.querySelector<HTMLElement>(".references-source-badge");
-  if (badge) badge.textContent = state.source;
+  syncSourceControl(body, state);
   state.loading = true;
   try {
     const refs = await fetchReferences(item, state, options);
@@ -375,15 +391,27 @@ function buildToolbar(
   spacer.className = "references-spacer";
   toolbar.append(spacer);
 
-  const badge = doc.createElement("span");
-  badge.className = "references-source-badge";
-  badge.textContent = state.source;
-  badge.title = getString("panel-source-tip");
-  badge.addEventListener("click", () => {
-    state.source = state.source === "PDF" ? "API" : "PDF";
-    badge.textContent = state.source;
-  });
-  toolbar.append(badge);
+  // two-segment source switch (PDF | API): the selected segment is the
+  // source the refresh button will use — readable as a toggle, unlike a
+  // lone status-looking pill
+  const seg = doc.createElement("span");
+  seg.className = "references-source-seg";
+  seg.setAttribute("role", "radiogroup");
+  seg.title = getString("panel-source-tip");
+  for (const kind of ["PDF", "API"] as const) {
+    const opt = doc.createElement("span");
+    opt.className = "references-source-opt";
+    opt.dataset.src = kind;
+    opt.textContent = kind;
+    opt.setAttribute("role", "radio");
+    opt.addEventListener("click", () => {
+      state.source = kind;
+      syncSourceControl(body, state);
+    });
+    seg.append(opt);
+  }
+  toolbar.append(seg);
+  syncSourceControl(body, state);
 
   const mkIconButton = (iconClass: string, tip: string) => {
     const button = doc.createElement("button");
@@ -442,34 +470,13 @@ function buildToolbar(
     if (!targets.length) return;
     state.importing = true;
     importButton.disabled = true;
-    const popupWin = new ztoolkit.ProgressWindow(getString("panel-import-all"), {
-      closeTime: -1,
-      closeOtherProgressWindows: true,
-    })
-      .createLine({
-        text: `0/${targets.length}`,
-        type: "default",
-        progress: 0,
-      })
-      .show();
     try {
-      const { ok, fail } = await importAll(
+      const result = await runBatchImport(
         item,
         targets,
-        undefined,
-        (done, total, msg) =>
-          popupWin.changeLine({
-            text: `${done}/${total} ${msg}`,
-            progress: (done / total) * 100,
-          }),
+        getString("panel-import-all"),
       );
-      popupWin.changeHeadline("[Done] Import");
-      popupWin.changeLine({
-        text: `✓ ${ok}  ✗ ${fail}`,
-        type: fail ? "fail" : "success",
-        progress: 100,
-      });
-      popupWin.startCloseTimer(5000);
+      if (!result) return; // declined
     } finally {
       state.importing = false;
       importButton.disabled = false;
@@ -509,12 +516,10 @@ export function registerReferencesSection() {
     header: {
       l10nID: getLocaleID("item-section-references-head-text"),
       icon: `chrome://${config.addonRef}/content/icons/references.svg`,
-      darkIcon: `chrome://${config.addonRef}/content/icons/references-dark.svg`,
     },
     sidenav: {
       l10nID: getLocaleID("item-section-references-sidenav-tooltip"),
-      icon: `chrome://${config.addonRef}/content/icons/references.svg`,
-      darkIcon: `chrome://${config.addonRef}/content/icons/references-dark.svg`,
+      icon: `chrome://${config.addonRef}/content/icons/20/references.svg`,
     },
     onItemChange: guard("references.onItemChange", ({ item, setEnabled }) => {
       setEnabled(!!item?.isRegularItem?.());
@@ -559,22 +564,28 @@ export function registerReferencesSection() {
         // to API when it can answer, else skip silently (no popup spam
         // while browsing the library)
         if (state.source === "PDF" && !findReaderForItem(item)) {
-          const hasDOI = !!(item.getField("DOI") as string)?.trim();
+          const ids = hostIdentifiers(item);
           const title = (item.getField("title") as string) || "";
-          if (hasDOI || isChinese(title)) {
+          if (ids.DOI || ids.PMID || ids.arXiv || isChinese(title)) {
             state.source = "API";
           } else {
             return;
           }
         }
-        // settle debounce: rapid item switching (arrow-key browsing) must
-        // not fire a network fetch per item
-        await new Promise<void>((r) => setTimeout(() => r(), 350));
-        if (!isCurrent(body as HTMLElement, state)) return;
-        await refresh(body as HTMLElement, item, state, setSectionSummary, {
-          useCache: true,
-          fromCurrentPage: false,
-        });
+        // Settle debounce OUTSIDE the awaited render: Zotero awaits each
+        // pane's asyncRender in sequence, so sleeping here would delay the
+        // whole item pane. Schedule the fetch and return at once; rapid
+        // arrow-key browsing then never fires a request per item.
+        setTimeout(
+          guard("references.autoFetch", () => {
+            if (!isCurrent(body as HTMLElement, state)) return;
+            void refresh(body as HTMLElement, item, state, setSectionSummary, {
+              useCache: true,
+              fromCurrentPage: false,
+            });
+          }),
+          350,
+        );
       }
       },
     ),

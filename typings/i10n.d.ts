@@ -4,6 +4,7 @@
 // @ts-nocheck
 export type FluentMessageId =
   | 'citations-count-suffix'
+  | 'citations-filter-placeholder'
   | 'citations-load-more'
   | 'graph-legend-citation'
   | 'graph-legend-hint'
@@ -13,6 +14,9 @@ export type FluentMessageId =
   | 'graph-loading'
   | 'graph-rebuild'
   | 'graph-unavailable'
+  | 'import-cancel-hint'
+  | 'import-cancelled'
+  | 'import-confirm'
   | 'item-section-citations-head-text'
   | 'item-section-citations-sidenav-tooltip'
   | 'item-section-graph-head-text'
@@ -79,5 +83,12 @@ export type FluentMessageId =
   | 'pref-split-vertically'
   | 'pref-title'
   | 'related-count-suffix'
+  | 'retracted-badge'
+  | 'retracted-import-confirm'
+  | 'retracted-tip'
+  | 'row-import-tip'
+  | 'row-tip'
+  | 'row-tip-readonly'
+  | 'row-unlink-tip'
   | 'startup-begin'
   | 'startup-finish';

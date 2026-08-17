@@ -6,8 +6,8 @@ import { setTimeout } from "../utils/window";
 import type { Identifiers, RefItem } from "../core/types";
 import { getCitationsByAPI } from "../sources";
 import type { CitationSource } from "../sources";
-import { normalizeTitle } from "../core/text";
-import { renderRefRow } from "./rows";
+import { hostIdentifiers, normalizeTitle } from "../core/text";
+import { filterRows, renderRefRow } from "./rows";
 import { guard, guardAsync } from "../utils/guard";
 import type { RowContext } from "./rows";
 
@@ -53,15 +53,7 @@ function refKey(ref: RefItem): string {
 const states = new Map<string, CitationsState>();
 
 function idsOf(item: Zotero.Item): Identifiers | null {
-  const ids: Identifiers = {};
-  const DOI = (item.getField("DOI") as string)?.trim();
-  if (DOI) ids.DOI = DOI;
-  const url = (item.getField("url") as string) || "";
-  const arxiv = url.match(/arxiv\.org\/(?:abs|pdf)\/([^\s?#]+?)(?:\.pdf)?$/i);
-  if (arxiv) ids.arXiv = arxiv[1];
-  const extra = (item.getField("extra") as string) || "";
-  const pmid = extra.match(/PMID:\s*(\d+)/i);
-  if (pmid) ids.PMID = pmid[1];
+  const ids = hostIdentifiers(item);
   return Object.keys(ids).length ? ids : null;
 }
 
@@ -70,6 +62,7 @@ interface PanelDOM {
   list: HTMLElement;
   count: HTMLElement;
   more: HTMLButtonElement;
+  filter?: HTMLInputElement;
 }
 
 async function loadMore(item: Zotero.Item, state: CitationsState) {
@@ -129,6 +122,7 @@ async function loadMore(item: Zotero.Item, state: CitationsState) {
         for (let i = start; i < state.refs.length; i++) {
           renderRefRow(ctx, state.refs, i);
         }
+        if (live.filter?.value) filterRows(live.list, live.filter.value);
       }
     }
   } catch (e) {
@@ -157,12 +151,10 @@ export function registerCitationsSection() {
     header: {
       l10nID: getLocaleID("item-section-citations-head-text"),
       icon: `chrome://${config.addonRef}/content/icons/citations.svg`,
-      darkIcon: `chrome://${config.addonRef}/content/icons/citations-dark.svg`,
     },
     sidenav: {
       l10nID: getLocaleID("item-section-citations-sidenav-tooltip"),
-      icon: `chrome://${config.addonRef}/content/icons/citations.svg`,
-      darkIcon: `chrome://${config.addonRef}/content/icons/citations-dark.svg`,
+      icon: `chrome://${config.addonRef}/content/icons/20/citations.svg`,
     },
     onItemChange: guard("citations.onItemChange", ({ item, setEnabled }) => {
       setEnabled(!!item?.isRegularItem?.() && !!idsOf(item));
@@ -187,16 +179,26 @@ export function registerCitationsSection() {
       toolbar.append(count);
       body.append(toolbar);
 
+      // keyword filter over loaded rows — landmark trials have thousands
+      // of citing works; 25-per-page with no filter is unusable
+      const searchBox = doc.createElement("div");
+      searchBox.className = "references-search";
+      const input = doc.createElement("input");
+      input.placeholder = getString("citations-filter-placeholder");
+      searchBox.append(input);
+      body.append(searchBox);
+
       const list = doc.createElement("div");
       list.className = "references-list";
       body.append(list);
+      input.addEventListener("input", () => filterRows(list, input.value));
 
       const more = doc.createElement("button");
       more.className = "references-button references-load-more";
       more.textContent = getString("citations-load-more");
       body.append(more);
 
-      const dom: PanelDOM = { list, count, more };
+      const dom: PanelDOM = { list, count, more, filter: input };
       more.addEventListener("click", () => loadMore(item, state!));
 
       if (!state) {
@@ -238,10 +240,16 @@ export function registerCitationsSection() {
         return;
       }
       if (getPref("loadingCitations")) {
-        // settle debounce: skip if another render took over meanwhile
-        await new Promise<void>((r) => setTimeout(() => r(), 350));
-        if (state.dom !== dom) return;
-        await loadMore(item, state);
+        // settle debounce outside the awaited render (see section.ts);
+        // `list` detaches whenever ANY item re-renders the shared body,
+        // so this also skips items the user merely arrow-keyed past
+        setTimeout(
+          guard("citations.autoFetch", () => {
+            if (state.dom !== dom || !list.isConnected) return;
+            void loadMore(item, state);
+          }),
+          350,
+        );
       }
       },
     ),

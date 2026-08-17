@@ -54,6 +54,9 @@ export const pubmed: MetaSource & {
     const raw = await http.getText(abstractUrl);
     const abstract = raw ? extractAbstractText(raw) : undefined;
 
+    const pubtypes: string[] = Array.isArray(result.pubtype)
+      ? result.pubtype
+      : [];
     return {
       identifiers,
       title: result.title,
@@ -64,6 +67,9 @@ export const pubmed: MetaSource & {
       source: "pubmed",
       type: "journalArticle",
       url: `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`,
+      retracted: pubtypes.some((t) => /^retracted publication$/i.test(t))
+        ? true
+        : undefined,
     };
   },
 

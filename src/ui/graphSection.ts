@@ -6,7 +6,7 @@ import { itemCacheKey } from "../core/storage";
 import type { GraphData, GraphNode } from "../core/types";
 import { buildGraph } from "../graph/build";
 import { GraphView } from "../graph/view";
-import { identifiersToURL } from "../core/text";
+import { hostIdentifiers, identifiersToURL, isHttpUrl } from "../core/text";
 import { guard, guardAsync } from "../utils/guard";
 
 /**
@@ -29,8 +29,10 @@ function nodeClicked(node: GraphNode) {
 }
 
 function nodeOpened(node: GraphNode) {
-  const url = node.ref.url || identifiersToURL(node.ref.identifiers);
-  if (url) Zotero.launchURL(url);
+  const url =
+    (isHttpUrl(node.ref.url) ? node.ref.url : undefined) ||
+    identifiersToURL(node.ref.identifiers);
+  if (isHttpUrl(url)) Zotero.launchURL(url);
 }
 
 async function renderGraph(
@@ -109,19 +111,18 @@ export function registerGraphSection() {
     header: {
       l10nID: getLocaleID("item-section-graph-head-text"),
       icon: `chrome://${config.addonRef}/content/icons/graph.svg`,
-      darkIcon: `chrome://${config.addonRef}/content/icons/graph-dark.svg`,
     },
     sidenav: {
       l10nID: getLocaleID("item-section-graph-sidenav-tooltip"),
-      icon: `chrome://${config.addonRef}/content/icons/graph.svg`,
-      darkIcon: `chrome://${config.addonRef}/content/icons/graph-dark.svg`,
+      icon: `chrome://${config.addonRef}/content/icons/20/graph.svg`,
     },
     onItemChange: guard("graph.onItemChange", ({ item, setEnabled }) => {
-      setEnabled(
-        !!item?.isRegularItem?.() &&
-          !!(item.getField("DOI") as string)?.trim() &&
-          !!getPref("graphEnable"),
-      );
+      if (!item?.isRegularItem?.() || !getPref("graphEnable")) {
+        setEnabled(false);
+        return true;
+      }
+      const ids = hostIdentifiers(item);
+      setEnabled(!!(ids.DOI || ids.PMID));
       return true;
     }),
     onRender: () => {},
@@ -184,13 +185,20 @@ export function registerGraphSection() {
       tip.style.display = "none";
       body.append(tip);
 
-      // settle debounce for uncached items — the OpenAlex build is the
-      // most expensive auto-fetch, so never fire it per arrow-key step
-      if (!dataCache.has(itemCacheKey(item))) {
-        await new Promise<void>((r) => setTimeout(() => r(), 350));
-        if (!container.isConnected) return;
+      if (dataCache.has(itemCacheKey(item))) {
+        await renderGraph(body as HTMLElement, item, setSectionSummary);
+        return;
       }
-      await renderGraph(body as HTMLElement, item, setSectionSummary);
+      // settle debounce OUTSIDE the awaited render — the OpenAlex build is
+      // the most expensive auto-fetch, so never fire it per arrow-key step
+      // and never hold up Zotero's item-pane render loop for it
+      setTimeout(
+        guard("graph.autoBuild", () => {
+          if (!container.isConnected) return;
+          void renderGraph(body as HTMLElement, item, setSectionSummary);
+        }),
+        350,
+      );
       },
     ),
   });

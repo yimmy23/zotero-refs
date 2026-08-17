@@ -1,6 +1,7 @@
+import { isHttpUrl } from "../core/text";
 import type { TagElementProps } from "zotero-plugin-toolkit";
 import type { RefTag } from "../core/types";
-import { getPref, setPref } from "../utils/prefs";
+import { getNumPref, getPref, setPref } from "../utils/prefs";
 import { clearTimeout, getDoc, getWin, setTimeout } from "../utils/window";
 
 /**
@@ -57,7 +58,7 @@ export class PopupCard {
 
   constructor() {
     this.fadeMs = Number(getPref("popupFadeMs")) || 100;
-    this.removeTipAfterMillisecond = Number(getPref("popupRemoveDelay")) || 500;
+    this.removeTipAfterMillisecond = getNumPref("popupRemoveDelay", 500);
   }
 
   onInit(refRect: PopupRect, position: "left" | "top center") {
@@ -345,6 +346,7 @@ export class PopupCard {
     return {
       tag: "span",
       properties: { innerText: String(tag.text) },
+      attributes: tag.tip ? { title: String(tag.tip) } : {},
       styles: {
         backgroundColor: tag.color || TAG_DEFAULT_COLOR,
         borderRadius: "10px",
@@ -360,10 +362,8 @@ export class PopupCard {
           type: "click",
           listener: () => {
             if (tag.url) {
-              new ztoolkit.ProgressWindow("Launching URL")
-                .createLine({ text: tag.url, type: "default" })
-                .show();
-              Zotero.launchURL(tag.url);
+              // remote metadata may carry arbitrary schemes — http(s) only
+              if (isHttpUrl(tag.url)) Zotero.launchURL(tag.url);
             } else if (tag.itemID) {
               this.clear();
               Zotero.ProgressWindowSet.closeAll();
@@ -373,23 +373,6 @@ export class PopupCard {
             } else {
               this.copyText(String(tag.text));
             }
-          },
-        },
-        {
-          type: "mouseenter",
-          listener: () => {
-            if (!tag.tip) return;
-            Zotero.ProgressWindowSet.closeAll();
-            new ztoolkit.ProgressWindow("Reference", { closeTime: -1 })
-              .createLine({ text: tag.tip, type: "default" })
-              .show();
-          },
-        },
-        {
-          type: "mouseleave",
-          listener: () => {
-            if (!tag.tip) return;
-            Zotero.ProgressWindowSet.closeAll();
           },
         },
       ],

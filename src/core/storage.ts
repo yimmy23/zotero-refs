@@ -1,6 +1,49 @@
 import { config } from "../../package.json";
 import { setTimeout, clearTimeout } from "../utils/window";
+import { isHttpUrl } from "./text";
 import type { RefItem } from "./types";
+
+/**
+ * What one persisted reference may contain. Applied both when writing and
+ * when reading the file, so a hand-edited / poisoned cache cannot inject
+ * launchable URLs, wrong item bindings or arbitrary payloads into the UI.
+ * abstract/description are dropped: the hover card refetches them and they
+ * dominate file size otherwise.
+ */
+function sanitizeRef(r: any): RefItem | null {
+  if (!r || typeof r !== "object") return null;
+  const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+  const ids: Record<string, string> = {};
+  if (r.identifiers && typeof r.identifiers === "object") {
+    for (const [k, v] of Object.entries(r.identifiers)) {
+      if (typeof v === "string" && v.length < 300) ids[k] = v;
+    }
+  }
+  const out: RefItem = {
+    identifiers: ids,
+    authors: Array.isArray(r.authors)
+      ? r.authors.filter((a: unknown) => typeof a === "string").slice(0, 50)
+      : [],
+    title: str(r.title),
+    text: str(r.text),
+    year: str(r.year) ?? (typeof r.year === "number" ? String(r.year) : undefined),
+    type: str(r.type) || "journalArticle",
+    primaryVenue: str(r.primaryVenue),
+    publishDate: str(r.publishDate),
+    number: typeof r.number === "number" ? r.number : undefined,
+    x: typeof r.x === "number" ? r.x : undefined,
+    y: typeof r.y === "number" ? r.y : undefined,
+    page: typeof r.page === "number" ? r.page : undefined,
+    citationCount:
+      typeof r.citationCount === "number" ? r.citationCount : undefined,
+    source: str(r.source) as RefItem["source"],
+    url: isHttpUrl(r.url) ? r.url : undefined,
+    oaUrl: isHttpUrl(r.oaUrl) ? r.oaUrl : undefined,
+    retracted: r.retracted === true ? true : undefined,
+  };
+  if (!out.text && !out.title) return null;
+  return out;
+}
 
 /** stable per-item cache key — item keys are only unique per library */
 export function itemCacheKey(item: Zotero.Item): string {
@@ -43,7 +86,21 @@ class RefStorage {
       if (await IOUtils.exists(this.path)) {
         const raw = (await Zotero.File.getContentsAsync(this.path)) as string;
         const parsed = JSON.parse(raw);
-        this.cache = parsed?.v === SCHEMA_VERSION ? parsed.items || {} : {};
+        const items = parsed?.v === SCHEMA_VERSION ? parsed.items || {} : {};
+        // never trust the file: re-validate every entry on the way in
+        const clean: typeof this.cache = {};
+        for (const [key, slots] of Object.entries<any>(items)) {
+          if (!slots || typeof slots !== "object") continue;
+          for (const [slot, entry] of Object.entries<any>(slots)) {
+            if (!Array.isArray(entry?.refs)) continue;
+            const refs = entry.refs
+              .map(sanitizeRef)
+              .filter((r: RefItem | null): r is RefItem => !!r);
+            if (!refs.length) continue;
+            (clean[key] ??= {})[slot] = { t: Number(entry.t) || 0, refs };
+          }
+        }
+        this.cache = clean;
       }
     } catch (e) {
       ztoolkit.log("[storage] load failed", e);
@@ -63,10 +120,9 @@ class RefStorage {
     // deep-copied: the live rows keep mutating their identifiers object
     // (e.g. DOI backfill on library match) after this snapshot is taken,
     // and a shared reference would leak those mutations into the file.
-    const clean = refs.map((r) => {
-      const { libItemID: _drop, ...rest } = r;
-      return { ...rest, identifiers: { ...rest.identifiers } } as RefItem;
-    });
+    const clean = refs
+      .map(sanitizeRef)
+      .filter((r): r is RefItem => !!r);
     (this.cache[itemKey] ??= {})[slot] = { t: Date.now(), refs: clean };
     this.evictIfNeeded();
     this.scheduleWrite();

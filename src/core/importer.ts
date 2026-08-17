@@ -1,4 +1,4 @@
-import { isChinese } from "./text";
+import { isChinese, isHttpUrl } from "./text";
 import { libraryIndex, isRelated } from "./libmatch";
 import type { RefItem } from "./types";
 import { resolveDOIByTitle, sources } from "../sources";
@@ -54,18 +54,23 @@ export async function createItemFromInfo(
     item.setField("publicationTitle", info.primaryVenue);
   }
   if (info.abstract) item.setField("abstractNote", info.abstract);
-  if (info.url) item.setField("url", info.url);
+  if (isHttpUrl(info.url)) item.setField("url", info.url);
+  const extraLines: string[] = [];
   if (info.identifiers.DOI) {
     // preprint / conferencePaper also carry DOI fields in Zotero 7+
     if (validField("DOI")) {
       item.setField("DOI", info.identifiers.DOI);
     } else {
-      const extra = item.getField("extra") as string;
-      item.setField(
-        "extra",
-        `${extra ? extra + "\n" : ""}DOI: ${info.identifiers.DOI}`,
-      );
+      extraLines.push(`DOI: ${info.identifiers.DOI}`);
     }
+  }
+  // keep PMID / arXiv so the item can be re-matched by identifier later
+  // (otherwise a second import creates a duplicate)
+  if (info.identifiers.PMID) extraLines.push(`PMID: ${info.identifiers.PMID}`);
+  if (info.identifiers.arXiv) extraLines.push(`arXiv: ${info.identifiers.arXiv}`);
+  if (extraLines.length) {
+    const extra = (item.getField("extra") as string) || "";
+    item.setField("extra", [extra, ...extraLines].filter(Boolean).join("\n"));
   }
   const creators: any[] = [];
   for (const name of info.authors || []) {
@@ -199,10 +204,14 @@ export async function importAll(
   refs: RefItem[],
   collections: number[] | undefined,
   onProgress: (done: number, total: number, msg: string) => void,
-): Promise<{ ok: number; fail: number }> {
+  shouldStop?: () => boolean,
+): Promise<{ ok: number; fail: number; stopped: number }> {
   let ok = 0;
   let fail = 0;
   for (let i = 0; i < refs.length; i++) {
+    if (shouldStop?.()) {
+      return { ok, fail, stopped: refs.length - i };
+    }
     const ref = refs[i];
     const label = ref.title || ref.text || `#${i + 1}`;
     try {
@@ -224,5 +233,5 @@ export async function importAll(
       onProgress(i + 1, refs.length, `✗ ${label}`);
     }
   }
-  return { ok, fail };
+  return { ok, fail, stopped: 0 };
 }
