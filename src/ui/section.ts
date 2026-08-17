@@ -9,6 +9,7 @@ import { getReferencesByAPI } from "../sources";
 import { parsePDFReferences } from "../pdf/parser";
 import { importAll } from "../core/importer";
 import { renderRefRow, filterRows, closePopup } from "./rows";
+import { guard, guardAsync } from "../utils/guard";
 import type { RowContext } from "./rows";
 
 /**
@@ -493,12 +494,14 @@ export function registerReferencesSection() {
       l10nID: getLocaleID("item-section-references-sidenav-tooltip"),
       icon: `chrome://${config.addonRef}/content/icons/favicon@0.5x.png`,
     },
-    onItemChange: ({ item, setEnabled }) => {
+    onItemChange: guard("references.onItemChange", ({ item, setEnabled }) => {
       setEnabled(!!item?.isRegularItem?.());
       return true;
-    },
+    }),
     onRender: () => {},
-    onAsyncRender: async ({ body, item, setSectionSummary }) => {
+    onAsyncRender: guardAsync(
+      "references.onAsyncRender",
+      async ({ body, item, setSectionSummary }) => {
       if (!item?.isRegularItem?.()) return;
       const state = getState(item);
       // (re)build DOM for this item; the stamp guards all later async work
@@ -548,7 +551,8 @@ export function registerReferencesSection() {
           toggle: false,
         });
       }
-    },
+      },
+    ),
   });
 }
 

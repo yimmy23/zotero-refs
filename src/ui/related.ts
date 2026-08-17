@@ -5,6 +5,7 @@ import { itemCacheKey } from "../core/storage";
 import type { Identifiers, RefItem } from "../core/types";
 import { getRelatedByAPI } from "../sources";
 import { renderRefRow } from "./rows";
+import { guard, guardAsync } from "../utils/guard";
 import type { RowContext } from "./rows";
 
 /**
@@ -62,12 +63,14 @@ export function registerRelatedSection() {
       l10nID: getLocaleID("item-section-related-sidenav-tooltip"),
       icon: "chrome://zotero/skin/20/universal/magic-wand.svg",
     },
-    onItemChange: ({ item, setEnabled }) => {
+    onItemChange: guard("related.onItemChange", ({ item, setEnabled }) => {
       setEnabled(!!item?.isRegularItem?.());
       return true;
-    },
+    }),
     onRender: () => {},
-    onAsyncRender: async ({ body, item, setSectionSummary }) => {
+    onAsyncRender: guardAsync(
+      "related.onAsyncRender",
+      async ({ body, item, setSectionSummary }) => {
       if (!item?.isRegularItem?.()) return;
       const doc = body.ownerDocument!;
       body.textContent = "";
@@ -126,7 +129,8 @@ export function registerRelatedSection() {
         renderRefRow(ctx, refs, i);
       }
       update();
-    },
+      },
+    ),
   });
 }
 

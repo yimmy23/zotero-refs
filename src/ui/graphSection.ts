@@ -7,6 +7,7 @@ import type { GraphData, GraphNode } from "../core/types";
 import { buildGraph } from "../graph/build";
 import { GraphView } from "../graph/view";
 import { identifiersToURL } from "../core/text";
+import { guard, guardAsync } from "../utils/guard";
 
 /**
  * "Citation Graph" item pane section — connected-papers-style force graph
@@ -109,16 +110,18 @@ export function registerGraphSection() {
       l10nID: getLocaleID("item-section-graph-sidenav-tooltip"),
       icon: `chrome://${config.addonRef}/content/icons/connectedpapers.png`,
     },
-    onItemChange: ({ item, setEnabled }) => {
+    onItemChange: guard("graph.onItemChange", ({ item, setEnabled }) => {
       setEnabled(
         !!item?.isRegularItem?.() &&
           !!(item.getField("DOI") as string)?.trim() &&
           !!getPref("graphEnable"),
       );
       return true;
-    },
+    }),
     onRender: () => {},
-    onAsyncRender: async ({ body, item, setSectionSummary }) => {
+    onAsyncRender: guardAsync(
+      "graph.onAsyncRender",
+      async ({ body, item, setSectionSummary }) => {
       if (!item?.isRegularItem?.()) return;
       const doc = body.ownerDocument!;
       body.textContent = "";
@@ -151,7 +154,8 @@ export function registerGraphSection() {
       body.append(tip);
 
       await renderGraph(body as HTMLElement, item, setSectionSummary);
-    },
+      },
+    ),
   });
 }
 

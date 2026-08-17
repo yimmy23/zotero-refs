@@ -37,9 +37,13 @@ class LibraryIndex {
           }
           if (event === "add" || event === "modify") {
             for (const id of ids) {
-              const item = Zotero.Items.get(Number(id));
-              if (item && item.libraryID === this.libraryID) {
-                this.indexItem(item as Zotero.Item);
+              try {
+                const item = Zotero.Items.get(Number(id));
+                if (item && item.libraryID === this.libraryID) {
+                  this.indexItem(item as Zotero.Item);
+                }
+              } catch {
+                // unloaded item data — skip
               }
             }
             this.noMatch.clear();
@@ -120,7 +124,12 @@ class LibraryIndex {
     this.dirty = false;
     const items = await Zotero.Items.getAll(libraryID, false, false);
     for (const item of items) {
-      this.indexItem(item as Zotero.Item);
+      try {
+        this.indexItem(item as Zotero.Item);
+      } catch {
+        // getField throws UnloadedDataException on items whose data is
+        // not loaded yet — skip those, the notifier patches them later
+      }
     }
     ztoolkit.log(
       `[libmatch] indexed ${items.length} items in ${Date.now() - t0}ms`,

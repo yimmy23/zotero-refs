@@ -469,12 +469,12 @@ export function renderRefRow(
   // resolve in-library state asynchronously (index lookup is cheap)
   void (async () => {
     const item = await libraryIndex.match(ref, ctx.hostItem.libraryID);
-    if (item) {
+    if (item && row.isConnected) {
       row.style.opacity = "1";
       icon.setAttribute("data-item-type", item.itemType);
       if (isRelated(ctx.hostItem, item)) setActionState(action, "-");
     }
-  })();
+  })().catch((e) => ztoolkit.log("[rows] match failed", e));
 
   // ---------- label interactions: copy / edit / locate ----------
   let editTimer: number | undefined;

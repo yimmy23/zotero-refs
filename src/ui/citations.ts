@@ -5,6 +5,7 @@ import { itemCacheKey } from "../core/storage";
 import type { Identifiers, RefItem } from "../core/types";
 import { getCitationsByAPI } from "../sources";
 import { renderRefRow } from "./rows";
+import { guard, guardAsync } from "../utils/guard";
 import type { RowContext } from "./rows";
 
 /**
@@ -122,12 +123,14 @@ export function registerCitationsSection() {
       l10nID: getLocaleID("item-section-citations-sidenav-tooltip"),
       icon: "chrome://zotero/skin/20/universal/cite.svg",
     },
-    onItemChange: ({ item, setEnabled }) => {
+    onItemChange: guard("citations.onItemChange", ({ item, setEnabled }) => {
       setEnabled(!!item?.isRegularItem?.() && !!idsOf(item));
       return true;
-    },
+    }),
     onRender: () => {},
-    onAsyncRender: async ({ body, item, setSectionSummary }) => {
+    onAsyncRender: guardAsync(
+      "citations.onAsyncRender",
+      async ({ body, item, setSectionSummary }) => {
       if (!item?.isRegularItem?.()) return;
       const stateKey = itemCacheKey(item);
       let state = states.get(stateKey);
@@ -188,7 +191,8 @@ export function registerCitationsSection() {
       if (getPref("loadingCitations")) {
         await loadMore(dom, item, state, setSectionSummary);
       }
-    },
+      },
+    ),
   });
 }
 

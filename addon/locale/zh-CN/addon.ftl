@@ -1,14 +1,22 @@
 startup-begin = References 加载中
 startup-finish = References 已就绪
 
-item-section-references-head-text = 参考文献
-item-section-references-sidenav-tooltip = 参考文献
-item-section-citations-head-text = 被引用
-item-section-citations-sidenav-tooltip = 引用了本文献的文章
-item-section-related-head-text = 相关文献
-item-section-related-sidenav-tooltip = 相关与推荐文献
-item-section-graph-head-text = 引文图谱
-item-section-graph-sidenav-tooltip = 本文献的引文图谱
+item-section-references-head-text =
+    .label = 参考文献
+item-section-references-sidenav-tooltip =
+    .tooltiptext = 参考文献
+item-section-citations-head-text =
+    .label = 被引用
+item-section-citations-sidenav-tooltip =
+    .tooltiptext = 引用了本文献的文章
+item-section-related-head-text =
+    .label = 相关文献
+item-section-related-sidenav-tooltip =
+    .tooltiptext = 相关与推荐文献
+item-section-graph-head-text =
+    .label = 引文图谱
+item-section-graph-sidenav-tooltip =
+    .tooltiptext = 本文献的引文图谱
 
 refs-count-suffix = 条参考文献
 refs-need-reader = 请先在阅读器中打开 PDF，或切换数据源为 API

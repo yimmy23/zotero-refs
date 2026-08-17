@@ -1,14 +1,22 @@
 startup-begin = References is loading
 startup-finish = References is ready
 
-item-section-references-head-text = References
-item-section-references-sidenav-tooltip = References
-item-section-citations-head-text = Cited By
-item-section-citations-sidenav-tooltip = Works citing this item
-item-section-related-head-text = Related Papers
-item-section-related-sidenav-tooltip = Related and recommended papers
-item-section-graph-head-text = Citation Graph
-item-section-graph-sidenav-tooltip = Citation graph of this item
+item-section-references-head-text =
+    .label = References
+item-section-references-sidenav-tooltip =
+    .tooltiptext = References
+item-section-citations-head-text =
+    .label = Cited By
+item-section-citations-sidenav-tooltip =
+    .tooltiptext = Works citing this item
+item-section-related-head-text =
+    .label = Related Papers
+item-section-related-sidenav-tooltip =
+    .tooltiptext = Related and recommended papers
+item-section-graph-head-text =
+    .label = Citation Graph
+item-section-graph-sidenav-tooltip =
+    .tooltiptext = Citation graph of this item
 
 refs-count-suffix = references
 refs-need-reader = Open the PDF in the reader first, or switch source to API

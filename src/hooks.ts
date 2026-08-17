@@ -11,6 +11,7 @@ import { registerGraphSection, invalidateGraph } from "./ui/graphSection";
 import { registerStyles, unregisterStyles } from "./ui/styles";
 import { closePopup } from "./ui/rows";
 import { registerItemMenus, unregisterItemMenus } from "./modules/menus";
+import { registerDevEval } from "./modules/devEval";
 import {
   attachAllReaders,
   detachAllReaders,
@@ -28,25 +29,40 @@ async function onStartup() {
     Zotero.uiReadyPromise,
   ]);
 
-  initLocale();
+  registerDevEval();
 
-  // preference pane
-  Zotero.PreferencePanes.register({
-    pluginID: config.addonID,
-    src: rootURI + "content/preferences.xhtml",
-    label: config.addonName,
-    image: `chrome://${config.addonRef}/content/icons/favicon.png`,
-  });
+  // every startup step individually guarded: one failing registration must
+  // not take the whole plugin down
+  const step = (name: string, fn: () => void) => {
+    try {
+      fn();
+    } catch (e) {
+      ztoolkit.log(`[startup] ${name} failed`, e);
+      try {
+        Zotero.logError(e as any);
+      } catch {
+        // ignore
+      }
+    }
+  };
 
+  step("locale", () => initLocale());
+  step("prefsPane", () =>
+    Zotero.PreferencePanes.register({
+      pluginID: config.addonID,
+      src: rootURI + "content/preferences.xhtml",
+      label: config.addonName,
+      image: `chrome://${config.addonRef}/content/icons/favicon.png`,
+    }),
+  );
   // library index for O(1) in-library matching
-  libraryIndex.register();
-
+  step("libraryIndex", () => libraryIndex.register());
   // item pane sections
-  registerReferencesSection();
-  registerCitationsSection();
-  registerRelatedSection();
-  registerGraphSection();
-  registerItemMenus();
+  step("referencesSection", () => registerReferencesSection());
+  step("citationsSection", () => registerCitationsSection());
+  step("relatedSection", () => registerRelatedSection());
+  step("graphSection", () => registerGraphSection());
+  step("itemMenus", () => registerItemMenus());
 
   // notifier: reader tabs + item changes
   notifierID = Zotero.Notifier.registerObserver(
