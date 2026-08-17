@@ -8,7 +8,7 @@ A ground-up rebuild of [zotero-reference](https://github.com/MuiseDestiny/zotero
 
 ## Install
 
-Download `refs.xpi` from [Releases](https://github.com/yimmy23/zotero-refs/releases), then in Zotero: `Tools → Plugins → ⚙ → Install Plugin From File…`. Supports Zotero 7–9.
+Download `refs.xpi` from [Releases](https://github.com/yimmy23/zotero-refs/releases), then in Zotero: `Tools → Plugins → ⚙ → Install Plugin From File…`. Supports Zotero 7–9. Later versions arrive through Zotero's built-in plugin updater (`Tools → Plugins → ⚙ → Check for Updates`, or automatically).
 
 ## API keys — what do I need to fill in?
 
@@ -84,7 +84,7 @@ Architecture, invariants, and verified gotchas (Fluent l10n rules, hook guarding
 
 ### 安装
 
-从 [Releases](https://github.com/yimmy23/zotero-refs/releases) 下载 `refs.xpi`，在 Zotero 中 `工具 → 插件 → ⚙ → Install Plugin From File…` 安装。
+从 [Releases](https://github.com/yimmy23/zotero-refs/releases) 下载 `refs.xpi`，在 Zotero 中 `工具 → 插件 → ⚙ → Install Plugin From File…` 安装；之后的新版本会通过 Zotero 自带的插件更新机制自动推送（`工具 → 插件 → ⚙ → 检查更新`）。
 
 ### 需要填写哪些 API？
 

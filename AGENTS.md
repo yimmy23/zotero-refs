@@ -47,6 +47,15 @@ npm start         # dev build + hot reload in an ISOLATED Zotero profile
 15. **Batch imports go through `runBatchImport`** (confirmation + click-to-stop). Never call `importAll` from a UI path directly.
 16. **CNKI credential POST must pass `logBodyLength: 0`** — Zotero's debug-log redaction is case-sensitive and misses `"Password"`.
 
+## Releasing (auto-update depends on this exact shape)
+
+`manifest.json` → `update_url` = `https://github.com/yimmy23/zotero-refs/releases/download/release/update.json` (a **rolling** GitHub release tagged `release` holds `update.json` / `update-beta.json`). Zotero only offers an update when the version in `update.json` is **higher** than the installed one and the `update_link` asset exists with a matching sha512 — so never re-upload a changed xpi under the same version.
+
+1. bump `version` in `package.json` (semver) → `npm run build` (emits `refs.xpi` + `update.json` with the hash)
+2. `gh release create vX.Y.Z .scaffold/build/refs.xpi --title "Refs X.Y.Z" --notes "…"`
+3. `gh release upload release .scaffold/build/update.json .scaffold/build/update-beta.json --clobber`
+4. verify: `curl -sL <update_url>` shows the new version; in the dev profile install the previous xpi and run `AddonManager` `findUpdates` → `updateAvailable` (see session notes for the probe).
+
 ## Testing checklist for non-trivial changes
 
 Run in the dev instance via the eval endpoint: select a DOI-bearing item → References section fills (count line shows source), toolbar icons visible (computed `background-image` ≠ none); hover a row → card appears with source dots and identifier/search chips; `+` imports the CORRECT item and relates it bidirectionally; Cited By pages without duplicates; Graph renders nodes ≈ `graphMaxNodes` cap; `Zotero.getErrors(true)` shows nothing from the plugin. For zh-CN strings, restart (FTL) and verify no raw message ids leak into the UI.
