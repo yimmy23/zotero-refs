@@ -418,12 +418,16 @@ export class GraphView {
 
   // ------------------------------------------------------------------ theme
 
+  private nodeOutline(): string {
+    return this.darkQuery?.matches ? "#2b2b2b" : "#ffffff";
+  }
+
   private applyTheme() {
     const dark = !!this.darkQuery?.matches;
     const labelFill = dark ? "#e6e6e6" : "#333333";
     const labelHalo = dark ? "#1e1e1e" : "#ffffff";
     const edgeStroke = dark ? "#cccccc" : "#555555";
-    const nodeOutline = dark ? "#2b2b2b" : "#ffffff";
+    const nodeOutline = this.nodeOutline();
     for (const t of this.labelEls.values()) {
       t.setAttribute("fill", labelFill);
       t.setAttribute("stroke", labelHalo);
@@ -520,6 +524,10 @@ export class GraphView {
       ev.stopPropagation();
       ev.preventDefault();
       dragOccurred = false;
+      // raise above overlapping siblings while pressed / dragged
+      if ((this.nodeLayer.lastElementChild as unknown) !== circle) {
+        this.nodeLayer.appendChild(circle);
+      }
       const startX = ev.clientX;
       const startY = ev.clientY;
       let dragging = false;
@@ -581,8 +589,13 @@ export class GraphView {
     });
 
     circle.addEventListener("pointerenter", () => {
-      // raise above overlapping siblings
-      this.nodeLayer.appendChild(circle);
+      // NEVER move the element in the DOM here: re-inserting the node
+      // under the pointer fires pointerleave/pointerenter again and the
+      // cursor flips grab ↔ pointer in a loop (visible as a flickering
+      // hand). Highlight in place instead.
+      circle.setAttribute("stroke", KIND_COLOR[node.kind]);
+      circle.setAttribute("stroke-width", "3");
+      circle.setAttribute("stroke-opacity", "0.45");
       const r = circle.getBoundingClientRect();
       this.handlers.onHover?.(node, {
         x: r.x,
@@ -593,6 +606,9 @@ export class GraphView {
     });
 
     circle.addEventListener("pointerleave", () => {
+      circle.setAttribute("stroke", this.nodeOutline());
+      circle.setAttribute("stroke-width", "1");
+      circle.removeAttribute("stroke-opacity");
       this.handlers.onHover?.(null);
     });
   }

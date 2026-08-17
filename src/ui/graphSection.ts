@@ -87,14 +87,13 @@ async function renderGraph(
       onHover: (node) => {
         const tip = body.querySelector<HTMLElement>(".references-graph-tip");
         if (!tip) return;
-        if (node) {
-          tip.textContent = `${node.ref.title || ""} (${
-            node.ref.year || "?"
-          }) · ${node.kind}`;
-          tip.style.display = "";
-        } else {
-          tip.style.display = "none";
-        }
+        // never toggle display: a layout jump under the canvas while the
+        // pointer is over it re-fires enter/leave and looks like flicker
+        tip.textContent = node
+          ? `${node.ref.title || ""} (${node.ref.year || "?"}) · ${getString(
+              `graph-legend-${node.kind}` as "graph-legend-origin",
+            )}`
+          : "\u00a0";
       },
     });
     views.set(body, view);
@@ -182,7 +181,7 @@ export function registerGraphSection() {
 
       const tip = doc.createElement("div");
       tip.className = "references-graph-tip";
-      tip.style.display = "none";
+      tip.textContent = "\u00a0";
       body.append(tip);
 
       if (dataCache.has(itemCacheKey(item))) {
