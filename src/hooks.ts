@@ -7,7 +7,11 @@ import { refStorage } from "./core/storage";
 import { registerReferencesSection, invalidatePanelState } from "./ui/section";
 import { registerCitationsSection, invalidateCitations } from "./ui/citations";
 import { registerRelatedSection, invalidateRelated } from "./ui/related";
-import { registerGraphSection, invalidateGraph } from "./ui/graphSection";
+import {
+  registerGraphSection,
+  invalidateGraph,
+  removeGraphMenus,
+} from "./ui/graphSection";
 import { destroyAllGraphViews } from "./graph/view";
 import { registerStyles, unregisterStyles } from "./ui/styles";
 import { closePopup } from "./ui/rows";
@@ -113,6 +117,7 @@ async function onMainWindowUnload(win: Window): Promise<void> {
 function onShutdown(): void {
   closePopup();
   destroyAllGraphViews();
+  removeGraphMenus();
   unregisterItemMenus();
   detachAllReaders();
   libraryIndex.unregister();

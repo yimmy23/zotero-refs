@@ -123,6 +123,7 @@ export function showRefPopup(
   rect: PopupRect,
   position: "left" | "top center",
   idText?: string,
+  actions?: { onImport?: () => void },
 ): PopupCard {
   const popup = new PopupCard();
   popup.onInit(rect, position);
@@ -211,6 +212,18 @@ export function showRefPopup(
             color: SOURCE_BADGE.Zotero.color,
             tip: SOURCE_BADGE.Zotero.tip,
             itemID: ref.libItemID,
+          });
+        } else if (actions?.onImport) {
+          // hosts without a row (+) button — the graph — get the import
+          // action right on the card
+          tags.push({
+            text: getString("popup-import"),
+            color: "#39bf68",
+            tip: getString("row-import-tip"),
+            onClick: () => {
+              popup.clear();
+              actions.onImport?.();
+            },
           });
         }
         // academic search-engine links, always available (title-based)

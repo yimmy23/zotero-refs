@@ -361,7 +361,9 @@ export class PopupCard {
         {
           type: "click",
           listener: () => {
-            if (tag.url) {
+            if (tag.onClick) {
+              tag.onClick();
+            } else if (tag.url) {
               // remote metadata may carry arbitrary schemes — http(s) only
               if (isHttpUrl(tag.url)) Zotero.launchURL(tag.url);
             } else if (tag.itemID) {

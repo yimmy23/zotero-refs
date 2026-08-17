@@ -1,6 +1,10 @@
 import { libraryIndex } from "../core/libmatch";
-import { hostIdentifiers } from "../core/text";
-import type { GraphData, GraphEdge, GraphNode } from "../core/types";
+import type {
+  GraphData,
+  GraphEdge,
+  GraphNode,
+  Identifiers,
+} from "../core/types";
 import { getWorkFull, getWorksBatch, openalex } from "../sources/openalex";
 
 /**
@@ -20,14 +24,14 @@ const COCITE_MIN_SHARED = 3;
 const COCITE_MAX_EDGES = 200;
 
 export async function buildGraph(
-  item: Zotero.Item,
+  center: { ids: Identifiers; libraryID: number },
   opts: { maxNodes: number; onStatus?: (msg: string) => void },
 ): Promise<GraphData | null> {
   const onStatus = opts.onStatus;
   try {
-    const hostIds = hostIdentifiers(item);
-    if (!hostIds.DOI && !hostIds.PMID) {
-      ztoolkit.log("[graph] item has no DOI/PMID, cannot build graph");
+    const hostIds = center.ids;
+    if (!hostIds.DOI && !hostIds.PMID && !hostIds.openAlex) {
+      ztoolkit.log("[graph] no DOI/PMID/OpenAlex id, cannot build graph");
       return null;
     }
 
@@ -115,7 +119,10 @@ export async function buildGraph(
     onStatus?.("Matching against your library…");
     for (const node of kept) {
       try {
-        node.inLibrary = !!(await libraryIndex.match(node.ref, item.libraryID));
+        node.inLibrary = !!(await libraryIndex.match(
+          node.ref,
+          center.libraryID,
+        ));
       } catch (e) {
         ztoolkit.log("[graph] library match failed", e);
       }

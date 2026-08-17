@@ -21,6 +21,8 @@ export interface GraphHandlers {
   onSelect?: (node: GraphNode) => void;
   /** double click on a node */
   onOpen?: (node: GraphNode) => void;
+  /** right click on a node (screen coords for a context menu) */
+  onContext?: (node: GraphNode, screenX: number, screenY: number) => void;
   /** hover enter (with the circle's screen rect) / leave (null) */
   onHover?: (
     node: GraphNode | null,
@@ -263,6 +265,19 @@ export class GraphView {
       .stop();
 
     this.runTicks(SETTLE_TICKS);
+  }
+
+  /** flip a node's in-library state (solid vs translucent) after an import */
+  setInLibrary(id: string, inLibrary: boolean): void {
+    const node = this.data?.nodes.find((n) => n.id === id);
+    if (node) node.inLibrary = inLibrary;
+    const c = this.nodeEls.get(id);
+    if (c && node) {
+      c.setAttribute(
+        "fill-opacity",
+        node.kind === "origin" || inLibrary ? "1" : "0.55",
+      );
+    }
   }
 
   destroy(): void {
@@ -586,6 +601,12 @@ export class GraphView {
     circle.addEventListener("dblclick", (ev: MouseEvent) => {
       ev.stopPropagation();
       this.handlers.onOpen?.(node);
+    });
+
+    circle.addEventListener("contextmenu", (ev: MouseEvent) => {
+      ev.stopPropagation();
+      ev.preventDefault();
+      this.handlers.onContext?.(node, ev.screenX, ev.screenY);
     });
 
     circle.addEventListener("pointerenter", () => {

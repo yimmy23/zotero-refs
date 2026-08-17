@@ -46,7 +46,7 @@ Items are looked up by DOI, or — when there is none — by PMID / arXiv id fro
 
 - **Cited By** — paged list of works citing this item (Semantic Scholar / OpenAlex; paging is source-pinned and deduplicated) with a keyword filter over the loaded rows.
 - **Related** — Semantic Scholar recommendations (OpenAlex fallback), merged with your Zotero related items.
-- **Citation Graph** — a Connected-Papers-style force graph built from OpenAlex references + citations + related works with co-citation edges. Node size = citation count; **solid = in your library**; click to select, double-click to open. Legend on top; Rebuild button refetches.
+- **Citation Graph** — a Connected-Papers-style force graph built from OpenAlex references + citations + related works with co-citation edges. Node size = citation count; **solid = in your library**. **Hover** a node for the same multi-source card as a reference row (with a `+ Import` chip when the work is not in your library); **right-click** for import / show in library / open DOI / PubMed / Google Scholar / copy citation / **re-centre the graph on that work** (a "back to this item" button appears); click selects the item in your library, double-click opens it online; `Ctrl+wheel` zooms, drag pans. Legend on top; Rebuild button refetches.
 
 ### Settings overview
 
@@ -104,7 +104,7 @@ Architecture, invariants, and verified gotchas (Fluent l10n rules, hook guarding
 
 **阅读器引文链接**：悬停正文引文显示 Refs 卡片（替代原生预览）；点击正文跳转链接（引文/图/公式）在**分栏**中打开，主视图阅读位置不动，分栏方向可设置。
 
-**被引用**（分页加载，锁源去重，可关键词筛选）·**相关文献**（S2 推荐 + OpenAlex 兜底，合并 Zotero 关联条目）·**引文图谱**（OpenAlex 数据 + 共被引边的力导向图：节点大小=被引量，实心=已入库，单击选中，双击打开）。
+**被引用**（分页加载，锁源去重，可关键词筛选）·**相关文献**（S2 推荐 + OpenAlex 兜底，合并 Zotero 关联条目）·**引文图谱**（OpenAlex 数据 + 共被引边的力导向图：节点大小=被引量，实心=已入库）。**悬停**节点显示与参考文献行相同的多源卡片（未入库时带「+ 导入」）；**右键**菜单：导入并关联 / 在文库中显示 / 打开 DOI / PubMed / Google Scholar / 复制引文 / **以此文献为中心重建图谱**（出现「回到本文」按钮）；单击在文库中选中，双击在线打开；`Ctrl+滚轮` 缩放、拖动平移。
 
 ### 协议
 

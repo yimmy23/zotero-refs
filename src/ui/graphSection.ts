@@ -1,12 +1,21 @@
 import { config } from "../../package.json";
 import { getLocaleID, getString } from "../utils/locale";
-import { getPref } from "../utils/prefs";
-import { getWin, setTimeout } from "../utils/window";
+import { getNumPref, getPref } from "../utils/prefs";
+import { clearTimeout, getWin, setTimeout } from "../utils/window";
 import { itemCacheKey } from "../core/storage";
-import type { GraphData, GraphNode } from "../core/types";
+import type { GraphData, GraphNode, Identifiers, RefItem } from "../core/types";
 import { buildGraph } from "../graph/build";
 import { GraphView } from "../graph/view";
-import { hostIdentifiers, identifiersToURL, isHttpUrl } from "../core/text";
+import type { GraphHandlers } from "../graph/view";
+import {
+  collapseText,
+  hostIdentifiers,
+  identifiersToURL,
+  isHttpUrl,
+} from "../core/text";
+import { addRelation, importReference } from "../core/importer";
+import { isRelated } from "../core/libmatch";
+import { getCurrentPopup, showRefPopup } from "./rows";
 import { guard, guardAsync } from "../utils/guard";
 
 /**
@@ -19,6 +28,16 @@ import { guard, guardAsync } from "../utils/guard";
 const dataCache = new Map<string, GraphData>();
 /** live GraphView per section body (the body persists across renders) */
 const views = new WeakMap<HTMLElement, GraphView>();
+
+/** what the graph is currently centred on, per section body */
+interface GraphCenter {
+  ids: Identifiers;
+  /** cache key suffix ("" = the item itself) */
+  key: string;
+  /** short label for the "back to this item" affordance */
+  label: string;
+}
+const centers = new WeakMap<HTMLElement, GraphCenter>();
 
 function nodeClicked(node: GraphNode) {
   if (node.ref.libItemID) {
@@ -35,29 +54,236 @@ function nodeOpened(node: GraphNode) {
   if (isHttpUrl(url)) Zotero.launchURL(url);
 }
 
+/** import a graph node into the library, relate it to the host item */
+async function importNode(
+  hostItem: Zotero.Item,
+  node: GraphNode,
+  view: GraphView | undefined,
+) {
+  const label = collapseText(node.ref.title || node.ref.text || "");
+  const popupWin = new ztoolkit.ProgressWindow(getString("graph-menu-import"), {
+    closeTime: -1,
+    closeOtherProgressWindows: true,
+  })
+    .createLine({ text: label, type: "default", progress: 10 })
+    .show();
+  try {
+    const refItem = await importReference(hostItem, node.ref, undefined, (m) =>
+      popupWin.changeLine({ text: m }),
+    );
+    if (!refItem) {
+      popupWin.changeLine({ text: `✗ ${label}`, type: "fail", progress: 100 });
+      popupWin.startCloseTimer(4000);
+      return;
+    }
+    if (!isRelated(hostItem, refItem)) await addRelation(hostItem, refItem);
+    node.ref.libItemID = refItem.id;
+    node.inLibrary = true;
+    view?.setInLibrary(node.id, true);
+    popupWin.changeLine({ text: `✓ ${label}`, type: "success", progress: 100 });
+    popupWin.startCloseTimer(3000);
+  } catch (e) {
+    ztoolkit.log("[graph] import failed", e);
+    popupWin.changeLine({ text: `✗ ${label}`, type: "fail", progress: 100 });
+    popupWin.startCloseTimer(4000);
+  }
+}
+
+/** plain-text citation of a node for the clipboard */
+function citationText(ref: RefItem): string {
+  const authors = ref.authors || [];
+  const who =
+    authors.slice(0, 3).join(", ") + (authors.length > 3 ? " et al." : "");
+  const doi = ref.identifiers.DOI ? ` https://doi.org/${ref.identifiers.DOI}` : "";
+  return [
+    who,
+    ref.year ? `(${ref.year}).` : "",
+    ref.title ? `${ref.title}.` : "",
+    ref.primaryVenue ? `${ref.primaryVenue}.` : "",
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .trim() + doi;
+}
+
+/**
+ * Right-click menu on a node: import / locate / open (DOI · PubMed ·
+ * Scholar) / copy / re-centre the graph on this work. One XUL menupopup is
+ * kept per main window and rebuilt on every open.
+ */
+function showNodeMenu(
+  body: HTMLElement,
+  item: Zotero.Item,
+  setSectionSummary: (s: string) => void,
+  node: GraphNode,
+  screenX: number,
+  screenY: number,
+) {
+  const win = getWin();
+  const doc = win.document;
+  const id = `${config.addonRef}-graph-node-menu`;
+  let popup = doc.getElementById(id) as any;
+  if (!popup) {
+    popup = doc.createXULElement("menupopup");
+    popup.id = id;
+    (doc.querySelector("popupset") || doc.documentElement!).appendChild(popup);
+  }
+  while (popup.firstChild) popup.removeChild(popup.firstChild);
+  const add = (label: string, run: () => void, disabled = false) => {
+    const mi = doc.createXULElement("menuitem") as any;
+    mi.setAttribute("label", label);
+    if (disabled) mi.setAttribute("disabled", "true");
+    mi.addEventListener("command", () => guard("graph.menu", run)());
+    popup.appendChild(mi);
+    return mi;
+  };
+  const sep = () => popup.appendChild(doc.createXULElement("menuseparator"));
+
+  const ref = node.ref;
+  const title = ref.title || ref.text || "";
+  const q = encodeURIComponent(title);
+  const view = views.get(body);
+
+  if (ref.libItemID) {
+    add(getString("graph-menu-locate"), () => nodeClicked(node));
+  } else {
+    add(getString("graph-menu-import"), () => void importNode(item, node, view));
+  }
+  sep();
+  if (ref.identifiers.DOI) {
+    add(getString("graph-menu-open-doi"), () =>
+      Zotero.launchURL(`https://doi.org/${ref.identifiers.DOI}`),
+    );
+  }
+  add(getString("graph-menu-pubmed"), () =>
+    Zotero.launchURL(
+      ref.identifiers.PMID
+        ? `https://pubmed.ncbi.nlm.nih.gov/${ref.identifiers.PMID}/`
+        : `https://pubmed.ncbi.nlm.nih.gov/?term=${q}`,
+    ),
+  );
+  add(getString("graph-menu-scholar"), () =>
+    Zotero.launchURL(`https://scholar.google.com/scholar?q=${q}`),
+  );
+  sep();
+  add(getString("graph-menu-copy"), () => {
+    new ztoolkit.Clipboard().addText(citationText(ref), "text/unicode").copy();
+    new ztoolkit.ProgressWindow(getString("panel-copied"), {
+      closeOtherProgressWindows: true,
+    })
+      .createLine({ text: collapseText(title, 60), type: "success" })
+      .show();
+  });
+  const canCenter =
+    node.kind !== "origin" &&
+    !!(ref.identifiers.openAlex || ref.identifiers.DOI || ref.identifiers.PMID);
+  add(
+    getString("graph-menu-recenter"),
+    () => {
+      centers.set(body, {
+        ids: {
+          openAlex: ref.identifiers.openAlex,
+          DOI: ref.identifiers.DOI,
+          PMID: ref.identifiers.PMID,
+        },
+        key: ref.identifiers.openAlex || ref.identifiers.DOI || ref.identifiers.PMID || "",
+        label: nodeShortLabel(node),
+      });
+      void renderGraph(body, item, setSectionSummary);
+    },
+    !canCenter,
+  );
+  popup.openPopupAtScreen(screenX, screenY, true);
+}
+
+function nodeShortLabel(node: GraphNode): string {
+  const author = (node.ref.authors?.[0] || "").trim().split(/\s+/).pop() || "";
+  return [author, node.ref.year].filter(Boolean).join(" ") || collapseText(node.ref.title || "", 20);
+}
+
+/** hover: tip line + (after the usual delay) the multi-source card */
+function makeHoverHandler(
+  body: HTMLElement,
+  item: Zotero.Item,
+): GraphHandlers["onHover"] {
+  let hoverTimer: number | undefined;
+  return (node, rect) => {
+    const tip = body.querySelector<HTMLElement>(".references-graph-tip");
+    // never toggle display: a layout jump under the canvas while the
+    // pointer is over it re-fires enter/leave and looks like flicker
+    if (tip) {
+      tip.textContent = node
+        ? `${node.ref.title || ""} (${node.ref.year || "?"}) · ${getString(
+            `graph-legend-${node.kind}` as "graph-legend-origin",
+          )}`
+        : "\u00a0";
+    }
+    clearTimeout(hoverTimer);
+    hoverTimer = undefined;
+    if (!node) {
+      // leaving the node: let the card linger like the reader hover does —
+      // moving into the card cancels this timer (popup mouseenter)
+      const popup = getCurrentPopup();
+      if (popup) {
+        popup.tipTimer = setTimeout(() => {
+          if (getCurrentPopup() === popup) popup.clear();
+        }, popup.removeTipAfterMillisecond);
+      }
+      return;
+    }
+    if (!getPref("showPopup") || !rect) return;
+    hoverTimer = setTimeout(() => {
+      hoverTimer = undefined;
+      const view = views.get(body);
+      showRefPopup(node.ref, rect, "left", undefined, {
+        onImport: () => void importNode(item, node, view),
+      });
+    }, getNumPref("popupDelay", 233));
+  };
+}
+
 async function renderGraph(
   body: HTMLElement,
   item: Zotero.Item,
   setSectionSummary: (s: string) => void,
   force = false,
 ) {
-  const doc = body.ownerDocument!;
   const container = body.querySelector<HTMLElement>(
     ".references-graph-container",
   );
   const status = body.querySelector<HTMLElement>(".references-graph-status");
+  const home = body.querySelector<HTMLElement>(".references-graph-home");
   if (!container || !status) return;
 
-  let data = force ? undefined : dataCache.get(itemCacheKey(item));
+  const center = centers.get(body) ?? {
+    ids: hostIdentifiers(item),
+    key: "",
+    label: "",
+  };
+  const cacheKey = itemCacheKey(item) + (center.key ? `#${center.key}` : "");
+  if (home) {
+    home.style.display = center.key ? "" : "none";
+    home.textContent = center.key
+      ? `↩ ${getString("graph-back-home")}`
+      : "";
+    home.title = center.key
+      ? `${getString("graph-centered-on")} ${center.label}`
+      : "";
+  }
+
+  let data = force ? undefined : dataCache.get(cacheKey);
   if (!data) {
     status.textContent = getString("graph-loading");
     status.style.display = "";
-    const built = await buildGraph(item, {
-      maxNodes: Number(getPref("graphMaxNodes")) || 50,
-      onStatus: (msg) => {
-        status.textContent = msg;
+    const built = await buildGraph(
+      { ids: center.ids, libraryID: item.libraryID },
+      {
+        maxNodes: Number(getPref("graphMaxNodes")) || 50,
+        onStatus: (msg) => {
+          status.textContent = msg;
+        },
       },
-    });
+    );
     // the user may have switched items while OpenAlex was queried
     if (!container.isConnected) return;
     if (!built) {
@@ -70,7 +296,7 @@ async function renderGraph(
       const oldest = dataCache.keys().next().value;
       if (oldest !== undefined) dataCache.delete(oldest);
     }
-    dataCache.set(itemCacheKey(item), data);
+    dataCache.set(cacheKey, data);
   }
   status.style.display = "none";
   // one live view per body: destroy the previous render's view (its
@@ -84,23 +310,14 @@ async function renderGraph(
     view = new GraphView(container, {
       onSelect: nodeClicked,
       onOpen: nodeOpened,
-      onHover: (node) => {
-        const tip = body.querySelector<HTMLElement>(".references-graph-tip");
-        if (!tip) return;
-        // never toggle display: a layout jump under the canvas while the
-        // pointer is over it re-fires enter/leave and looks like flicker
-        tip.textContent = node
-          ? `${node.ref.title || ""} (${node.ref.year || "?"}) · ${getString(
-              `graph-legend-${node.kind}` as "graph-legend-origin",
-            )}`
-          : "\u00a0";
-      },
+      onHover: makeHoverHandler(body, item),
+      onContext: (node, sx, sy) =>
+        showNodeMenu(body, item, setSectionSummary, node, sx, sy),
     });
     views.set(body, view);
   }
   view.setData(data);
   setSectionSummary(`${data.nodes.length}`);
-  void doc;
 }
 
 export function registerGraphSection() {
@@ -141,6 +358,16 @@ export function registerGraphSection() {
       const spacer = doc.createElement("span");
       spacer.className = "references-spacer";
       toolbar.append(spacer);
+      // a fresh render always starts centred on the item itself
+      centers.delete(body as HTMLElement);
+      const home = doc.createElement("button");
+      home.className = "references-button references-graph-home";
+      home.style.display = "none";
+      home.addEventListener("click", () => {
+        centers.delete(body as HTMLElement);
+        void renderGraph(body as HTMLElement, item, setSectionSummary);
+      });
+      toolbar.append(home);
       const rebuild = doc.createElement("button");
       rebuild.className =
         "references-button references-icon-button references-icon-refresh";
@@ -201,6 +428,19 @@ export function registerGraphSection() {
       },
     ),
   });
+}
+
+/** remove the per-window node context menu (plugin shutdown / window unload) */
+export function removeGraphMenus() {
+  for (const win of Zotero.getMainWindows()) {
+    try {
+      win.document
+        .getElementById(`${config.addonRef}-graph-node-menu`)
+        ?.remove();
+    } catch {
+      // window already gone
+    }
+  }
 }
 
 export function invalidateGraph(stateKeys?: string[]) {

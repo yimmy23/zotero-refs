@@ -38,6 +38,8 @@ export interface RefTag {
   url?: string;
   /** click selects this zotero item in library */
   itemID?: number;
+  /** click runs this action (takes precedence over url / itemID) */
+  onClick?: () => void;
   /** marks the tag as a data-source badge */
   source?: SourceID;
 }
