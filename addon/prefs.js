@@ -39,7 +39,7 @@ pref("graphEnable", true);
 pref("graphMaxNodes", 50);
 
 // Network
-pref("email", "zotero-references@mailinator.com");
+pref("email", "zotero-refs@mailinator.com");
 pref("s2ApiKey", "");
 pref("cacheTTLHours", 168);
 

@@ -56,7 +56,7 @@ export function registerDevEval() {
         }
       },
     };
-    endpoints["/references-dev/eval"] = handler;
+    endpoints["/refs-dev/eval"] = handler;
     ztoolkit.log("[devEval] endpoint registered");
   } catch (e) {
     ztoolkit.log("[devEval] register failed", e);

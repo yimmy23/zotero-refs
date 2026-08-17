@@ -36,7 +36,6 @@ const KIND_COLOR: Record<GraphNode["kind"], string> = {
   citation: "#35999a",
   related: "#9b7fd4",
 };
-const IN_LIBRARY_RING = "#d63b3b";
 
 /** initial layout budget (spec: ~150 ticks) */
 const SETTLE_TICKS = 150;
@@ -50,8 +49,10 @@ const MAX_SCALE = 5;
 const CLICK_SLOP = 3;
 
 function nodeRadius(n: GraphNode): number {
-  const r = 5 + 3 * Math.log2(1 + (n.ref.citationCount || 0));
-  return n.kind === "origin" ? r + 4 : r;
+  // log10 with a hard cap: heavily-cited classics must not dwarf the canvas
+  const r = 4.5 + 2.2 * Math.log10(1 + (n.ref.citationCount || 0));
+  const clamped = Math.min(r, 13);
+  return n.kind === "origin" ? clamped + 4 : clamped;
 }
 
 /** "Surname Year" label, falling back to a title stub. */
@@ -171,10 +172,12 @@ export class GraphView {
       const c = this.createSVG<SVGCircleElement>("circle");
       c.setAttribute("r", String(nodeRadius(node)));
       c.setAttribute("fill", KIND_COLOR[node.kind]);
-      if (node.inLibrary) {
-        c.setAttribute("stroke", IN_LIBRARY_RING);
-        c.setAttribute("stroke-width", "2");
-      }
+      // in-library nodes are solid, everything else is translucent —
+      // the same visual language as the dimmed reference rows
+      c.setAttribute(
+        "fill-opacity",
+        node.kind === "origin" || node.inLibrary ? "1" : "0.55",
+      );
       c.style.cursor = "pointer";
       this.attachNodeEvents(c, node);
       this.nodeLayer.appendChild(c);
@@ -191,8 +194,11 @@ export class GraphView {
       const t = this.createSVG<SVGTextElement>("text");
       t.textContent = nodeLabel(node);
       t.setAttribute("text-anchor", "middle");
-      t.setAttribute("font-size", "10");
+      t.setAttribute("font-size", "9");
       t.setAttribute("font-family", "sans-serif");
+      t.setAttribute("paint-order", "stroke");
+      t.setAttribute("stroke-width", "2.5");
+      t.setAttribute("stroke-linejoin", "round");
       t.style.pointerEvents = "none";
       this.labelLayer.appendChild(t);
       this.labelEls.set(node.id, t);
@@ -207,7 +213,7 @@ export class GraphView {
         "link",
         forceLink<GraphNode, GraphEdge>(data.edges)
           .id((n) => n.id)
-          .distance((e) => (e.kind === "direct" ? 80 : 40))
+          .distance((e) => (e.kind === "direct" ? 70 : 46))
           .strength((e) =>
             e.kind === "direct" ? 0.3 : Math.min(1, e.weight / 6),
           ),
@@ -216,7 +222,7 @@ export class GraphView {
       .force("center", forceCenter<GraphNode>(0, 0))
       .force(
         "collide",
-        forceCollide<GraphNode>((n) => nodeRadius(n) + 2),
+        forceCollide<GraphNode>((n) => nodeRadius(n) + 5).strength(0.9),
       )
       // weak pull keeps disconnected components on screen
       .force("x", forceX<GraphNode>(0).strength(0.02))
@@ -353,7 +359,16 @@ export class GraphView {
       el.setAttribute("x2", String(t.x ?? 0));
       el.setAttribute("y2", String(t.y ?? 0));
     }
+    const boundX = Math.max(60, this.width / 2 - 14);
+    const boundY = Math.max(60, this.height / 2 - 14);
     for (const node of this.data?.nodes || []) {
+      // keep every node inside the visible canvas
+      if (typeof node.x === "number") {
+        node.x = Math.max(-boundX, Math.min(boundX, node.x));
+      }
+      if (typeof node.y === "number") {
+        node.y = Math.max(-boundY, Math.min(boundY, node.y));
+      }
       const c = this.nodeEls.get(node.id);
       if (c) {
         c.setAttribute("cx", String(node.x ?? 0));
@@ -362,7 +377,7 @@ export class GraphView {
       const t = this.labelEls.get(node.id);
       if (t) {
         t.setAttribute("x", String(node.x ?? 0));
-        t.setAttribute("y", String((node.y ?? 0) + nodeRadius(node) + 12));
+        t.setAttribute("y", String((node.y ?? 0) + nodeRadius(node) + 10));
       }
     }
   }
@@ -372,10 +387,12 @@ export class GraphView {
   private applyTheme() {
     const dark = !!this.darkQuery?.matches;
     const labelFill = dark ? "#e6e6e6" : "#333333";
+    const labelHalo = dark ? "#1e1e1e" : "#ffffff";
     const edgeStroke = dark ? "#cccccc" : "#555555";
     const nodeOutline = dark ? "#2b2b2b" : "#ffffff";
     for (const t of this.labelEls.values()) {
       t.setAttribute("fill", labelFill);
+      t.setAttribute("stroke", labelHalo);
     }
     for (const { el, edge } of this.edgeEls) {
       el.setAttribute("stroke", edgeStroke);
@@ -393,7 +410,7 @@ export class GraphView {
     }
     for (const node of this.data?.nodes || []) {
       const c = this.nodeEls.get(node.id);
-      if (c && !node.inLibrary) {
+      if (c) {
         c.setAttribute("stroke", nodeOutline);
         c.setAttribute("stroke-width", "1");
       }

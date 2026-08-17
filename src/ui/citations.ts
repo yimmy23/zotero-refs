@@ -4,6 +4,8 @@ import { getPref } from "../utils/prefs";
 import { itemCacheKey } from "../core/storage";
 import type { Identifiers, RefItem } from "../core/types";
 import { getCitationsByAPI } from "../sources";
+import type { CitationSource } from "../sources";
+import { normalizeTitle } from "../core/text";
 import { renderRefRow } from "./rows";
 import { guard, guardAsync } from "../utils/guard";
 import type { RowContext } from "./rows";
@@ -23,6 +25,20 @@ interface CitationsState {
   nextOffset: number;
   exhausted: boolean;
   loading: boolean;
+  /** source that served page 1 — later pages stay on it */
+  source?: CitationSource;
+  /** identity keys of everything shown, for cross-page dedupe */
+  seen: Set<string>;
+}
+
+/** stable identity of a citing work for dedupe */
+function refKey(ref: RefItem): string {
+  return (
+    ref.identifiers.DOI?.toLowerCase() ||
+    ref.identifiers.s2 ||
+    ref.identifiers.openAlex ||
+    normalizeTitle(ref.title || ref.text)
+  );
 }
 
 const states = new Map<string, CitationsState>();
@@ -61,13 +77,19 @@ async function loadMore(
   let failed = false;
   try {
     const pageSize = Number(getPref("citationsPageSize")) || 25;
-    const page = await getCitationsByAPI(ids, state.nextOffset, pageSize);
+    const page = await getCitationsByAPI(
+      ids,
+      state.nextOffset,
+      pageSize,
+      state.source,
+    );
     if (page === null) {
       // transient API failure — keep the button so the user can retry
       failed = true;
     } else if (!page.items.length) {
       state.exhausted = true;
     } else {
+      state.source = page.source;
       state.total = page.total ?? state.total;
       state.nextOffset =
         page.nextOffset ?? state.nextOffset + page.items.length;
@@ -78,8 +100,15 @@ async function loadMore(
       ) {
         state.exhausted = true;
       }
+      // drop entries already shown (retries / source quirks)
+      const fresh = page.items.filter((r) => {
+        const key = refKey(r);
+        if (!key || state.seen.has(key)) return false;
+        state.seen.add(key);
+        return true;
+      });
       const start = state.refs.length;
-      state.refs.push(...page.items);
+      state.refs.push(...fresh);
       // the user may have switched items while the request ran
       if (dom.list.isConnected) {
         const ctx: RowContext = {
@@ -117,11 +146,13 @@ export function registerCitationsSection() {
     pluginID: config.addonID,
     header: {
       l10nID: getLocaleID("item-section-citations-head-text"),
-      icon: "chrome://zotero/skin/16/universal/cite.svg",
+      icon: `chrome://${config.addonRef}/content/icons/citations.svg`,
+      darkIcon: `chrome://${config.addonRef}/content/icons/citations-dark.svg`,
     },
     sidenav: {
       l10nID: getLocaleID("item-section-citations-sidenav-tooltip"),
-      icon: "chrome://zotero/skin/20/universal/cite.svg",
+      icon: `chrome://${config.addonRef}/content/icons/citations.svg`,
+      darkIcon: `chrome://${config.addonRef}/content/icons/citations-dark.svg`,
     },
     onItemChange: guard("citations.onItemChange", ({ item, setEnabled }) => {
       setEnabled(!!item?.isRegularItem?.() && !!idsOf(item));
@@ -166,6 +197,7 @@ export function registerCitationsSection() {
           nextOffset: 0,
           exhausted: false,
           loading: false,
+          seen: new Set(),
         };
         states.set(stateKey, state);
       } else if (state.refs.length) {

@@ -1,67 +1,73 @@
-# References for Zotero
+# Refs
 
-A ground-up rebuild of [zotero-reference](https://github.com/MuiseDestiny/zotero-reference) for **Zotero 7**, implementing its full feature set on modern APIs, plus new capabilities.
+**References, citations, related papers and a citation graph for every Zotero item.**
+
+A ground-up rebuild of [zotero-reference](https://github.com/MuiseDestiny/zotero-reference) for **Zotero 7 / 8 / 9**, implementing its full feature set on modern official APIs, plus new capabilities.
 
 [English] | [中文说明](#中文说明)
 
 ## Features
 
-### Everything from zotero-reference, rebuilt
+### References panel (library + PDF reader)
 
-- **References panel** (item pane section, works in both the library and the PDF reader)
-  - Parse the bibliography straight from the **PDF text layer** (column detection, header/footer removal, cross-page merging, thesis mode with `Ctrl+Refresh` parsing backwards from the current page)
-  - Or fetch it from **web APIs**: Crossref → Semantic Scholar → OpenAlex → CNKI (Chinese)
-  - Click **Refresh** to fetch; click again to toggle PDF ↔ API; **long-press** to bypass the local cache
-  - Per-row actions: click to **copy**, long-press to **edit**, `Ctrl+click` to **locate in library / open in browser**, `+` to **import & bidirectionally relate** (with `Ctrl+click +` collection picker), `−` to unlink
-  - Rows dim when the reference is not in your library; type icons follow the matched item
-  - **Search box** filters rows by keywords; double-click the count label to copy everything
-  - Per-item persistent cache of parsed/fetched references
-- **Hover popup card** — hover a reference to get title / venue / authors / abstract from several sources at once, with the little **source dots** to switch source (choice remembered per identifier type). Tags for DOI / arXiv / PMID / CNKI / OA-PDF links, citation counts. Text selectable, `Ctrl+wheel` zoom, `Ctrl+click` translation (via Translate for Zotero), dark-mode aware.
-- **PDF reader citation links** — hooked into Zotero 7+'s native reader overlay system (the pdf.js annotation layer is hidden in modern Zotero): hovering an in-text citation shows our multi-source reference card in place of the native preview; clicking an in-text link (Fig/Eq/citation) jumps in a **split view** instead of losing your reading position (outline/back navigation untouched).
-- **Related papers** — recommendations via the official Semantic Scholar recommendations API with OpenAlex fallback (the original readcube/connectedpapers endpoints are dead), merged with your Zotero related items.
+- Parse the bibliography straight from the **PDF text layer** (column detection, header/footer removal, cross-page merging, thesis mode with `Ctrl+Refresh` parsing backwards from the current page) — or fetch it from **web APIs**: Crossref → Semantic Scholar → OpenAlex → CNKI (Chinese)
+- Refresh: click to fetch, click again to toggle PDF ↔ API, **long-press** to bypass the cache
+- Per-row: click to **copy**, long-press to **edit**, `Ctrl+click` to **locate in library / open in browser**, `+` to **import & bidirectionally relate** (`Ctrl+click +` picks the target collection), `−` to unlink
+- Solid rows are in your library, dimmed rows are not; keyword filter box; double-click the count to copy all
+- **Import All** (respects the active filter) and one-click export (plain text / `Ctrl` Markdown / `Shift` CSV)
+- Per-item persistent cache
 
-### New
+### Hover card
 
-- **Cited By section** — paged list of works citing the current item (Semantic Scholar / OpenAlex)
-- **Citation Graph section** — a Connected-Papers-style force graph built from OpenAlex references + citations + related works with co-citation edges; in-library items highlighted; click to select, double-click to open
-- **Import All** — batch import (respects the current filter) with progress
-- **Export** — copy the list as plain text, Markdown (with links), or CSV
-- **PubMed + OpenAlex + Unpaywall** as first-class metadata sources (PMID support, open-access PDF links)
-- **Performance**: request de-duplication, per-host rate limiting, retry with backoff, TTL cache, one-pass library index for O(1) in-library matching, chunked list rendering
+Hover any reference for title / venue / authors / abstract fetched from several sources at once — the dots at the top switch source (your choice per identifier type is remembered). Chips link to DOI / arXiv / PMID / CNKI / open-access PDF. Text selectable, `Ctrl+wheel` zoom, `Ctrl+click` translation (with Translate for Zotero installed), dark-mode aware.
+
+### In-PDF citation links
+
+Built on Zotero 7+'s native reader overlay pipeline: hovering an in-text citation shows the Refs card in place of the native preview; clicking an in-text link (figure / equation / citation) jumps in a **split view** so the primary view never loses your reading position (outline and back-button navigation untouched).
+
+### Cited By · Related · Citation Graph
+
+- **Cited By** — paged list of works citing the item (Semantic Scholar / OpenAlex, source-pinned paging with dedupe)
+- **Related Papers** — Semantic Scholar recommendations with OpenAlex fallback, merged with your Zotero related items
+- **Citation Graph** — a Connected-Papers-style force graph built from OpenAlex references + citations + related works with co-citation edges; solid nodes are in your library; click to select, double-click to open
+
+### Engineering
+
+Request de-duplication, per-host rate limiting, retry with backoff, TTL-bounded cache, one-pass library index for O(1) in-library matching, chunked rendering, exception-proof hooks (a plugin error can never take down Zotero's item pane).
 
 ## Install
 
-Download the `.xpi` from Releases (or build it, below), then in Zotero: `Tools → Plugins → ⚙ → Install Plugin From File…`
+Download `refs.xpi` from [Releases](https://github.com/yimmy23/zotero-refs/releases), then in Zotero: `Tools → Plugins → ⚙ → Install Plugin From File…`. Supports Zotero 7–9.
 
-## Build
+## Build & develop
 
 ```bash
 npm install
-npm run build        # produces .scaffold/build/*.xpi
-npm start            # development: launches Zotero with the plugin loaded
+npm run build   # production xpi in .scaffold/build/
+npm start       # hot-reload development in an isolated Zotero profile (.env)
 ```
 
-## Preferences
+## License
 
-`Settings → References`: auto-fetch, preferred source, PDF scan depth, caching, popup timing/translation, reader link behavior, related/citations/graph toggles, polite-pool email, Semantic Scholar API key, CNKI 研学 account (only needed for CNKI reference lists).
+**AGPL-3.0-or-later.** The PDF-parsing heuristics and feature design are ported from [zotero-reference](https://github.com/MuiseDestiny/zotero-reference) (AGPL-3.0); derivative works must remain AGPL — which also matches Zotero itself and the plugin ecosystem (zotero-plugin-template, Translate for Zotero, Better BibTeX are all AGPL). The full source is open in this repository.
 
 ## Credits
 
-- Feature design and PDF-parsing heuristics ported from [MuiseDestiny/zotero-reference](https://github.com/MuiseDestiny/zotero-reference) (AGPL-3.0)
-- Built on [zotero-plugin-template](https://github.com/windingwind/zotero-plugin-template), [zotero-plugin-toolkit](https://github.com/windingwind/zotero-plugin-toolkit), [zotero-plugin-scaffold](https://github.com/northword/zotero-plugin-scaffold)
+- Feature design & PDF parser heuristics: [MuiseDestiny/zotero-reference](https://github.com/MuiseDestiny/zotero-reference)
+- Tooling: [zotero-plugin-template](https://github.com/windingwind/zotero-plugin-template) · [zotero-plugin-toolkit](https://github.com/windingwind/zotero-plugin-toolkit) · [zotero-plugin-scaffold](https://github.com/northword/zotero-plugin-scaffold)
 - Data: Crossref, OpenAlex, Semantic Scholar, arXiv, PubMed, Unpaywall, CNKI, ReadPaper, Connected Papers
-
-License: AGPL-3.0-or-later
 
 ---
 
 ## 中文说明
 
-[zotero-reference](https://github.com/MuiseDestiny/zotero-reference) 的 **Zotero 7 全功能重构版**：
+**Refs——为每个 Zotero 条目提供参考文献、被引、相关文献与引文图谱。**
 
-- **参考文献面板**（条目面板 + 阅读器右侧栏）：PDF 文本层解析（分栏识别、页眉页脚去除、跨页合并、`Ctrl+刷新` 学位论文模式）或 API 获取（Crossref → Semantic Scholar → OpenAlex → 知网）；单击刷新、再次单击切换 PDF/API、长按忽略缓存；行内操作：单击复制、长按编辑、`Ctrl+单击` 定位/打开、`+` 导入并双向关联（`Ctrl+单击+` 选择分类）、`−` 取消关联；关键词筛选；双击数字复制全部；本地缓存。
-- **悬浮卡片**：多源并发获取标题/期刊/作者/摘要，顶部圆点切换数据源并记忆偏好；DOI/arXiv/PMID/知网/OA-PDF 标签；`Ctrl+滚轮` 缩放、`Ctrl+单击` 翻译（需 Translate for Zotero）；适配深色模式。
-- **阅读器引文链接**：接入 Zotero 7+ 阅读器原生 overlay 管线（现代 Zotero 已隐藏 pdf.js 注释层）：悬停正文引文显示多源参考文献卡片（替代原生预览）；点击正文跳转链接在**分栏**中打开、主视图不动（目录/后退导航不受影响）。
-- **相关文献**：官方 Semantic Scholar 推荐 API + OpenAlex 兜底（原 readcube/connectedpapers 接口已失效），并合并 Zotero 已有关联条目。
+[zotero-reference](https://github.com/MuiseDestiny/zotero-reference) 的 Zotero 7/8/9 全功能重构版：
 
-**新增**：被引用列表（分页）、引文图谱（OpenAlex 数据 + 共被引边的力导向图）、批量导入、导出（文本/Markdown/CSV）、PubMed/OpenAlex/Unpaywall 数据源、请求去重/限速/重试/缓存、O(1) 文库匹配索引。
+- **参考文献面板**（文库 + 阅读器）：PDF 文本层解析（分栏、页眉页脚去除、跨页合并、`Ctrl+刷新` 学位论文模式）或 API 获取（Crossref → Semantic Scholar → OpenAlex → 知网）；行内复制/长按编辑/`Ctrl+单击` 定位或打开/`+` 导入并双向关联/`−` 取消；实心行=已入库；关键词筛选；批量导入；导出（文本/Markdown/CSV）；本地缓存
+- **悬浮卡片**：多源并发元数据，圆点切换数据源并记忆偏好；DOI/arXiv/PMID/知网/OA-PDF 标签；`Ctrl+滚轮` 缩放、`Ctrl+单击` 翻译；适配深色模式
+- **阅读器引文链接**：接入 Zotero 原生 overlay 管线——悬停正文引文显示 Refs 卡片；点击跳转链接在分栏中打开、主视图不动
+- **被引用**（分页、锁源去重）· **相关文献**（S2 推荐 + OpenAlex 兜底）· **引文图谱**（OpenAlex 数据 + 共被引边力导向图，实心节点=已入库）
+
+**协议**：AGPL-3.0-or-later——PDF 解析核心移植自 AGPL 的 zotero-reference，衍生作品依法必须保持 AGPL；这与 Zotero 本体及插件生态（官方模板、Translate for Zotero、Better BibTeX）一致。本仓库完整开源。

@@ -245,5 +245,5 @@ export const http = new Http();
 /** polite-pool email for Crossref / OpenAlex / Unpaywall */
 export function politeEmail(): string {
   const email = (getPref("email") as string)?.trim();
-  return email || "zotero-references@mailinator.com";
+  return email || "zotero-refs@mailinator.com";
 }

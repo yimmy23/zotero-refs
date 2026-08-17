@@ -100,7 +100,7 @@ async function fetchReferences(
         closeOtherProgressWindows: true,
       })
         .createLine({
-          text: `${cached.length} ${getString("refs-count-suffix")}`,
+          text: `${cached.length} ${getString("panel-count-suffix")}`,
           type: "success",
         })
         .show();
@@ -115,7 +115,7 @@ async function fetchReferences(
       new ztoolkit.ProgressWindow("[Fail] PDF", {
         closeOtherProgressWindows: true,
       })
-        .createLine({ text: getString("refs-need-reader"), type: "fail" })
+        .createLine({ text: getString("panel-need-reader"), type: "fail" })
         .show();
       return [];
     }
@@ -136,7 +136,7 @@ async function fetchReferences(
       if (refs.length) {
         popupWin.changeHeadline("[Done] PDF");
         popupWin.changeLine({
-          text: `${refs.length} ${getString("refs-count-suffix")}`,
+          text: `${refs.length} ${getString("panel-count-suffix")}`,
           type: "success",
           progress: 100,
         });
@@ -165,13 +165,13 @@ async function fetchReferences(
   );
   if (!result) {
     popupWin.changeHeadline("[Fail] API");
-    popupWin.changeLine({ text: getString("refs-api-fail"), type: "fail" });
+    popupWin.changeLine({ text: getString("panel-api-fail"), type: "fail" });
     popupWin.startCloseTimer(3000);
     return [];
   }
   popupWin.changeHeadline("[Done] API");
   popupWin.changeLine({
-    text: `${result.refs.length} ${getString("refs-count-suffix")} (${result.source})`,
+    text: `${result.refs.length} ${getString("panel-count-suffix")} (${result.source})`,
     type: "success",
   });
   popupWin.startCloseTimer(3000);
@@ -189,7 +189,7 @@ function copyAll(state: PanelState) {
   );
   new ztoolkit.Clipboard().addText(texts.join("\n"), "text/unicode").copy();
   new ztoolkit.ProgressWindow("References")
-    .createLine({ text: getString("refs-copy-all-done"), type: "success" })
+    .createLine({ text: getString("panel-copy-all-done"), type: "success" })
     .show();
 }
 
@@ -233,7 +233,7 @@ function exportRefs(state: PanelState, format: "text" | "markdown" | "csv") {
   new ztoolkit.Clipboard().addText(out, "text/unicode").copy();
   new ztoolkit.ProgressWindow("References")
     .createLine({
-      text: `${getString("refs-export-done")} (${format})`,
+      text: `${getString("panel-export-done")} (${format})`,
       type: "success",
     })
     .show();
@@ -265,7 +265,7 @@ function renderList(
   if (!list || !count) return;
   closePopup();
   list.textContent = "";
-  count.textContent = `${state.refs.length} ${getString("refs-count-suffix")}${
+  count.textContent = `${state.refs.length} ${getString("panel-count-suffix")}${
     state.sourceUsed ? ` · ${state.sourceUsed}` : ""
   }`;
   setSectionSummary(`${state.refs.length}`);
@@ -348,8 +348,8 @@ function buildToolbar(
 
   const count = doc.createElement("span");
   count.className = "references-count";
-  count.textContent = `0 ${getString("refs-count-suffix")}`;
-  count.title = getString("refs-copy-all-tip");
+  count.textContent = `0 ${getString("panel-count-suffix")}`;
+  count.title = getString("panel-copy-all-tip");
   count.addEventListener("dblclick", () => copyAll(state));
   toolbar.append(count);
 
@@ -360,26 +360,25 @@ function buildToolbar(
   const badge = doc.createElement("span");
   badge.className = "references-source-badge";
   badge.textContent = state.source;
-  badge.title = getString("refs-source-tip");
+  badge.title = getString("panel-source-tip");
   badge.addEventListener("click", () => {
     state.source = state.source === "PDF" ? "API" : "PDF";
     badge.textContent = state.source;
   });
   toolbar.append(badge);
 
-  const mkButton = (label: string, tip: string) => {
+  const mkIconButton = (iconClass: string, tip: string) => {
     const button = doc.createElement("button");
-    button.className = "references-button";
-    button.textContent = label;
+    button.className = `references-button references-icon-button ${iconClass}`;
     button.title = tip;
     toolbar.append(button);
     return button;
   };
 
   // refresh with click / long-press / ctrl semantics (ported)
-  const refreshButton = mkButton(
-    getString("refs-refresh"),
-    getString("refs-refresh-tip"),
+  const refreshButton = mkIconButton(
+    "references-icon-refresh",
+    getString("panel-refresh-tip"),
   );
   let pressTimer: number | undefined;
   refreshButton.addEventListener("mousedown", (event: MouseEvent) => {
@@ -408,9 +407,9 @@ function buildToolbar(
     pressTimer = undefined;
   });
 
-  const importButton = mkButton(
-    getString("refs-import-all"),
-    getString("refs-import-all-tip"),
+  const importButton = mkIconButton(
+    "references-icon-import",
+    getString("panel-import-all-tip"),
   );
   importButton.addEventListener("click", async () => {
     if (!state.refs.length || state.importing) return;
@@ -425,7 +424,7 @@ function buildToolbar(
     if (!targets.length) return;
     state.importing = true;
     importButton.disabled = true;
-    const popupWin = new ztoolkit.ProgressWindow(getString("refs-import-all"), {
+    const popupWin = new ztoolkit.ProgressWindow(getString("panel-import-all"), {
       closeTime: -1,
       closeOtherProgressWindows: true,
     })
@@ -460,7 +459,10 @@ function buildToolbar(
     renderList(body, item, state, setSectionSummary);
   });
 
-  const exportButton = mkButton("⤓", getString("refs-export-tip"));
+  const exportButton = mkIconButton(
+    "references-icon-copy",
+    getString("panel-export-tip"),
+  );
   exportButton.addEventListener("click", (event: MouseEvent) => {
     if (event.shiftKey) exportRefs(state, "csv");
     else if (event.ctrlKey || event.metaKey) exportRefs(state, "markdown");
@@ -473,7 +475,7 @@ function buildToolbar(
   const searchBox = doc.createElement("div");
   searchBox.className = "references-search";
   const input = doc.createElement("input");
-  input.placeholder = getString("refs-search-placeholder");
+  input.placeholder = getString("panel-search-placeholder");
   input.addEventListener("input", () => {
     const list = body.querySelector<HTMLElement>(".references-list");
     if (list) filterRows(list, input.value);
@@ -488,11 +490,13 @@ export function registerReferencesSection() {
     pluginID: config.addonID,
     header: {
       l10nID: getLocaleID("item-section-references-head-text"),
-      icon: `chrome://${config.addonRef}/content/icons/favicon@0.5x.png`,
+      icon: `chrome://${config.addonRef}/content/icons/references.svg`,
+      darkIcon: `chrome://${config.addonRef}/content/icons/references-dark.svg`,
     },
     sidenav: {
       l10nID: getLocaleID("item-section-references-sidenav-tooltip"),
-      icon: `chrome://${config.addonRef}/content/icons/favicon@0.5x.png`,
+      icon: `chrome://${config.addonRef}/content/icons/references.svg`,
+      darkIcon: `chrome://${config.addonRef}/content/icons/references-dark.svg`,
     },
     onItemChange: guard("references.onItemChange", ({ item, setEnabled }) => {
       setEnabled(!!item?.isRegularItem?.());

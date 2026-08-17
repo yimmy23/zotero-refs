@@ -148,21 +148,33 @@ export async function getReferencesByAPI(
   return null;
 }
 
-/** works citing this work; S2 first (rich paging), OpenAlex fallback */
+export type CitationSource = "semanticscholar" | "openalex";
+
+/**
+ * Works citing this work; S2 first (rich paging), OpenAlex fallback.
+ * Pass `only` to pin one source: mixing sources across pages would
+ * interleave two differently-ordered lists and show duplicates.
+ */
 export async function getCitationsByAPI(
   ids: Identifiers,
   offset = 0,
   limit = 25,
-): Promise<PagedRefs | null> {
-  try {
-    const res = await semanticscholar.getCitations?.(ids, offset, limit);
-    if (res?.items.length) return res;
-  } catch (e) {
-    ztoolkit.log("[sources] s2 citations failed", e);
+  only?: CitationSource,
+): Promise<(PagedRefs & { source: CitationSource }) | null> {
+  if (only !== "openalex") {
+    try {
+      const res = await semanticscholar.getCitations?.(ids, offset, limit);
+      if (res?.items.length || only === "semanticscholar") {
+        return res ? { ...res, source: "semanticscholar" } : null;
+      }
+    } catch (e) {
+      ztoolkit.log("[sources] s2 citations failed", e);
+      if (only === "semanticscholar") return null;
+    }
   }
   try {
     const res = await openalex.getCitations?.(ids, offset, limit);
-    if (res?.items.length) return res;
+    if (res?.items.length) return { ...res, source: "openalex" };
   } catch (e) {
     ztoolkit.log("[sources] openalex citations failed", e);
   }

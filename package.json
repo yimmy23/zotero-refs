@@ -1,24 +1,24 @@
 {
-  "name": "zotero-references",
+  "name": "zotero-refs",
   "type": "module",
   "version": "1.0.0",
-  "description": "References for Zotero — parse, explore, and import the references, citations and related papers of your library items",
+  "description": "Refs — references, citations, related papers and a citation graph for every Zotero item",
   "config": {
-    "addonName": "References",
-    "addonID": "references@zotero-references.dev",
-    "addonRef": "references",
-    "addonInstance": "References",
-    "prefsPrefix": "extensions.zotero.references"
+    "addonName": "Refs",
+    "addonID": "refs@zotero-refs.app",
+    "addonRef": "refs",
+    "addonInstance": "Refs",
+    "prefsPrefix": "extensions.zotero.refs"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yim/zotero-references.git"
+    "url": "git+https://github.com/yimmy23/zotero-refs.git"
   },
   "author": "yim",
   "bugs": {
-    "url": "https://github.com/yim/zotero-references/issues"
+    "url": "https://github.com/yimmy23/zotero-refs/issues"
   },
-  "homepage": "https://github.com/yim/zotero-references#readme",
+  "homepage": "https://github.com/yimmy23/zotero-refs#readme",
   "license": "AGPL-3.0-or-later",
   "scripts": {
     "start": "zotero-plugin serve",

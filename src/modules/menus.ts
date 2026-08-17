@@ -112,7 +112,7 @@ async function copyAction(items: Zotero.Item[]) {
   const refs = await refsFor(item);
   if (!refs?.length) {
     new ztoolkit.ProgressWindow("References")
-      .createLine({ text: getString("refs-api-fail"), type: "fail" })
+      .createLine({ text: getString("panel-api-fail"), type: "fail" })
       .show();
     return;
   }
@@ -121,7 +121,7 @@ async function copyAction(items: Zotero.Item[]) {
     .join("\n");
   new ztoolkit.Clipboard().addText(text, "text/unicode").copy();
   new ztoolkit.ProgressWindow("References")
-    .createLine({ text: getString("refs-copy-all-done"), type: "success" })
+    .createLine({ text: getString("panel-copy-all-done"), type: "success" })
     .show();
 }
 

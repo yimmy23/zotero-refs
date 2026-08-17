@@ -57,11 +57,13 @@ export function registerRelatedSection() {
     pluginID: config.addonID,
     header: {
       l10nID: getLocaleID("item-section-related-head-text"),
-      icon: "chrome://zotero/skin/16/universal/link.svg",
+      icon: `chrome://${config.addonRef}/content/icons/related.svg`,
+      darkIcon: `chrome://${config.addonRef}/content/icons/related-dark.svg`,
     },
     sidenav: {
       l10nID: getLocaleID("item-section-related-sidenav-tooltip"),
-      icon: "chrome://zotero/skin/20/universal/magic-wand.svg",
+      icon: `chrome://${config.addonRef}/content/icons/related.svg`,
+      darkIcon: `chrome://${config.addonRef}/content/icons/related-dark.svg`,
     },
     onItemChange: guard("related.onItemChange", ({ item, setEnabled }) => {
       setEnabled(!!item?.isRegularItem?.());

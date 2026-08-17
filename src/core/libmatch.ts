@@ -55,7 +55,7 @@ class LibraryIndex {
         },
       },
       ["item"],
-      "references-libindex",
+      "refs-libindex",
     );
   }
 

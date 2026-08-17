@@ -18,19 +18,19 @@ item-section-graph-head-text =
 item-section-graph-sidenav-tooltip =
     .tooltiptext = Citation graph of this item
 
-refs-count-suffix = references
-refs-need-reader = Open the PDF in the reader first, or switch source to API
-refs-api-fail = No references found from web APIs
-refs-copy-all-done = All references copied
-refs-copy-all-tip = Double-click to copy all references
-refs-source-tip = Data source for the next refresh (click to toggle PDF / API)
-refs-refresh = Refresh
-refs-refresh-tip = Click: fetch (toggles PDF/API) · Long press: force re-parse · Ctrl+click: parse from current page (PDF)
-refs-import-all = Import All
-refs-import-all-tip = Import all (or filtered) references into the library and link them as related items
-refs-export-tip = Copy list — click: plain text · Ctrl+click: Markdown · Shift+click: CSV
-refs-export-done = References copied
-refs-search-placeholder = Filter references…
+panel-count-suffix = references
+panel-need-reader = Open the PDF in the reader first, or switch source to API
+panel-api-fail = No references found from web APIs
+panel-copy-all-done = All references copied
+panel-copy-all-tip = Double-click to copy all references
+panel-source-tip = Data source for the next refresh (click to toggle PDF / API)
+panel-refresh = Refresh
+panel-refresh-tip = Click: fetch (toggles PDF/API) · Long press: force re-parse · Ctrl+click: parse from current page (PDF)
+panel-import-all = Import All
+panel-import-all-tip = Import all (or filtered) references into the library and link them as related items
+panel-export-tip = Copy list — click: plain text · Ctrl+click: Markdown · Shift+click: CSV
+panel-export-done = References copied
+panel-search-placeholder = Filter references…
 
 citations-count-suffix = citations
 citations-load-more = Load more
@@ -49,3 +49,9 @@ menu-import-refs =
     .label = Import all references
 menu-copy-refs =
     .label = Copy references
+
+graph-legend-origin = this paper
+graph-legend-reference = references
+graph-legend-citation = citing works
+graph-legend-related = related
+graph-legend-hint = solid = in your library

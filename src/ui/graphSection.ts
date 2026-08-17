@@ -104,11 +104,13 @@ export function registerGraphSection() {
     pluginID: config.addonID,
     header: {
       l10nID: getLocaleID("item-section-graph-head-text"),
-      icon: `chrome://${config.addonRef}/content/icons/connectedpapers.png`,
+      icon: `chrome://${config.addonRef}/content/icons/graph.svg`,
+      darkIcon: `chrome://${config.addonRef}/content/icons/graph-dark.svg`,
     },
     sidenav: {
       l10nID: getLocaleID("item-section-graph-sidenav-tooltip"),
-      icon: `chrome://${config.addonRef}/content/icons/connectedpapers.png`,
+      icon: `chrome://${config.addonRef}/content/icons/graph.svg`,
+      darkIcon: `chrome://${config.addonRef}/content/icons/graph-dark.svg`,
     },
     onItemChange: guard("graph.onItemChange", ({ item, setEnabled }) => {
       setEnabled(
@@ -136,13 +138,38 @@ export function registerGraphSection() {
       spacer.className = "references-spacer";
       toolbar.append(spacer);
       const rebuild = doc.createElement("button");
-      rebuild.className = "references-button";
-      rebuild.textContent = getString("graph-rebuild");
+      rebuild.className =
+        "references-button references-icon-button references-icon-refresh";
+      rebuild.title = getString("graph-rebuild");
       rebuild.addEventListener("click", () =>
         renderGraph(body as HTMLElement, item, setSectionSummary, true),
       );
       toolbar.append(rebuild);
       body.append(toolbar);
+
+      // legend: node color semantics + the solid-means-in-library rule
+      const legend = doc.createElement("div");
+      legend.className = "references-graph-legend";
+      const legendEntries: Array<[string, string]> = [
+        ["#e8710a", getString("graph-legend-origin")],
+        ["#4a90d9", getString("graph-legend-reference")],
+        ["#35999a", getString("graph-legend-citation")],
+        ["#9b7fd4", getString("graph-legend-related")],
+      ];
+      for (const [color, label] of legendEntries) {
+        const entry = doc.createElement("span");
+        entry.className = "references-graph-legend-entry";
+        const dot = doc.createElement("span");
+        dot.className = "references-graph-legend-dot";
+        dot.style.backgroundColor = color;
+        entry.append(dot, label);
+        legend.append(entry);
+      }
+      const hint = doc.createElement("span");
+      hint.className = "references-graph-legend-hint";
+      hint.textContent = getString("graph-legend-hint");
+      legend.append(hint);
+      body.append(legend);
 
       const container = doc.createElement("div");
       container.className = "references-graph-container";
