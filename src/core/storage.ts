@@ -1,6 +1,6 @@
 import { config } from "../../package.json";
 import { setTimeout, clearTimeout } from "../utils/window";
-import { isHttpUrl } from "./text";
+import { cleanText, isHttpUrl } from "./text";
 import type { RefItem } from "./types";
 
 /**
@@ -24,11 +24,12 @@ function sanitizeRef(r: any): RefItem | null {
     authors: Array.isArray(r.authors)
       ? r.authors.filter((a: unknown) => typeof a === "string").slice(0, 50)
       : [],
-    title: str(r.title),
-    text: str(r.text),
+    // markup left by APIs in older caches ("<i>ALK</i>") is cleaned here too
+    title: cleanText(str(r.title)),
+    text: cleanText(str(r.text)),
     year: str(r.year) ?? (typeof r.year === "number" ? String(r.year) : undefined),
     type: str(r.type) || "journalArticle",
-    primaryVenue: str(r.primaryVenue),
+    primaryVenue: cleanText(str(r.primaryVenue)),
     publishDate: str(r.publishDate),
     number: typeof r.number === "number" ? r.number : undefined,
     x: typeof r.x === "number" ? r.x : undefined,

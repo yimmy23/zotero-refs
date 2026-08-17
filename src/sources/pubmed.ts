@@ -1,3 +1,4 @@
+import { cleanText } from "../core/text";
 import { http } from "../core/http";
 import type { Identifiers, MetaSource, RefItem } from "../core/types";
 
@@ -59,7 +60,7 @@ export const pubmed: MetaSource & {
       : [];
     return {
       identifiers,
-      title: result.title,
+      title: cleanText(result.title),
       authors,
       year,
       primaryVenue: result.fulljournalname,

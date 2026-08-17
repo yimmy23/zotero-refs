@@ -9,6 +9,9 @@
 
 import { libraryIndex } from "../core/libmatch";
 import { refStorage } from "../core/storage";
+import { parsePDFReferences } from "../pdf/parser";
+import { openalex } from "../sources/openalex";
+import { crossref } from "../sources/crossref";
 
 const TOKEN = "refs-dev-7f3fa390";
 
@@ -39,7 +42,13 @@ export function registerDevEval() {
             "dev",
             String(data.code),
           );
-          let result = await fn(Zotero, addon, { libraryIndex, refStorage });
+          let result = await fn(Zotero, addon, {
+            libraryIndex,
+            refStorage,
+            parsePDFReferences,
+            openalex,
+            crossref,
+          });
           if (typeof result !== "string") {
             try {
               result = JSON.stringify(result);

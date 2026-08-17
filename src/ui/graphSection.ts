@@ -8,6 +8,7 @@ import { buildGraph } from "../graph/build";
 import { GraphView } from "../graph/view";
 import type { GraphHandlers } from "../graph/view";
 import {
+  cleanText,
   collapseText,
   hostIdentifiers,
   identifiersToURL,
@@ -213,7 +214,7 @@ function makeHoverHandler(
     // pointer is over it re-fires enter/leave and looks like flicker
     if (tip) {
       tip.textContent = node
-        ? `${node.ref.title || ""} (${node.ref.year || "?"}) · ${getString(
+        ? `${cleanText(node.ref.title) || ""} (${node.ref.year || "?"}) · ${getString(
             `graph-legend-${node.kind}` as "graph-legend-origin",
           )}`
         : "\u00a0";

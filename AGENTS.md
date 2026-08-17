@@ -45,7 +45,9 @@ npm start         # dev build + hot reload in an ISOLATED Zotero profile
 13. **Icons are `context-fill` / `context-stroke` SVGs** (16px header, 20px sidenav under `icons/20/`, 1px / 1.25px on the pixel grid, no dark twins). Zotero's `.btn[custom]` and `collapsible-section[custom] .head .title::before` supply `-moz-context-properties`; our own toolbar buttons set them in styles.ts.
 14. **Host identifiers come from `hostIdentifiers(item)`** (DOI field/Extra, PMID/arXiv from Extra/URL) — never read `getField("DOI")` alone in a section; PubMed-imported items have no DOI field.
 15. **Batch imports go through `runBatchImport`** (confirmation + click-to-stop). Never call `importAll` from a UI path directly.
-16. **CNKI credential POST must pass `logBodyLength: 0`** — Zotero's debug-log redaction is case-sensitive and misses `"Password"`.
+16. **API titles carry HTML** (`<i>ALK</i>`, `&amp;`, newlines inside tags). Every source mapper passes title/venue/unstructured text through `cleanText()` (core/text.ts) and `storage.ts` re-cleans on load; UI code that shows a ref title must never assume it is plain.
+17. **PDF bibliographies continue past the heading page** (NEJM/Lancet: heading + refs 1–11 at the bottom of page N, 12–31 on N+1). `getRefLines` walks pages backwards, so later pages land in `parts` first; after the heading is found, reference-like parts from later pages are appended (numbered continuation = a line starting with lastNumber+1, else ≥30% reference-typed lines). Regression PDF: KEYNOTE-189 (10.1056/NEJMoa1801005) must yield 31.
+18. **CNKI credential POST must pass `logBodyLength: 0`** — Zotero's debug-log redaction is case-sensitive and misses `"Password"`.
 
 ## Releasing (auto-update depends on this exact shape)
 

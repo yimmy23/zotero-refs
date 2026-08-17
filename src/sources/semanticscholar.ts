@@ -1,4 +1,4 @@
-import { identifiersToURL } from "../core/text";
+import { identifiersToURL, cleanText } from "../core/text";
 import type {
   Identifiers,
   MetaSource,
@@ -74,7 +74,7 @@ function mapPaper(data: any): RefItem {
   }
   return {
     identifiers,
-    title: data.title,
+    title: cleanText(data.title),
     abstract: data.abstract,
     year: data.year != null ? String(data.year) : undefined,
     publishDate: data.publicationDate,

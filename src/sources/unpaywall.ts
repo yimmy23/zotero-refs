@@ -1,3 +1,4 @@
+import { cleanText } from "../core/text";
 import { http, politeEmail } from "../core/http";
 import type { Identifiers, MetaSource, RefItem, RefTag } from "../core/types";
 
@@ -45,7 +46,7 @@ export const unpaywall: MetaSource & {
     return {
       identifiers,
       authors,
-      title: data.title,
+      title: cleanText(data.title),
       year: data.year != null ? String(data.year) : undefined,
       type: TYPE_MAP[data.genre] || "journalArticle",
       primaryVenue: data.journal_name,

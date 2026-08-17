@@ -112,6 +112,24 @@ export function htmlToText(html?: string): string {
     .trim();
 }
 
+/**
+ * Strip HTML markup / entities that metadata APIs leave in titles
+ * ("Resected <i>ALK</i>-Positive…", "&amp;"). Cheap path for the common
+ * clean case; falls back to the DOM parser only when markup is present.
+ */
+export function cleanText<T extends string | undefined>(s: T): T {
+  if (!s || (!s.includes("<") && !s.includes("&"))) return s;
+  return (
+    htmlToText(s)
+      // markup boundaries leave whitespace scars: "<i>ALK</i>\n -Positive"
+      .replace(/\s+/g, " ")
+      .replace(/\s+([-–])(?=\S)/g, "$1")
+      .replace(/\s+([,.;:!?)])/g, "$1")
+      .replace(/\(\s+/g, "(")
+      .trim() as T
+  );
+}
+
 /** lowercase, keep only letters / digits / CJK — for title matching */
 export function normalizeTitle(s?: string): string {
   if (!s) return "";

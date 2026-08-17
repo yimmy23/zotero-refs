@@ -567,6 +567,9 @@ async function getRefLines(
         });
       });
       parts.push(part);
+      ztoolkit.log(
+        `[pdfparser] part p${part[0].pageNum} n=${part.length} first="${part[0].text.slice(0, 40)}" last="${part[part.length - 1].text.slice(0, 40)}"`,
+      );
       return part;
     };
     // a bibliography heading: 参考文献 / References / Bibliography, short
@@ -589,6 +592,9 @@ async function getRefLines(
       _refPart.parts.push(part);
       const res = part[0].text.trim().match(/^\d+/);
       _refPart.done = !(res && res[0] != "1");
+      ztoolkit.log(
+        `[pdfparser] refPart p${part[0].pageNum} n=${part.length} done=${_refPart.done}`,
+      );
     };
 
     // bottom-right-most element(s): every other line is up/left of it —
@@ -669,6 +675,53 @@ async function getRefLines(
         refPart = [...refPart, ...p];
       });
       break;
+    }
+  }
+
+  // The bibliography may CONTINUE past the page that carries the heading
+  // (NEJM/Lancet: heading + refs 1–11 at the bottom of page N, refs 12–31
+  // at the top of page N+1). Pages after N were walked first and their
+  // blocks sit in `parts` as ordinary parts — append the reference-like
+  // ones, in page/reading order, so the list is complete.
+  if (refPart.length) {
+    // page that carries the heading = the earliest page in refPart. Lines
+    // from later pages can only be a small carry-over (typically the next
+    // page's running head that survived footer removal), never the block.
+    const lastRefPage = Math.min(
+      ...refPart.map((l) => l.pageNum ?? Number.MAX_SAFE_INTEGER),
+    );
+    const refScore = (p: PDFLine[]) =>
+      p.filter((l) => getRefType(l.text) != -1).length / p.length;
+    // numbered bibliographies: the continuation must pick up at the next
+    // number ("11." on page N → a line starting "12." / "[12]" on N+1)
+    const numOf = (t: string) =>
+      Number(t.trim().match(/^\[?(\d{1,3})\]?[.)\s]/)?.[1]) || 0;
+    const lastNum = Math.max(0, ...refPart.map((l) => numOf(l.text)));
+    const numberedCount = (p: PDFLine[]) =>
+      p.filter((l) => numOf(l.text) > 0).length;
+    const picksUp = (p: PDFLine[]) =>
+      lastNum > 0 &&
+      numberedCount(p) >= 3 &&
+      p.some((l) => numOf(l.text) === lastNum + 1);
+    const continuation = parts
+      .filter(
+        (p) =>
+          p.length >= 3 &&
+          (p[0].pageNum ?? -1) > lastRefPage &&
+          (picksUp(p) || refScore(p) >= 0.3),
+      )
+      .sort((a, b) => (a[0].pageNum ?? 0) - (b[0].pageNum ?? 0));
+    if (continuation.length) {
+      // the carried-over stray lines from those pages are superseded by
+      // the complete blocks (they were the running head / a fragment)
+      const contPages = new Set(continuation.map((p) => p[0].pageNum));
+      refPart = refPart.filter((l) => !contPages.has(l.pageNum));
+    }
+    for (const p of continuation) {
+      ztoolkit.log(
+        `[pdfparser] appending continuation part p${p[0].pageNum} n=${p.length}`,
+      );
+      refPart = [...refPart, ...p];
     }
   }
 

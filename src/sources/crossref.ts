@@ -4,6 +4,7 @@ import {
   identifiersToURL,
   normalizeTitle,
   refTextToInfo,
+  cleanText,
 } from "../core/text";
 import type { Identifiers, MetaSource, RefItem, RefTag } from "../core/types";
 
@@ -34,10 +35,11 @@ function mapReference(item: any, index: number): RefItem {
   let text: string;
   let textInfo: Partial<RefItem> = {};
   // books/chapters carry their title in volume-title / series-title
-  const entryTitle =
-    item["article-title"] || item["volume-title"] || item["series-title"];
+  const entryTitle = cleanText(
+    item["article-title"] || item["volume-title"] || item["series-title"],
+  );
   if (item.unstructured) {
-    text = item.unstructured;
+    text = cleanText(item.unstructured);
     textInfo = refTextToInfo(text);
   } else {
     // build a readable citation from Crossref's structured fields instead
@@ -84,7 +86,7 @@ function mapWork(w: any): RefItem {
   const doi: string | undefined = w.DOI;
   const identifiers: Identifiers = doi ? { DOI: doi } : {};
 
-  const title = Array.isArray(w.title) ? w.title[0] : w.title;
+  const title = cleanText(Array.isArray(w.title) ? w.title[0] : w.title);
   const authors: string[] = Array.isArray(w.author)
     ? w.author.map((a: any) => a.family || a.name).filter(Boolean)
     : [];

@@ -1,3 +1,4 @@
+import { cleanText } from "../core/text";
 import { http, politeEmail } from "../core/http";
 import type {
   Identifiers,
@@ -106,11 +107,11 @@ function mapWork(w: any): RefItem {
 
   return {
     identifiers,
-    title: w.display_name,
+    title: cleanText(w.display_name),
     authors,
     year: w.publication_year != null ? String(w.publication_year) : undefined,
     publishDate: w.publication_date,
-    primaryVenue: w.primary_location?.source?.display_name,
+    primaryVenue: cleanText(w.primary_location?.source?.display_name),
     citationCount,
     tags: tags.length ? tags : undefined,
     oaUrl,
