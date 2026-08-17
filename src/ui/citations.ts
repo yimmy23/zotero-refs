@@ -2,6 +2,7 @@ import { config } from "../../package.json";
 import { getLocaleID, getString } from "../utils/locale";
 import { getPref } from "../utils/prefs";
 import { itemCacheKey } from "../core/storage";
+import { setTimeout } from "../utils/window";
 import type { Identifiers, RefItem } from "../core/types";
 import { getCitationsByAPI } from "../sources";
 import type { CitationSource } from "../sources";
@@ -29,6 +30,14 @@ interface CitationsState {
   source?: CitationSource;
   /** identity keys of everything shown, for cross-page dedupe */
   seen: Set<string>;
+  /**
+   * DOM of the FRESHEST render of this item's section. A loadMore that
+   * outlives its own render must paint into the current body, not the
+   * detached one it was started from — otherwise the page it fetched is
+   * committed to state but never shown.
+   */
+  dom?: PanelDOM;
+  setSummary?: (s: string) => void;
 }
 
 /** stable identity of a citing work for dedupe */
@@ -63,17 +72,12 @@ interface PanelDOM {
   more: HTMLButtonElement;
 }
 
-async function loadMore(
-  dom: PanelDOM,
-  item: Zotero.Item,
-  state: CitationsState,
-  setSectionSummary: (s: string) => void,
-) {
+async function loadMore(item: Zotero.Item, state: CitationsState) {
   if (state.loading || state.exhausted) return;
   const ids = idsOf(item);
   if (!ids) return;
   state.loading = true;
-  dom.more.disabled = true;
+  if (state.dom) state.dom.more.disabled = true;
   let failed = false;
   try {
     const pageSize = Number(getPref("citationsPageSize")) || 25;
@@ -93,10 +97,12 @@ async function loadMore(
       state.total = page.total ?? state.total;
       state.nextOffset =
         page.nextOffset ?? state.nextOffset + page.items.length;
+      // NOTE: a short page (< pageSize) is NOT proof of exhaustion — the
+      // sources drop malformed entries inside a page. Only an empty page
+      // or reaching the reported total ends paging.
       if (
-        page.items.length < pageSize ||
-        (state.total !== undefined &&
-          state.refs.length + page.items.length >= state.total)
+        state.total !== undefined &&
+        state.refs.length + page.items.length >= state.total
       ) {
         state.exhausted = true;
       }
@@ -109,11 +115,14 @@ async function loadMore(
       });
       const start = state.refs.length;
       state.refs.push(...fresh);
-      // the user may have switched items while the request ran
-      if (dom.list.isConnected) {
+      // paint into the FRESHEST render of this item's section (the body
+      // may have been rebuilt while the request ran); every render paints
+      // exactly state.refs.length rows, so `start` always lines up
+      const live = state.dom;
+      if (live?.list.isConnected) {
         const ctx: RowContext = {
           hostItem: item,
-          list: dom.list,
+          list: live.list,
           numbered: false,
           editable: false,
         };
@@ -127,13 +136,14 @@ async function loadMore(
     failed = true;
   } finally {
     state.loading = false;
-    if (dom.list.isConnected) {
-      dom.more.disabled = false;
-      dom.more.style.display = state.exhausted ? "none" : "";
-      dom.count.textContent = `${state.refs.length}${
+    const live = state.dom;
+    if (live?.list.isConnected) {
+      live.more.disabled = false;
+      live.more.style.display = state.exhausted ? "none" : "";
+      live.count.textContent = `${state.refs.length}${
         state.total ? ` / ${state.total}` : ""
       } ${getString("citations-count-suffix")}${failed ? " ⚠" : ""}`;
-      setSectionSummary(
+      state.setSummary?.(
         `${state.total ?? state.refs.length}${state.total ? "" : "+"}`,
       );
     }
@@ -187,9 +197,7 @@ export function registerCitationsSection() {
       body.append(more);
 
       const dom: PanelDOM = { list, count, more };
-      more.addEventListener("click", () =>
-        loadMore(dom, item, state!, setSectionSummary),
-      );
+      more.addEventListener("click", () => loadMore(item, state!));
 
       if (!state) {
         state = {
@@ -199,8 +207,17 @@ export function registerCitationsSection() {
           loading: false,
           seen: new Set(),
         };
+        // bound per-session memory: drop the oldest items' states
+        if (states.size >= 150) {
+          const oldest = states.keys().next().value;
+          if (oldest !== undefined) states.delete(oldest);
+        }
         states.set(stateKey, state);
-      } else if (state.refs.length) {
+      }
+      // every render (fresh or repeat) owns the panel from now on
+      state.dom = dom;
+      state.setSummary = setSectionSummary;
+      if (state.refs.length) {
         // re-render existing page(s)
         const ctx: RowContext = {
           hostItem: item,
@@ -221,7 +238,10 @@ export function registerCitationsSection() {
         return;
       }
       if (getPref("loadingCitations")) {
-        await loadMore(dom, item, state, setSectionSummary);
+        // settle debounce: skip if another render took over meanwhile
+        await new Promise<void>((r) => setTimeout(() => r(), 350));
+        if (state.dom !== dom) return;
+        await loadMore(item, state);
       }
       },
     ),

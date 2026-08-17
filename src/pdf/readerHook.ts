@@ -37,7 +37,9 @@ export function attachReader(reader: any) {
       const popup = getCurrentPopup();
       if (!popup) return;
       popup.tipTimer = setTimeout(() => {
-        popup.clear();
+        // a newer popup may have replaced this one while the timer ran —
+        // clear() removes every card in the document, so guard identity
+        if (getCurrentPopup() === popup) popup.clear();
       }, popup.removeTipAfterMillisecond);
     },
   );

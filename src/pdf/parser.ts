@@ -437,13 +437,19 @@ async function getRefLines(
     // same text (page numbers normalized away) at the same position on a
     // different page. Lines fully inside the central 100% body area
     // (20%..80% both axes) are protected and never removed.
+    const normCache = new Map<string, string>();
     const removeNumber = (text: string) => {
+      const hit = normCache.get(text);
+      if (hit !== undefined) return hit;
+      let t = text;
       // roman/letter page numbers
-      if (/^[A-Z]{1,3}$/.test(text)) {
-        text = "";
+      if (/^[A-Z]{1,3}$/.test(t)) {
+        t = "";
       }
       // normal page numbers 1, 2, 3
-      return text.replace(/\s+/g, "").replace(/\d+/g, "");
+      t = t.replace(/\s+/g, "").replace(/\d+/g, "");
+      normCache.set(text, t);
+      return t;
     };
     const isSamePosition = (lineA: PDFLine, lineB: PDFLine) => {
       const round = (n: number) => Math.round(n);
@@ -468,12 +474,15 @@ async function getRefLines(
         return;
       }
       for (const _pageIndex in pageLines) {
+        // one match is enough — stop scanning the remaining pages
+        if (line.same) break;
         // skip this line's own page
         if (Number(_pageIndex) == pageNum) {
           continue;
         }
         pageLines[Number(_pageIndex)].find((_line) => {
-          if (isSameText(line, _line) && isSamePosition(line, _line)) {
+          // cheap geometry reject first, regex-normalized text second
+          if (isSamePosition(line, _line) && isSameText(line, _line)) {
             line.same = _line;
             return true;
           }

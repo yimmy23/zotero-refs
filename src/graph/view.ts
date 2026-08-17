@@ -63,6 +63,25 @@ function nodeLabel(n: GraphNode): string {
   return label || (n.ref.title || "").slice(0, 18);
 }
 
+/**
+ * Every live view, so plugin shutdown / window unload can tear down the
+ * ResizeObserver + matchMedia listeners that would otherwise keep closed
+ * windows' DOM alive. (The per-body WeakMap in graphSection cannot be
+ * iterated.)
+ */
+const liveViews = new Set<GraphView>();
+
+export function destroyAllGraphViews(): void {
+  for (const view of [...liveViews]) {
+    try {
+      view.destroy();
+    } catch {
+      // already-dead window — nothing to release
+    }
+  }
+  liveViews.clear();
+}
+
 export class GraphView {
   private container: HTMLElement;
   private handlers: GraphHandlers;
@@ -96,6 +115,7 @@ export class GraphView {
   private onThemeChange = () => this.applyTheme();
 
   constructor(container: HTMLElement, handlers: GraphHandlers = {}) {
+    liveViews.add(this);
     this.container = container;
     this.handlers = handlers;
     this.doc = container.ownerDocument as Document;
@@ -249,6 +269,7 @@ export class GraphView {
     this.labelEls.clear();
     this.edgeEls = [];
     this.data = null;
+    liveViews.delete(this);
   }
 
   // ------------------------------------------------------------------ scene
@@ -420,6 +441,9 @@ export class GraphView {
   // ----------------------------------------------------------- interactions
 
   private onWheel = (ev: WheelEvent) => {
+    // plain wheel scrolls the item pane; only Ctrl/Cmd+wheel (and trackpad
+    // pinch, which Firefox reports as ctrlKey wheel) zooms the graph
+    if (!ev.ctrlKey && !ev.metaKey) return;
     ev.preventDefault();
     const factor = ev.deltaY < 0 ? 1.15 : 1 / 1.15;
     const k = Math.min(MAX_SCALE, Math.max(MIN_SCALE, this.scale * factor));

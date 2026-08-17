@@ -14,8 +14,12 @@ class LibraryIndex {
   private byArXiv = new Map<string, number>();
   private byPMID = new Map<string, number>();
   private byTitle = new Map<string, number>();
-  /** [normalized title, itemID, year (0 = unknown)] for the prefix fallback */
-  private titles: Array<[string, number, number]> = [];
+  /**
+   * normalized title -> [itemID, year (0 = unknown)] for the prefix
+   * fallback. A Map (not an array) so notifier "modify" re-indexing
+   * replaces entries instead of accumulating duplicates.
+   */
+  private titles = new Map<string, [number, number]>();
   /** normalized titles already known NOT to match (per build generation) */
   private noMatch = new Set<string>();
   private dirty = true;
@@ -112,7 +116,7 @@ class LibraryIndex {
       if (title.length >= 25) {
         const year =
           Number(String(item.getField("date") || "").match(/\d{4}/)?.[0]) || 0;
-        this.titles.push([title, id, year]);
+        this.titles.set(title, [id, year]);
       }
     }
   }
@@ -124,7 +128,7 @@ class LibraryIndex {
     this.byArXiv.clear();
     this.byPMID.clear();
     this.byTitle.clear();
-    this.titles = [];
+    this.titles.clear();
     this.noMatch.clear();
     // clear dirty BEFORE the pass so a notifier arriving mid-build
     // re-dirties and triggers another pass in ensure()
@@ -176,19 +180,21 @@ class LibraryIndex {
           !id &&
           title.length >= 25 &&
           !this.noMatch.has(title) &&
-          this.titles.length <= LibraryIndex.MAX_SCAN
+          this.titles.size <= LibraryIndex.MAX_SCAN
         ) {
           const refYear = Number(ref.year) || 0;
-          const hit = this.titles.find(([t, , itemYear]) => {
-            if (t.length === title.length) return false; // = handled by map
+          for (const [t, [tid, itemYear]] of this.titles) {
+            if (t.length === title.length) continue; // = handled by map
             const [short, long] =
               t.length < title.length ? [t, title] : [title, t];
-            if (short.length < 25 || !long.startsWith(short)) return false;
+            if (short.length < 25 || !long.startsWith(short)) continue;
             // corroborate with the year when both sides know it
-            return !refYear || !itemYear || Math.abs(refYear - itemYear) <= 1;
-          });
-          if (hit) id = hit[1];
-          else this.noMatch.add(title);
+            if (!refYear || !itemYear || Math.abs(refYear - itemYear) <= 1) {
+              id = tid;
+              break;
+            }
+          }
+          if (!id) this.noMatch.add(title);
         }
       }
     }

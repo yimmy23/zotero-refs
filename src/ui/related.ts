@@ -4,6 +4,7 @@ import { getPref } from "../utils/prefs";
 import { itemCacheKey } from "../core/storage";
 import type { Identifiers, RefItem } from "../core/types";
 import { getRelatedByAPI } from "../sources";
+import { setTimeout } from "../utils/window";
 import { renderRefRow } from "./rows";
 import { guard, guardAsync } from "../utils/guard";
 import type { RowContext } from "./rows";
@@ -113,11 +114,21 @@ export function registerRelatedSection() {
       const cacheKey = itemCacheKey(item);
       let recommended = cache.get(cacheKey);
       if (!recommended) {
+        // settle debounce: don't fire a request per item while the user
+        // arrow-keys through the library
+        await new Promise<void>((r) => setTimeout(() => r(), 350));
+        if (!list.isConnected) return;
         // cache only real results — a transient API failure must stay
         // retryable on the next render
         const fetched = await getRelatedByAPI(ids, 20);
         recommended = fetched || [];
-        if (fetched) cache.set(cacheKey, fetched);
+        if (fetched) {
+          if (cache.size >= 150) {
+            const oldest = cache.keys().next().value;
+            if (oldest !== undefined) cache.delete(oldest);
+          }
+          cache.set(cacheKey, fetched);
+        }
       }
       if (!list.isConnected) return;
       const start = refs.length;

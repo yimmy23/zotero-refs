@@ -112,12 +112,11 @@ function toMainWindowRect(
       y2 += fr.y;
       w = frame.ownerDocument?.defaultView;
     }
-    // sanity: we should have surfaced in the main window
-    if (!w || !(w as any).Zotero_Tabs) {
-      const main = Zotero.getMainWindow();
-      const mw = main.document.documentElement!.getBoundingClientRect();
-      return { x: mw.width / 2 - 150, y: 100, width: 300, height: 20 };
-    }
+    // sanity: we should have surfaced in the main window. A detached
+    // (separate-window) reader never does — the popup renders into the
+    // main window, so a fabricated position there would be plain wrong.
+    // Returning null keeps the native preview for that reader instead.
+    if (!w || !(w as any).Zotero_Tabs) return null;
   } catch {
     return null;
   }
@@ -243,6 +242,16 @@ export class ReaderLinks {
     const { view, win } = resolved;
     state.view = view;
     state.win = win;
+
+    // standalone reader windows never fire a tab-close sweep — release
+    // this reader's state (and the patched view) when its window dies
+    try {
+      win.addEventListener("unload", () => this.detach(reader), {
+        once: true,
+      });
+    } catch {
+      // window already tearing down
+    }
 
     // ---------------- hover: our card instead of the native preview
     if (typeof view._onSetOverlayPopup === "function") {

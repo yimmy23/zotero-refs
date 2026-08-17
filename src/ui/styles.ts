@@ -82,12 +82,14 @@ export function registerStyles(win: Window) {
       padding: 1px 7px;
       border-radius: 5px;
       border: 1px solid var(--fill-quinary, #ddd);
-      background: transparent;
+      /* background-color, NOT the background shorthand: the shorthand
+         resets background-image and wipes the .references-icon-* icons */
+      background-color: transparent;
       color: inherit;
       cursor: pointer;
     }
     .references-button:hover {
-      background: var(--fill-quinary, rgba(0,0,0,0.06));
+      background-color: var(--fill-quinary, rgba(0,0,0,0.06));
     }
     .references-search {
       display: flex;

@@ -68,6 +68,7 @@ class RefStorage {
       return { ...rest, identifiers: { ...rest.identifiers } } as RefItem;
     });
     (this.cache[itemKey] ??= {})[slot] = { t: Date.now(), refs: clean };
+    this.evictIfNeeded();
     this.scheduleWrite();
   }
 
@@ -88,11 +89,27 @@ class RefStorage {
     this.scheduleWrite();
   }
 
+  /** cap the file: keep at most this many items (LRU by slot timestamp) */
+  private static MAX_ITEMS = 400;
+
+  private evictIfNeeded() {
+    const keys = Object.keys(this.cache);
+    if (keys.length <= RefStorage.MAX_ITEMS) return;
+    const lastUsed = (k: string) =>
+      Math.max(0, ...Object.values(this.cache[k]).map((s) => s.t || 0));
+    keys
+      .sort((a, b) => lastUsed(a) - lastUsed(b))
+      .slice(0, keys.length - RefStorage.MAX_ITEMS)
+      .forEach((k) => delete this.cache[k]);
+  }
+
   private scheduleWrite() {
+    // long debounce: every flush serializes the whole cache file, so
+    // batch imports must coalesce into one write
     clearTimeout(this.writeTimer);
     this.writeTimer = setTimeout(() => {
       this.flush().catch((e) => ztoolkit.log("[storage] write failed", e));
-    }, 500);
+    }, 1500);
   }
 
   async flush() {

@@ -8,6 +8,7 @@ import { registerReferencesSection, invalidatePanelState } from "./ui/section";
 import { registerCitationsSection, invalidateCitations } from "./ui/citations";
 import { registerRelatedSection, invalidateRelated } from "./ui/related";
 import { registerGraphSection, invalidateGraph } from "./ui/graphSection";
+import { destroyAllGraphViews } from "./graph/view";
 import { registerStyles, unregisterStyles } from "./ui/styles";
 import { closePopup } from "./ui/rows";
 import { registerItemMenus, unregisterItemMenus } from "./modules/menus";
@@ -103,12 +104,14 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
 
 async function onMainWindowUnload(win: Window): Promise<void> {
   closePopup();
+  destroyAllGraphViews();
   unregisterStyles(win);
   addon.data.dialog?.window?.close();
 }
 
 function onShutdown(): void {
   closePopup();
+  destroyAllGraphViews();
   unregisterItemMenus();
   detachAllReaders();
   libraryIndex.unregister();

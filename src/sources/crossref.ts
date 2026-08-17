@@ -33,17 +33,31 @@ function withMailto(url: string): string {
 function mapReference(item: any, index: number): RefItem {
   let text: string;
   let textInfo: Partial<RefItem> = {};
+  // books/chapters carry their title in volume-title / series-title
+  const entryTitle =
+    item["article-title"] || item["volume-title"] || item["series-title"];
   if (item.unstructured) {
     text = item.unstructured;
     textInfo = refTextToInfo(text);
-  } else if (item["article-title"] && item.year && item.author) {
-    text = `${item.author} et al., ${item.year}, ${item["article-title"]}`;
   } else {
-    const parts: string[] = [];
-    for (const key in item) {
-      parts.push(`${key}: ${item[key]}`);
+    // build a readable citation from Crossref's structured fields instead
+    // of dumping raw key/value pairs
+    const venue =
+      item["journal-title"] ||
+      (entryTitle !== item["series-title"] ? item["series-title"] : undefined);
+    text = [
+      item.author && `${item.author} et al.`,
+      item.year,
+      entryTitle,
+      venue,
+      item.volume,
+      item["first-page"],
+    ]
+      .filter(Boolean)
+      .join(", ");
+    if (!text) {
+      text = item.DOI ? `doi:${item.DOI}` : item.key || `[${index + 1}]`;
     }
-    text = parts.join("; ");
   }
 
   let identifiers: Identifiers = textInfo.identifiers || {};
@@ -55,7 +69,7 @@ function mapReference(item: any, index: number): RefItem {
 
   return {
     identifiers,
-    title: item["article-title"] || textInfo.title,
+    title: entryTitle || textInfo.title,
     authors: item.author ? [item.author] : textInfo.authors || [],
     year: item.year || textInfo.year,
     text,

@@ -107,6 +107,15 @@ export class PopupCard {
     return { background: custom, color };
   }
 
+  /** the light-mode default title blue is unreadable on the dark card */
+  private resolveTitleColor(): string {
+    const pref = String(getPref("popupTitleColor") || "").trim();
+    const dark =
+      getWin().matchMedia("(prefers-color-scheme: dark)")?.matches ?? false;
+    if (dark && (!pref || pref.toLowerCase() === "#2270d9")) return "#7fb0ff";
+    return pref;
+  }
+
   private buildContainer() {
     const doc = getDoc();
     const { background, color } = this.resolveColors();
@@ -206,7 +215,7 @@ export class PopupCard {
           fontWeight: "bold",
           marginBottom: ".25em",
           fontSize: "1.2em",
-          color: getPref("popupTitleColor") || "",
+          color: this.resolveTitleColor(),
         },
         properties: { innerText: title },
         listeners: [{ type: "click", listener: this.translateNode }],

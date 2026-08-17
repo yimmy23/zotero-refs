@@ -110,7 +110,7 @@ export async function buildGraph(
     onStatus?.("Matching against your library…");
     for (const node of kept) {
       try {
-        node.inLibrary = !!(await libraryIndex.match(node.ref));
+        node.inLibrary = !!(await libraryIndex.match(node.ref, item.libraryID));
       } catch (e) {
         ztoolkit.log("[graph] library match failed", e);
       }

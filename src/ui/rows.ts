@@ -1,4 +1,5 @@
 import { getPref } from "../utils/prefs";
+import { getString } from "../utils/locale";
 import { getWin, setTimeout, clearTimeout } from "../utils/window";
 import {
   collapseText,
@@ -197,6 +198,25 @@ export function showRefPopup(
             itemID: ref.libItemID,
           });
         }
+        // academic search-engine links, always available (title-based)
+        const searchTitle = htmlToText(info.title || ref.title || "").trim();
+        if (searchTitle) {
+          const q = encodeURIComponent(searchTitle);
+          tags.push({
+            text: "Scholar",
+            color: "#4285f4",
+            tip: "Search title on Google Scholar",
+            url: `https://scholar.google.com/scholar?q=${q}`,
+          });
+          if (!ids.PMID && !isChinese(searchTitle)) {
+            tags.push({
+              text: "PubMed",
+              color: SOURCE_BADGE.pubmed.color,
+              tip: "Search title on PubMed",
+              url: `https://pubmed.ncbi.nlm.nih.gov/?term=${q}`,
+            });
+          }
+        }
         popup.addTip(
           htmlToText(info.title || ""),
           tags,
@@ -226,14 +246,14 @@ function setActionState(action: HTMLElement, state: "+" | "-" | "") {
 }
 
 /** ctrl+click: locate in library, else open in browser */
-async function locateReference(ref: RefItem) {
+async function locateReference(ref: RefItem, libraryID: number) {
   const win = getWin();
   if (ref.libItemID) {
     win.Zotero_Tabs.select("zotero-pane");
     win.ZoteroPane.selectItem(ref.libItemID);
     return;
   }
-  const local = await libraryIndex.match(ref);
+  const local = await libraryIndex.match(ref, libraryID);
   if (local) {
     win.Zotero_Tabs.select("zotero-pane");
     win.ZoteroPane.selectItem(local.id);
@@ -277,7 +297,9 @@ async function locateReference(ref: RefItem) {
 function copyText(text: string, show = true) {
   new ztoolkit.Clipboard().addText(text, "text/unicode").copy();
   if (show) {
-    new ztoolkit.ProgressWindow("Copy", { closeOtherProgressWindows: true })
+    new ztoolkit.ProgressWindow(getString("panel-copied"), {
+      closeOtherProgressWindows: true,
+    })
       .createLine({ text: collapseText(text, 60), type: "success" })
       .show();
   }
@@ -490,13 +512,13 @@ export function renderRefRow(
     textarea.value = prefixed ? refText.replace(/^\[\d+\]\s+/, "") : refText;
     row.insertBefore(textarea, label);
     textarea.focus();
-    const exitEdit = () => {
+    const exitEdit = (commit = true) => {
       if (!editing) return;
       editing = false;
       const inputText = textarea.value.trim();
       textarea.remove();
       label.style.display = "";
-      if (!inputText || inputText === ref.text) return;
+      if (!commit || !inputText || inputText === ref.text) return;
       label.textContent = `[${ref.number || refIndex + 1}] ${inputText}`;
       refs[refIndex] = {
         ...ref,
@@ -510,9 +532,10 @@ export function renderRefRow(
       refText = label.textContent || inputText;
       ctx.onEdited?.(ref, refIndex);
     };
-    textarea.addEventListener("blur", exitEdit);
+    textarea.addEventListener("blur", () => exitEdit());
     textarea.addEventListener("keydown", (e: KeyboardEvent) => {
-      if (e.key === "Escape") exitEdit();
+      // Escape CANCELS the edit — blur would otherwise commit it
+      if (e.key === "Escape") exitEdit(false);
     });
   };
 
@@ -535,14 +558,21 @@ export function renderRefRow(
     if (event.ctrlKey || event.metaKey) {
       clearTimeout(editTimer);
       editTimer = undefined;
-      void locateReference(ref);
+      void locateReference(ref, ctx.hostItem.libraryID);
       return;
     }
     if (editing) return;
     if (editTimer !== undefined || !ctx.editable) {
       clearTimeout(editTimer);
       editTimer = undefined;
-      copyText((idText !== "Reference" ? idText + "\n" : "") + refText);
+      // copy the clean citation: no list numbering, whether ours ("[3] …")
+      // or the PDF's own ("3. …" / "3) …" — never "10.1109/…", which has
+      // no whitespace after the dot)
+      const clean = (ref.text || ref.title || "").replace(
+        /^\s*(?:\[\d+\]|\d{1,3}[.)])\s+/,
+        "",
+      );
+      copyText((idText !== "Reference" ? idText + "\n" : "") + clean);
     }
   });
 

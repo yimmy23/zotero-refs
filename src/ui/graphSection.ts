@@ -1,7 +1,7 @@
 import { config } from "../../package.json";
 import { getLocaleID, getString } from "../utils/locale";
 import { getPref } from "../utils/prefs";
-import { getWin } from "../utils/window";
+import { getWin, setTimeout } from "../utils/window";
 import { itemCacheKey } from "../core/storage";
 import type { GraphData, GraphNode } from "../core/types";
 import { buildGraph } from "../graph/build";
@@ -64,6 +64,10 @@ async function renderGraph(
       return;
     }
     data = built;
+    if (dataCache.size >= 100) {
+      const oldest = dataCache.keys().next().value;
+      if (oldest !== undefined) dataCache.delete(oldest);
+    }
     dataCache.set(itemCacheKey(item), data);
   }
   status.style.display = "none";
@@ -180,6 +184,12 @@ export function registerGraphSection() {
       tip.style.display = "none";
       body.append(tip);
 
+      // settle debounce for uncached items — the OpenAlex build is the
+      // most expensive auto-fetch, so never fire it per arrow-key step
+      if (!dataCache.has(itemCacheKey(item))) {
+        await new Promise<void>((r) => setTimeout(() => r(), 350));
+        if (!container.isConnected) return;
+      }
       await renderGraph(body as HTMLElement, item, setSectionSummary);
       },
     ),

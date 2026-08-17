@@ -46,6 +46,17 @@ interface PanelState {
 
 const states = new Map<string, PanelState>();
 
+/** monotonically increasing id for chunked list renders */
+let renderSeq = 0;
+
+/** pretty display names for API source ids */
+const SOURCE_LABEL: Record<string, string> = {
+  crossref: "Crossref",
+  semanticscholar: "Semantic Scholar",
+  openalex: "OpenAlex",
+  cnki: "CNKI",
+};
+
 function getState(item: Zotero.Item): PanelState {
   const stateKey = itemCacheKey(item);
   let state = states.get(stateKey);
@@ -58,6 +69,11 @@ function getState(item: Zotero.Item): PanelState {
       importing: false,
       loadedOnce: false,
     };
+    // bound per-session memory: drop the oldest items' states
+    if (states.size >= 150) {
+      const oldest = states.keys().next().value;
+      if (oldest !== undefined) states.delete(oldest);
+    }
     states.set(stateKey, state);
   }
   return state;
@@ -123,7 +139,11 @@ async function fetchReferences(
       closeTime: -1,
       closeOtherProgressWindows: true,
     });
-    popupWin.createLine({ text: "Parsing PDF…", type: "default", progress: 1 });
+    popupWin.createLine({
+      text: getString("panel-parsing"),
+      type: "default",
+      progress: 1,
+    });
     popupWin.show();
     let refs: RefItem[] = [];
     try {
@@ -142,7 +162,10 @@ async function fetchReferences(
         });
       } else {
         popupWin.changeHeadline("[Fail] PDF");
-        popupWin.changeLine({ text: "0 references", type: "fail" });
+        popupWin.changeLine({
+          text: `0 ${getString("panel-count-suffix")}`,
+          type: "fail",
+        });
       }
       popupWin.startCloseTimer(3000);
     }
@@ -158,7 +181,7 @@ async function fetchReferences(
     closeTime: -1,
     closeOtherProgressWindows: true,
   });
-  popupWin.createLine({ text: "Requesting references…", type: "default" });
+  popupWin.createLine({ text: getString("panel-requesting"), type: "default" });
   popupWin.show();
   const result = await getReferencesByAPI(item, (msg) =>
     popupWin.changeLine({ text: msg }),
@@ -170,12 +193,13 @@ async function fetchReferences(
     return [];
   }
   popupWin.changeHeadline("[Done] API");
+  const sourceLabel = SOURCE_LABEL[result.source] || result.source;
   popupWin.changeLine({
-    text: `${result.refs.length} ${getString("panel-count-suffix")} (${result.source})`,
+    text: `${result.refs.length} ${getString("panel-count-suffix")} (${sourceLabel})`,
     type: "success",
   });
   popupWin.startCloseTimer(3000);
-  state.sourceUsed = result.source;
+  state.sourceUsed = sourceLabel;
   state.loadedSlot = "API";
   if (result.refs.length && getPref("saveAPIReferences")) {
     void refStorage.set(item, "API", result.refs);
@@ -281,11 +305,16 @@ function renderList(
       void refStorage.set(item, state.loadedSlot ?? state.source, state.refs);
     },
   };
-  // chunked rendering keeps the pane responsive for long bibliographies
+  // chunked rendering keeps the pane responsive for long bibliographies.
+  // The token cancels any older chunk chain still scheduled for this same
+  // list (same item re-rendered) — without it two chains interleave rows.
+  const token = String(++renderSeq);
+  list.dataset.renderToken = token;
   const CHUNK = 25;
   let i = 0;
   const renderChunk = () => {
     if (!list.isConnected || !isCurrent(body, state)) return;
+    if (list.dataset.renderToken !== token) return;
     const end = Math.min(i + CHUNK, state.refs.length);
     for (; i < end; i++) {
       renderRefRow(ctx, state.refs, i);
@@ -305,13 +334,9 @@ async function refresh(
   item: Zotero.Item,
   state: PanelState,
   setSectionSummary: (s: string) => void,
-  options: { useCache: boolean; fromCurrentPage: boolean; toggle: boolean },
+  options: { useCache: boolean; fromCurrentPage: boolean },
 ) {
   if (state.loading) return;
-  // source toggling: after the first load, plain refreshes switch source
-  if (options.toggle && state.loadedOnce) {
-    state.source = state.source === "PDF" ? "API" : "PDF";
-  }
   const badge = body.querySelector<HTMLElement>(".references-source-badge");
   if (badge) badge.textContent = state.source;
   state.loading = true;
@@ -388,7 +413,6 @@ function buildToolbar(
       void refresh(body, item, state, setSectionSummary, {
         useCache: false,
         fromCurrentPage,
-        toggle: false,
       });
     }, 1000);
   });
@@ -396,10 +420,11 @@ function buildToolbar(
     if (pressTimer === undefined) return;
     clearTimeout(pressTimer);
     pressTimer = undefined;
+    // plain click refreshes the CURRENT source — switching PDF/API is the
+    // badge's job; auto-toggling here silently negated the user's choice
     void refresh(body, item, state, setSectionSummary, {
       useCache: true,
       fromCurrentPage: event.ctrlKey || event.metaKey,
-      toggle: true,
     });
   });
   refreshButton.addEventListener("mouseleave", () => {
@@ -549,10 +574,13 @@ export function registerReferencesSection() {
             return;
           }
         }
+        // settle debounce: rapid item switching (arrow-key browsing) must
+        // not fire a network fetch per item
+        await new Promise<void>((r) => setTimeout(() => r(), 350));
+        if (!isCurrent(body as HTMLElement, state)) return;
         await refresh(body as HTMLElement, item, state, setSectionSummary, {
           useCache: true,
           fromCurrentPage: false,
-          toggle: false,
         });
       }
       },
