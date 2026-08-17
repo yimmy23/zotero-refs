@@ -5,6 +5,7 @@ import { setTimeout, clearTimeout } from "../utils/window";
 import { refStorage, itemCacheKey } from "../core/storage";
 import { isChinese } from "../core/text";
 import type { RefItem } from "../core/types";
+import { SOURCE_NAME } from "../core/types";
 import { getReferencesByAPI } from "../sources";
 import { parsePDFReferences } from "../pdf/parser";
 import { importAll } from "../core/importer";
@@ -48,14 +49,6 @@ const states = new Map<string, PanelState>();
 
 /** monotonically increasing id for chunked list renders */
 let renderSeq = 0;
-
-/** pretty display names for API source ids */
-const SOURCE_LABEL: Record<string, string> = {
-  crossref: "Crossref",
-  semanticscholar: "Semantic Scholar",
-  openalex: "OpenAlex",
-  cnki: "CNKI",
-};
 
 function getState(item: Zotero.Item): PanelState {
   const stateKey = itemCacheKey(item);
@@ -193,7 +186,7 @@ async function fetchReferences(
     return [];
   }
   popupWin.changeHeadline("[Done] API");
-  const sourceLabel = SOURCE_LABEL[result.source] || result.source;
+  const sourceLabel = SOURCE_NAME[result.source] || result.source;
   popupWin.changeLine({
     text: `${result.refs.length} ${getString("panel-count-suffix")} (${sourceLabel})`,
     type: "success",

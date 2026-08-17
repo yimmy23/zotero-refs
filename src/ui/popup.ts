@@ -189,6 +189,7 @@ export class PopupCard {
    * @param according which identifier drove the lookup (DOI/arXiv/PMID/Title)
    * @param index position of this source in the candidate list
    * @param prefIndex the user's remembered preferred source index
+   * @param sourceName display name of the source, shown as the dot's tooltip
    */
   addTip(
     title: string,
@@ -198,6 +199,7 @@ export class PopupCard {
     according: string,
     index: number,
     prefIndex?: number,
+    sourceName?: string,
   ) {
     const doc = getDoc();
     const optionContainer = this.container.querySelector("#option-container")!;
@@ -278,6 +280,9 @@ export class PopupCard {
     const optionNode = ztoolkit.UI.createElement(doc, "div", {
       namespace: "html",
       id: `option-${index}`,
+      attributes: sourceName
+        ? { title: sourceName, "aria-label": sourceName }
+        : {},
       styles: {
         width: `${OPTION.size}px`,
         height: `${OPTION.size}px`,
@@ -298,27 +303,6 @@ export class PopupCard {
             // dynamic pref key like "DOIInfoIndex" / "TitleInfoIndex"
             setPref(`${according}InfoIndex` as any, index as any);
             this.place();
-          },
-        },
-        {
-          type: "mouseenter",
-          listener: () => {
-            const srcTag = tags.find((t) => t.source);
-            const text =
-              (srcTag?.source &&
-                according &&
-                `${srcTag.source} view according to ${according}`) ||
-              "reference view";
-            Zotero.ProgressWindowSet.closeAll();
-            new ztoolkit.ProgressWindow("Reference", { closeTime: -1 })
-              .createLine({ text, type: "default" })
-              .show();
-          },
-        },
-        {
-          type: "mouseleave",
-          listener: () => {
-            Zotero.ProgressWindowSet.closeAll();
           },
         },
       ],

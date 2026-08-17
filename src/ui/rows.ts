@@ -11,7 +11,7 @@ import {
 } from "../core/text";
 import { libraryIndex, isRelated } from "../core/libmatch";
 import { addRelation, importReference, removeRelation } from "../core/importer";
-import { SOURCE_BADGE } from "../core/types";
+import { SOURCE_BADGE, SOURCE_NAME } from "../core/types";
 import type { RefItem, RefTag } from "../core/types";
 import { infoCandidates } from "../sources";
 import { getCNKIURL } from "../sources/cnki";
@@ -217,6 +217,13 @@ export function showRefPopup(
             });
           }
         }
+        // dot tooltip: which source this page came from
+        const sourceName =
+          i === 0
+            ? ref.libItemID
+              ? "Zotero"
+              : getString("popup-source-local")
+            : SOURCE_NAME[info.source || ""] || info.source || "";
         popup.addTip(
           htmlToText(info.title || ""),
           tags,
@@ -231,6 +238,7 @@ export function showRefPopup(
           according,
           i,
           prefIndex,
+          sourceName,
         );
       })
       .catch((e) => ztoolkit.log("[rows] popup source failed", e));

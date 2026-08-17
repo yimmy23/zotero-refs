@@ -29,6 +29,7 @@ panel-refresh-tip = 单击：获取当前数据源 · 长按：忽略缓存重�
 panel-parsing = 正在解析 PDF…
 panel-requesting = 正在请求参考文献…
 panel-copied = 已复制
+popup-source-local = 本地（从引文解析）
 panel-import-all = 全部导入
 panel-import-all-tip = 将全部（或筛选后的）参考文献导入文库并建立双向关联
 panel-export-tip = 复制列表 — 单击：纯文本 · Ctrl+单击：Markdown · Shift+单击：CSV

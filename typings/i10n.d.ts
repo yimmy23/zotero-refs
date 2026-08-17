@@ -41,6 +41,7 @@ export type FluentMessageId =
   | 'panel-requesting'
   | 'panel-search-placeholder'
   | 'panel-source-tip'
+  | 'popup-source-local'
   | 'pref-autoRefresh'
   | 'pref-cacheTTLHours'
   | 'pref-citationsPageSize'

@@ -141,6 +141,24 @@ export interface GraphData {
   originId: string;
 }
 
+/** short display names for source ids (popup dot tooltips, count line, …) */
+export const SOURCE_NAME: Record<string, string> = {
+  crossref: "Crossref",
+  semanticscholar: "Semantic Scholar",
+  openalex: "OpenAlex",
+  pubmed: "PubMed",
+  unpaywall: "Unpaywall",
+  readpaper: "ReadPaper",
+  connectedpapers: "Connected Papers",
+  cnki: "CNKI",
+  CNKI: "CNKI",
+  arxiv: "arXiv",
+  arXiv: "arXiv",
+  zotero: "Zotero",
+  Zotero: "Zotero",
+  pdf: "PDF",
+};
+
 export const SOURCE_BADGE: Record<string, { color: string; tip?: string }> = {
   pdf: { color: "#a05a2c", tip: "Parsed from the PDF text layer" },
   arxiv: { color: "#b31b1b", tip: "arXiv — open-access preprint archive" },

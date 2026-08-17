@@ -29,6 +29,7 @@ panel-refresh-tip = Click: fetch current source · Long press: bypass cache · C
 panel-parsing = Parsing PDF…
 panel-requesting = Requesting references…
 panel-copied = Copied
+popup-source-local = Local (parsed from the citation)
 panel-import-all = Import All
 panel-import-all-tip = Import all (or filtered) references into the library and link them as related items
 panel-export-tip = Copy list — click: plain text · Ctrl+click: Markdown · Shift+click: CSV
