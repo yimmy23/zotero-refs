@@ -39,10 +39,19 @@ const KIND_COLOR: Record<GraphNode["kind"], string> = {
   related: "#9b7fd4",
 };
 
-/** initial layout budget (spec: ~150 ticks) */
-const SETTLE_TICKS = 150;
+/**
+ * Layout budget. The first WARMUP_TICKS run synchronously before the first
+ * paint (a few ms for 50 nodes) so nodes start near their final positions;
+ * only the tail is animated. Animating from a random cloud meant ~1s of
+ * heavy motion competing with the other sections' rendering — visibly
+ * janky. Now the visible motion is a short settle.
+ */
+const WARMUP_TICKS = 110;
+const SETTLE_TICKS = 50;
 /** simulation steps per animation frame */
-const TICKS_PER_FRAME = 3;
+const TICKS_PER_FRAME = 2;
+/** stop animating once the largest per-tick displacement drops below this */
+const MOTION_EPS = 0.08;
 /** label budget scales with canvas width (origin always labeled) */
 const LABEL_MIN = 4;
 const LABEL_MAX = 12;
@@ -264,6 +273,10 @@ export class GraphView {
       .force("y", forceY<GraphNode>(0).strength(0.02))
       .stop();
 
+    // off-screen warm-up: converge most of the way before the first paint
+    for (let i = 0; i < WARMUP_TICKS; i++) this.sim.tick();
+    this.clampToCanvas();
+    this.updatePositions();
     this.runTicks(SETTLE_TICKS);
   }
 
@@ -370,6 +383,7 @@ export class GraphView {
       const sim = this.sim;
       if (!sim) return;
       let ticked = 0;
+      let maxMove = 0;
       while (ticked < TICKS_PER_FRAME && this.tickBudget > 0) {
         if (sim.alpha() < sim.alphaMin() && sim.alphaTarget() === 0) {
           this.tickBudget = 0;
@@ -378,8 +392,20 @@ export class GraphView {
         sim.tick();
         ticked++;
         this.tickBudget--;
+        for (const n of this.data?.nodes || []) {
+          const m = Math.abs(n.vx || 0) + Math.abs(n.vy || 0);
+          if (m > maxMove) maxMove = m;
+        }
       }
-      if (ticked) this.updatePositions();
+      if (ticked) {
+        this.clampToCanvas();
+        this.updatePositions();
+        // nothing visibly moving any more (and no drag holding alpha up):
+        // stop early instead of burning frames on sub-pixel drift
+        if (maxMove < MOTION_EPS && sim.alphaTarget() === 0) {
+          this.tickBudget = 0;
+        }
+      }
       if (this.tickBudget > 0) {
         this.rafId = this.win.requestAnimationFrame(step);
       }
@@ -397,6 +423,36 @@ export class GraphView {
     this.sim = null;
   }
 
+  /**
+   * Keep every node inside the visible canvas. Zeroing the velocity on the
+   * clamped axis matters: clamping position alone lets the force keep
+   * pushing outward every tick, and the node visibly shivers at the border.
+   */
+  private clampToCanvas() {
+    const boundX = Math.max(60, this.width / 2 - 14);
+    const boundY = Math.max(60, this.height / 2 - 14);
+    for (const node of this.data?.nodes || []) {
+      if (typeof node.x === "number") {
+        if (node.x < -boundX) {
+          node.x = -boundX;
+          node.vx = 0;
+        } else if (node.x > boundX) {
+          node.x = boundX;
+          node.vx = 0;
+        }
+      }
+      if (typeof node.y === "number") {
+        if (node.y < -boundY) {
+          node.y = -boundY;
+          node.vy = 0;
+        } else if (node.y > boundY) {
+          node.y = boundY;
+          node.vy = 0;
+        }
+      }
+    }
+  }
+
   private updatePositions() {
     for (const { el, edge } of this.edgeEls) {
       // after simulation init, forceLink resolved ids to node objects
@@ -408,16 +464,7 @@ export class GraphView {
       el.setAttribute("x2", String(t.x ?? 0));
       el.setAttribute("y2", String(t.y ?? 0));
     }
-    const boundX = Math.max(60, this.width / 2 - 14);
-    const boundY = Math.max(60, this.height / 2 - 14);
     for (const node of this.data?.nodes || []) {
-      // keep every node inside the visible canvas
-      if (typeof node.x === "number") {
-        node.x = Math.max(-boundX, Math.min(boundX, node.x));
-      }
-      if (typeof node.y === "number") {
-        node.y = Math.max(-boundY, Math.min(boundY, node.y));
-      }
       const c = this.nodeEls.get(node.id);
       if (c) {
         c.setAttribute("cx", String(node.x ?? 0));

@@ -134,13 +134,21 @@ class LibraryIndex {
     // re-dirties and triggers another pass in ensure()
     this.dirty = false;
     const items = await Zotero.Items.getAll(libraryID, false, false);
-    for (const item of items) {
-      try {
-        this.indexItem(item as Zotero.Item);
-      } catch {
-        // getField throws UnloadedDataException on items whose data is
-        // not loaded yet — skip those, the notifier patches them later
+    // chunked: a big library is indexed in slices with the event loop
+    // released in between, so the first match() after startup does not
+    // freeze the UI (and stutter whatever is animating) for hundreds of ms
+    const CHUNK = 400;
+    for (let i = 0; i < items.length; i += CHUNK) {
+      const end = Math.min(i + CHUNK, items.length);
+      for (let j = i; j < end; j++) {
+        try {
+          this.indexItem(items[j] as Zotero.Item);
+        } catch {
+          // getField throws UnloadedDataException on items whose data is
+          // not loaded yet — skip those, the notifier patches them later
+        }
       }
+      if (end < items.length) await Zotero.Promise.delay(0);
     }
     ztoolkit.log(
       `[libmatch] indexed ${items.length} items in ${Date.now() - t0}ms`,
