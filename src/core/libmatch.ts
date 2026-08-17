@@ -14,7 +14,8 @@ class LibraryIndex {
   private byArXiv = new Map<string, number>();
   private byPMID = new Map<string, number>();
   private byTitle = new Map<string, number>();
-  private titles: Array<[string, number]> = [];
+  /** [normalized title, itemID, year (0 = unknown)] for the prefix fallback */
+  private titles: Array<[string, number, number]> = [];
   /** normalized titles already known NOT to match (per build generation) */
   private noMatch = new Set<string>();
   private dirty = true;
@@ -106,7 +107,13 @@ class LibraryIndex {
     const title = normalizeTitle(item.getField("title") as string);
     if (title.length >= 6) {
       this.byTitle.set(title, id);
-      if (title.length >= 15) this.titles.push([title, id]);
+      // only titles long enough to ever satisfy the prefix fallback's
+      // minimum-overlap requirement are worth scanning
+      if (title.length >= 25) {
+        const year =
+          Number(String(item.getField("date") || "").match(/\d{4}/)?.[0]) || 0;
+        this.titles.push([title, id, year]);
+      }
     }
   }
 
@@ -159,18 +166,27 @@ class LibraryIndex {
       const title = normalizeTitle(ref.title || ref.text);
       if (title.length >= 6) {
         id = this.byTitle.get(title);
-        // containment fallback for long titles (subtitle differences etc.)
-        // — memoized negatives and capped, so a long bibliography on a huge
-        // library cannot melt the main thread
+        // Prefix-only fallback for subtitle truncation ("Title" vs
+        // "Title: subtitle"). Mid-string containment is forbidden: a
+        // library item "Small-cell lung cancer" must never match a ref
+        // titled "… in patients with non-small-cell lung cancer".
+        // Memoized negatives and capped, so a long bibliography on a huge
+        // library cannot melt the main thread.
         if (
           !id &&
-          title.length >= 20 &&
+          title.length >= 25 &&
           !this.noMatch.has(title) &&
           this.titles.length <= LibraryIndex.MAX_SCAN
         ) {
-          const hit = this.titles.find(
-            ([t]) => t.includes(title) || title.includes(t),
-          );
+          const refYear = Number(ref.year) || 0;
+          const hit = this.titles.find(([t, , itemYear]) => {
+            if (t.length === title.length) return false; // = handled by map
+            const [short, long] =
+              t.length < title.length ? [t, title] : [title, t];
+            if (short.length < 25 || !long.startsWith(short)) return false;
+            // corroborate with the year when both sides know it
+            return !refYear || !itemYear || Math.abs(refYear - itemYear) <= 1;
+          });
           if (hit) id = hit[1];
           else this.noMatch.add(title);
         }

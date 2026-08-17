@@ -8,11 +8,18 @@ export function itemCacheKey(item: Zotero.Item): string {
 }
 
 /**
+ * Bump to discard all previously persisted entries. v1 files (which had
+ * no version marker) can hold DOIs backfilled from wrong library
+ * title-matches — those entries must not be trusted.
+ */
+const SCHEMA_VERSION = 2;
+
+/**
  * Persistent per-item reference cache, stored as one JSON file in the
  * Zotero data directory. Writes are debounced.
  *
- * Layout: { [libraryID/itemKey]: { [slot]: { t: epochMs, refs: RefItem[] } } }
- * slot is "PDF" or "API".
+ * File layout: { v, items: { [libraryID/itemKey]:
+ *   { [slot]: { t: epochMs, refs: RefItem[] } } } } — slot is "PDF" or "API".
  */
 class RefStorage {
   private cache: Record<
@@ -35,7 +42,8 @@ class RefStorage {
       );
       if (await IOUtils.exists(this.path)) {
         const raw = (await Zotero.File.getContentsAsync(this.path)) as string;
-        this.cache = JSON.parse(raw);
+        const parsed = JSON.parse(raw);
+        this.cache = parsed?.v === SCHEMA_VERSION ? parsed.items || {} : {};
       }
     } catch (e) {
       ztoolkit.log("[storage] load failed", e);
@@ -51,10 +59,13 @@ class RefStorage {
   async set(item: Zotero.Item, slot: string, refs: RefItem[]) {
     await this.ready;
     const itemKey = itemCacheKey(item);
-    // strip runtime-only fields before persisting
+    // Strip runtime-only fields before persisting. identifiers must be
+    // deep-copied: the live rows keep mutating their identifiers object
+    // (e.g. DOI backfill on library match) after this snapshot is taken,
+    // and a shared reference would leak those mutations into the file.
     const clean = refs.map((r) => {
       const { libItemID: _drop, ...rest } = r;
-      return rest as RefItem;
+      return { ...rest, identifiers: { ...rest.identifiers } } as RefItem;
     });
     (this.cache[itemKey] ??= {})[slot] = { t: Date.now(), refs: clean };
     this.scheduleWrite();
@@ -89,7 +100,10 @@ class RefStorage {
     // load would persist an empty cache over the existing file
     await this.ready;
     if (!this.path) return;
-    await Zotero.File.putContentsAsync(this.path, JSON.stringify(this.cache));
+    await Zotero.File.putContentsAsync(
+      this.path,
+      JSON.stringify({ v: SCHEMA_VERSION, items: this.cache }),
+    );
   }
 }
 

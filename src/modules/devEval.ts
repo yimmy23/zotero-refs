@@ -7,6 +7,9 @@
  * a no-op there). A shared-secret token is still required per request.
  */
 
+import { libraryIndex } from "../core/libmatch";
+import { refStorage } from "../core/storage";
+
 const TOKEN = "refs-dev-7f3fa390";
 
 export function registerDevEval() {
@@ -30,8 +33,13 @@ export function registerDevEval() {
           if (data.token !== TOKEN) {
             return [403, "text/plain", "forbidden"];
           }
-          const fn = new AsyncFunction("Zotero", "addon", String(data.code));
-          let result = await fn(Zotero, addon);
+          const fn = new AsyncFunction(
+            "Zotero",
+            "addon",
+            "dev",
+            String(data.code),
+          );
+          let result = await fn(Zotero, addon, { libraryIndex, refStorage });
           if (typeof result !== "string") {
             try {
               result = JSON.stringify(result);
