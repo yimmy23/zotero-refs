@@ -67,6 +67,7 @@ export type FluentMessageId =
   | 'pref-email'
   | 'pref-graphEnable'
   | 'pref-graphMaxNodes'
+  | 'pref-graphPopupDelay'
   | 'pref-group-cnki'
   | 'pref-group-network'
   | 'pref-group-popup'

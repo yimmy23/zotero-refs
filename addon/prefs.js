@@ -10,6 +10,9 @@ pref("notInLibraryOpacity", "0.7");
 // Hover popup
 pref("showPopup", true);
 pref("popupDelay", 233);
+// graph nodes are small targets the pointer crosses on the way elsewhere —
+// a longer delay than list rows keeps the card from popping up in transit
+pref("graphPopupDelay", 550);
 pref("popupFadeMs", 233);
 pref("popupRemoveDelay", 500);
 pref("ctrlClickTranslate", true);

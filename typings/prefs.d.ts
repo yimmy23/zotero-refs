@@ -16,6 +16,7 @@ declare namespace _ZoteroTypes {
       "notInLibraryOpacity": string;
       "showPopup": boolean;
       "popupDelay": number;
+      "graphPopupDelay": number;
       "popupFadeMs": number;
       "popupRemoveDelay": number;
       "ctrlClickTranslate": boolean;

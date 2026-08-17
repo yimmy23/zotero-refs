@@ -20,6 +20,7 @@ pref-group-popup = 悬浮卡片
 pref-showPopup =
     .label = 鼠标悬停参考文献时显示悬浮卡片
 pref-popupDelay = 显示延迟（毫秒）
+pref-graphPopupDelay = 图谱节点显示延迟（毫秒）
 pref-popupRemoveDelay = 隐藏延迟（毫秒）
 pref-ctrlClickTranslate =
     .label = Ctrl+单击标题/摘要进行翻译（需安装 Translate for Zotero 插件）

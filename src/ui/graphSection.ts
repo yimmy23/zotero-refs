@@ -238,7 +238,7 @@ function makeHoverHandler(
       showRefPopup(node.ref, rect, "left", undefined, {
         onImport: () => void importNode(item, node, view),
       });
-    }, getNumPref("popupDelay", 233));
+    }, getNumPref("graphPopupDelay", 550));
   };
 }
 

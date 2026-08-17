@@ -20,6 +20,7 @@ pref-group-popup = Hover Popup
 pref-showPopup =
     .label = Show a floating card when hovering a reference
 pref-popupDelay = Show delay (ms)
+pref-graphPopupDelay = Show delay on graph nodes (ms)
 pref-popupRemoveDelay = Hide delay (ms)
 pref-ctrlClickTranslate =
     .label = Ctrl+click title/abstract to translate (needs Translate for Zotero plugin)
