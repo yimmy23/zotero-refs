@@ -87,6 +87,9 @@ export function infoCandidates(ref: RefItem): {
     according: "Title",
     thunks: [
       () => crossref.getInfoByTitle!(title, refText),
+      // PubMed by [Title]: only answers for MEDLINE-indexed papers, but
+      // when it does its abstract coverage beats every other source
+      () => pubmed.getInfoByTitle(title),
       () => openalex.getInfoByTitle!(title, refText),
       () => semanticscholar.getInfoByTitle!(title, refText),
       () => readpaper.getInfoByTitle!(title, refText),
