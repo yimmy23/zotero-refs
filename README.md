@@ -14,11 +14,11 @@ Download `refs.xpi` from [Releases](https://github.com/yimmy23/zotero-refs/relea
 
 **Nothing is required.** All primary data sources (Crossref, OpenAlex, Semantic Scholar, arXiv, PubMed, Unpaywall) work anonymously out of the box. Three optional settings in `Settings → Refs`:
 
-| Setting | Needed for | Effect |
-|---|---|---|
-| **Email** | nothing (a default is shipped) | Crossref / OpenAlex / Unpaywall grant faster, more reliable access to requests that carry a contact email (their "polite pool"). Recommended: put your own email. |
-| **Semantic Scholar API key** | nothing | higher rate limits for Cited By / Related / hover cards. Free from [semanticscholar.org/product/api](https://www.semanticscholar.org/product/api). |
-| **CNKI 研学 account** | only the CNKI *reference list* of Chinese items | search/import of individual Chinese papers works without it. |
+| Setting                      | Needed for                                      | Effect                                                                                                                                                            |
+| ---------------------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Email**                    | nothing (a default is shipped)                  | Crossref / OpenAlex / Unpaywall grant faster, more reliable access to requests that carry a contact email (their "polite pool"). Recommended: put your own email. |
+| **Semantic Scholar API key** | nothing                                         | higher rate limits for Cited By / Related / hover cards. Free from [semanticscholar.org/product/api](https://www.semanticscholar.org/product/api).                |
+| **CNKI 研学 account**        | only the CNKI _reference list_ of Chinese items | search/import of individual Chinese papers works without it.                                                                                                      |
 
 ## Using the plugin
 

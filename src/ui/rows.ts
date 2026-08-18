@@ -302,7 +302,9 @@ async function locateReference(ref: RefItem, libraryID: number) {
     win.ZoteroPane.selectItem(local.id);
     return;
   }
-  let url = (isHttpUrl(ref.url) ? ref.url : undefined) || identifiersToURL(ref.identifiers);
+  let url =
+    (isHttpUrl(ref.url) ? ref.url : undefined) ||
+    identifiersToURL(ref.identifiers);
   if (!url) {
     const popupWin = new ztoolkit.ProgressWindow("Searching URL", {
       closeTime: -1,

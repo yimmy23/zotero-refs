@@ -529,64 +529,70 @@ export function registerReferencesSection() {
     onAsyncRender: guardAsync(
       "references.onAsyncRender",
       async ({ body, item, setSectionSummary }) => {
-      if (!item?.isRegularItem?.()) return;
-      const state = getState(item);
-      // (re)build DOM for this item; the stamp guards all later async work
-      body.textContent = "";
-      (body as HTMLElement).dataset.itemKey = state.stateKey;
-      (body as HTMLElement).classList.add("references-panel");
-      buildToolbar(body as HTMLElement, item, state, setSectionSummary);
-      const list = body.ownerDocument!.createElement("div");
-      list.className = "references-list";
-      body.append(list);
-      if (state.refs.length) {
-        renderList(body as HTMLElement, item, state, setSectionSummary);
-        return;
-      }
-      if (state.loadedOnce) return;
-      // cache-first initial fill
-      const cached = await refStorage.get(item, state.source);
-      if (!isCurrent(body as HTMLElement, state)) return;
-      if (cached?.length) {
-        state.refs = cached;
-        state.loadedOnce = true;
-        state.loadedSlot = state.source;
-        state.sourceUsed = `${state.source} (cached)`;
-        renderList(body as HTMLElement, item, state, setSectionSummary);
-        return;
-      }
-      if (getPref("autoRefresh")) {
-        const excluded = (getPref("notAutoRefreshItemTypes") as string)
-          .split(/,\s*/)
-          .map((s) => s.trim());
-        if (excluded.includes(item.itemType)) return;
-        // without an open reader the PDF source can only fail — fall back
-        // to API when it can answer, else skip silently (no popup spam
-        // while browsing the library)
-        if (state.source === "PDF" && !findReaderForItem(item)) {
-          const ids = hostIdentifiers(item);
-          const title = (item.getField("title") as string) || "";
-          if (ids.DOI || ids.PMID || ids.arXiv || isChinese(title)) {
-            state.source = "API";
-          } else {
-            return;
-          }
+        if (!item?.isRegularItem?.()) return;
+        const state = getState(item);
+        // (re)build DOM for this item; the stamp guards all later async work
+        body.textContent = "";
+        (body as HTMLElement).dataset.itemKey = state.stateKey;
+        (body as HTMLElement).classList.add("references-panel");
+        buildToolbar(body as HTMLElement, item, state, setSectionSummary);
+        const list = body.ownerDocument!.createElement("div");
+        list.className = "references-list";
+        body.append(list);
+        if (state.refs.length) {
+          renderList(body as HTMLElement, item, state, setSectionSummary);
+          return;
         }
-        // Settle debounce OUTSIDE the awaited render: Zotero awaits each
-        // pane's asyncRender in sequence, so sleeping here would delay the
-        // whole item pane. Schedule the fetch and return at once; rapid
-        // arrow-key browsing then never fires a request per item.
-        setTimeout(
-          guard("references.autoFetch", () => {
-            if (!isCurrent(body as HTMLElement, state)) return;
-            void refresh(body as HTMLElement, item, state, setSectionSummary, {
-              useCache: true,
-              fromCurrentPage: false,
-            });
-          }),
-          350,
-        );
-      }
+        if (state.loadedOnce) return;
+        // cache-first initial fill
+        const cached = await refStorage.get(item, state.source);
+        if (!isCurrent(body as HTMLElement, state)) return;
+        if (cached?.length) {
+          state.refs = cached;
+          state.loadedOnce = true;
+          state.loadedSlot = state.source;
+          state.sourceUsed = `${state.source} (cached)`;
+          renderList(body as HTMLElement, item, state, setSectionSummary);
+          return;
+        }
+        if (getPref("autoRefresh")) {
+          const excluded = (getPref("notAutoRefreshItemTypes") as string)
+            .split(/,\s*/)
+            .map((s) => s.trim());
+          if (excluded.includes(item.itemType)) return;
+          // without an open reader the PDF source can only fail — fall back
+          // to API when it can answer, else skip silently (no popup spam
+          // while browsing the library)
+          if (state.source === "PDF" && !findReaderForItem(item)) {
+            const ids = hostIdentifiers(item);
+            const title = (item.getField("title") as string) || "";
+            if (ids.DOI || ids.PMID || ids.arXiv || isChinese(title)) {
+              state.source = "API";
+            } else {
+              return;
+            }
+          }
+          // Settle debounce OUTSIDE the awaited render: Zotero awaits each
+          // pane's asyncRender in sequence, so sleeping here would delay the
+          // whole item pane. Schedule the fetch and return at once; rapid
+          // arrow-key browsing then never fires a request per item.
+          setTimeout(
+            guard("references.autoFetch", () => {
+              if (!isCurrent(body as HTMLElement, state)) return;
+              void refresh(
+                body as HTMLElement,
+                item,
+                state,
+                setSectionSummary,
+                {
+                  useCache: true,
+                  fromCurrentPage: false,
+                },
+              );
+            }),
+            350,
+          );
+        }
       },
     ),
   });

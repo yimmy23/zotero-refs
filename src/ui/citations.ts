@@ -164,93 +164,93 @@ export function registerCitationsSection() {
     onAsyncRender: guardAsync(
       "citations.onAsyncRender",
       async ({ body, item, setSectionSummary }) => {
-      if (!item?.isRegularItem?.()) return;
-      const stateKey = itemCacheKey(item);
-      let state = states.get(stateKey);
-      const doc = body.ownerDocument!;
-      body.textContent = "";
-      (body as HTMLElement).classList.add("references-panel");
+        if (!item?.isRegularItem?.()) return;
+        const stateKey = itemCacheKey(item);
+        let state = states.get(stateKey);
+        const doc = body.ownerDocument!;
+        body.textContent = "";
+        (body as HTMLElement).classList.add("references-panel");
 
-      const toolbar = doc.createElement("div");
-      toolbar.className = "references-toolbar";
-      const count = doc.createElement("span");
-      count.className = "references-count";
-      count.textContent = `0 ${getString("citations-count-suffix")}`;
-      toolbar.append(count);
-      body.append(toolbar);
+        const toolbar = doc.createElement("div");
+        toolbar.className = "references-toolbar";
+        const count = doc.createElement("span");
+        count.className = "references-count";
+        count.textContent = `0 ${getString("citations-count-suffix")}`;
+        toolbar.append(count);
+        body.append(toolbar);
 
-      // keyword filter over loaded rows — landmark trials have thousands
-      // of citing works; 25-per-page with no filter is unusable
-      const searchBox = doc.createElement("div");
-      searchBox.className = "references-search";
-      const input = doc.createElement("input");
-      input.placeholder = getString("citations-filter-placeholder");
-      searchBox.append(input);
-      body.append(searchBox);
+        // keyword filter over loaded rows — landmark trials have thousands
+        // of citing works; 25-per-page with no filter is unusable
+        const searchBox = doc.createElement("div");
+        searchBox.className = "references-search";
+        const input = doc.createElement("input");
+        input.placeholder = getString("citations-filter-placeholder");
+        searchBox.append(input);
+        body.append(searchBox);
 
-      const list = doc.createElement("div");
-      list.className = "references-list";
-      body.append(list);
-      input.addEventListener("input", () => filterRows(list, input.value));
+        const list = doc.createElement("div");
+        list.className = "references-list";
+        body.append(list);
+        input.addEventListener("input", () => filterRows(list, input.value));
 
-      const more = doc.createElement("button");
-      more.className = "references-button references-load-more";
-      more.textContent = getString("citations-load-more");
-      body.append(more);
+        const more = doc.createElement("button");
+        more.className = "references-button references-load-more";
+        more.textContent = getString("citations-load-more");
+        body.append(more);
 
-      const dom: PanelDOM = { list, count, more, filter: input };
-      more.addEventListener("click", () => loadMore(item, state!));
+        const dom: PanelDOM = { list, count, more, filter: input };
+        more.addEventListener("click", () => loadMore(item, state!));
 
-      if (!state) {
-        state = {
-          refs: [],
-          nextOffset: 0,
-          exhausted: false,
-          loading: false,
-          seen: new Set(),
-        };
-        // bound per-session memory: drop the oldest items' states
-        if (states.size >= 150) {
-          const oldest = states.keys().next().value;
-          if (oldest !== undefined) states.delete(oldest);
+        if (!state) {
+          state = {
+            refs: [],
+            nextOffset: 0,
+            exhausted: false,
+            loading: false,
+            seen: new Set(),
+          };
+          // bound per-session memory: drop the oldest items' states
+          if (states.size >= 150) {
+            const oldest = states.keys().next().value;
+            if (oldest !== undefined) states.delete(oldest);
+          }
+          states.set(stateKey, state);
         }
-        states.set(stateKey, state);
-      }
-      // every render (fresh or repeat) owns the panel from now on
-      state.dom = dom;
-      state.setSummary = setSectionSummary;
-      if (state.refs.length) {
-        // re-render existing page(s)
-        const ctx: RowContext = {
-          hostItem: item,
-          list,
-          numbered: false,
-          editable: false,
-        };
-        for (let i = 0; i < state.refs.length; i++) {
-          renderRefRow(ctx, state.refs, i);
+        // every render (fresh or repeat) owns the panel from now on
+        state.dom = dom;
+        state.setSummary = setSectionSummary;
+        if (state.refs.length) {
+          // re-render existing page(s)
+          const ctx: RowContext = {
+            hostItem: item,
+            list,
+            numbered: false,
+            editable: false,
+          };
+          for (let i = 0; i < state.refs.length; i++) {
+            renderRefRow(ctx, state.refs, i);
+          }
+          count.textContent = `${state.refs.length}${
+            state.total ? ` / ${state.total}` : ""
+          } ${getString("citations-count-suffix")}`;
+          setSectionSummary(
+            `${state.total ?? state.refs.length}${state.total ? "" : "+"}`,
+          );
+          more.style.display = state.exhausted ? "none" : "";
+          return;
         }
-        count.textContent = `${state.refs.length}${
-          state.total ? ` / ${state.total}` : ""
-        } ${getString("citations-count-suffix")}`;
-        setSectionSummary(
-          `${state.total ?? state.refs.length}${state.total ? "" : "+"}`,
-        );
-        more.style.display = state.exhausted ? "none" : "";
-        return;
-      }
-      if (getPref("loadingCitations")) {
-        // settle debounce outside the awaited render (see section.ts);
-        // `list` detaches whenever ANY item re-renders the shared body,
-        // so this also skips items the user merely arrow-keyed past
-        setTimeout(
-          guard("citations.autoFetch", () => {
-            if (state.dom !== dom || !list.isConnected) return;
-            void loadMore(item, state);
-          }),
-          350,
-        );
-      }
+        if (getPref("loadingCitations")) {
+          // settle debounce outside the awaited render (see section.ts);
+          // `list` detaches whenever ANY item re-renders the shared body,
+          // so this also skips items the user merely arrow-keyed past
+          setTimeout(
+            guard("citations.autoFetch", () => {
+              if (state.dom !== dom || !list.isConnected) return;
+              void loadMore(item, state);
+            }),
+            350,
+          );
+        }
       },
     ),
   });

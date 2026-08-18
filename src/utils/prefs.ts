@@ -40,7 +40,10 @@ export function clearPref(key: string) {
  * deliberate 0 as "unset", which silently re-enables delays the user
  * turned off. NaN / negative fall back to the default.
  */
-export function getNumPref(key: Parameters<typeof getPref>[0], dflt: number): number {
+export function getNumPref(
+  key: Parameters<typeof getPref>[0],
+  dflt: number,
+): number {
   const v = Number(getPref(key));
   return Number.isFinite(v) && v >= 0 ? v : dflt;
 }

@@ -67,7 +67,8 @@ export async function createItemFromInfo(
   // keep PMID / arXiv so the item can be re-matched by identifier later
   // (otherwise a second import creates a duplicate)
   if (info.identifiers.PMID) extraLines.push(`PMID: ${info.identifiers.PMID}`);
-  if (info.identifiers.arXiv) extraLines.push(`arXiv: ${info.identifiers.arXiv}`);
+  if (info.identifiers.arXiv)
+    extraLines.push(`arXiv: ${info.identifiers.arXiv}`);
   if (extraLines.length) {
     const extra = (item.getField("extra") as string) || "";
     item.setField("extra", [extra, ...extraLines].filter(Boolean).join("\n"));

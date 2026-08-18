@@ -27,7 +27,8 @@ function sanitizeRef(r: any): RefItem | null {
     // markup left by APIs in older caches ("<i>ALK</i>") is cleaned here too
     title: cleanText(str(r.title)),
     text: cleanText(str(r.text)),
-    year: str(r.year) ?? (typeof r.year === "number" ? String(r.year) : undefined),
+    year:
+      str(r.year) ?? (typeof r.year === "number" ? String(r.year) : undefined),
     type: str(r.type) || "journalArticle",
     primaryVenue: cleanText(str(r.primaryVenue)),
     publishDate: str(r.publishDate),
@@ -121,9 +122,7 @@ class RefStorage {
     // deep-copied: the live rows keep mutating their identifiers object
     // (e.g. DOI backfill on library match) after this snapshot is taken,
     // and a shared reference would leak those mutations into the file.
-    const clean = refs
-      .map(sanitizeRef)
-      .filter((r): r is RefItem => !!r);
+    const clean = refs.map(sanitizeRef).filter((r): r is RefItem => !!r);
     (this.cache[itemKey] ??= {})[slot] = { t: Date.now(), refs: clean };
     this.evictIfNeeded();
     this.scheduleWrite();

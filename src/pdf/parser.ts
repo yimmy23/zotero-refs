@@ -218,9 +218,7 @@ function numAtStart(text: string): number {
   // entry starts.
   const m = text
     .trim()
-    .match(
-      /^[[(]?(\d{1,3})(?:\s*[\].)]\s*(?=[^\d\s.])|\s+(?=[\p{L}[(“"']))/u,
-    );
+    .match(/^[[(]?(\d{1,3})(?:\s*[\].)]\s*(?=[^\d\s.])|\s+(?=[\p{L}[(“"']))/u);
   return m ? Number(m[1]) : 0;
 }
 
@@ -831,13 +829,19 @@ async function getRefLines(
       const extra: PDFLine[] = [];
       for (const p of parts) {
         for (const l of p) {
-          if (l.pageNum === lastRefPage && !have.has(l) && after(l)) extra.push(l);
+          if (l.pageNum === lastRefPage && !have.has(l) && after(l))
+            extra.push(l);
         }
       }
       if (extra.length) {
-        const merged = [...refPart.filter((l) => l.pageNum === lastRefPage), ...extra]
-          .sort((a, b) => (a.column ?? 0) - (b.column ?? 0) || b.y - a.y);
-        refPart = [...merged, ...refPart.filter((l) => l.pageNum !== lastRefPage)];
+        const merged = [
+          ...refPart.filter((l) => l.pageNum === lastRefPage),
+          ...extra,
+        ].sort((a, b) => (a.column ?? 0) - (b.column ?? 0) || b.y - a.y);
+        refPart = [
+          ...merged,
+          ...refPart.filter((l) => l.pageNum !== lastRefPage),
+        ];
         ztoolkit.log(
           `[pdfparser] heading page completed with ${extra.length} more lines`,
         );
@@ -902,7 +906,9 @@ async function getRefLines(
       const p = parts[i];
       const start = findNumberedStart(p, p.length);
       const numbered =
-        start >= 0 ? p.slice(start).filter((l) => numAtStart(l.text) > 0).length : 0;
+        start >= 0
+          ? p.slice(start).filter((l) => numAtStart(l.text) > 0).length
+          : 0;
       const isRefs = p.filter((line) => getRefType(line.text) != -1).length;
       partRefNum.push([i, numbered, isRefs]);
     }

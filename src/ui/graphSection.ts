@@ -95,16 +95,20 @@ function citationText(ref: RefItem): string {
   const authors = ref.authors || [];
   const who =
     authors.slice(0, 3).join(", ") + (authors.length > 3 ? " et al." : "");
-  const doi = ref.identifiers.DOI ? ` https://doi.org/${ref.identifiers.DOI}` : "";
-  return [
-    who,
-    ref.year ? `(${ref.year}).` : "",
-    ref.title ? `${ref.title}.` : "",
-    ref.primaryVenue ? `${ref.primaryVenue}.` : "",
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .trim() + doi;
+  const doi = ref.identifiers.DOI
+    ? ` https://doi.org/${ref.identifiers.DOI}`
+    : "";
+  return (
+    [
+      who,
+      ref.year ? `(${ref.year}).` : "",
+      ref.title ? `${ref.title}.` : "",
+      ref.primaryVenue ? `${ref.primaryVenue}.` : "",
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .trim() + doi
+  );
 }
 
 /**
@@ -148,7 +152,10 @@ function showNodeMenu(
   if (ref.libItemID) {
     add(getString("graph-menu-locate"), () => nodeClicked(node));
   } else {
-    add(getString("graph-menu-import"), () => void importNode(item, node, view));
+    add(
+      getString("graph-menu-import"),
+      () => void importNode(item, node, view),
+    );
   }
   sep();
   if (ref.identifiers.DOI) {
@@ -187,7 +194,11 @@ function showNodeMenu(
           DOI: ref.identifiers.DOI,
           PMID: ref.identifiers.PMID,
         },
-        key: ref.identifiers.openAlex || ref.identifiers.DOI || ref.identifiers.PMID || "",
+        key:
+          ref.identifiers.openAlex ||
+          ref.identifiers.DOI ||
+          ref.identifiers.PMID ||
+          "",
         label: nodeShortLabel(node),
       });
       void renderGraph(body, item, setSectionSummary);
@@ -199,7 +210,10 @@ function showNodeMenu(
 
 function nodeShortLabel(node: GraphNode): string {
   const author = (node.ref.authors?.[0] || "").trim().split(/\s+/).pop() || "";
-  return [author, node.ref.year].filter(Boolean).join(" ") || collapseText(node.ref.title || "", 20);
+  return (
+    [author, node.ref.year].filter(Boolean).join(" ") ||
+    collapseText(node.ref.title || "", 20)
+  );
 }
 
 /** hover: tip line + (after the usual delay) the multi-source card */
@@ -233,13 +247,16 @@ function makeHoverHandler(
       return;
     }
     if (!getPref("showPopup") || !rect) return;
-    hoverTimer = setTimeout(() => {
-      hoverTimer = undefined;
-      const view = views.get(body);
-      showRefPopup(node.ref, rect, "left", undefined, {
-        onImport: () => void importNode(item, node, view),
-      });
-    }, getNumPref("graphPopupDelay", 550));
+    hoverTimer = setTimeout(
+      () => {
+        hoverTimer = undefined;
+        const view = views.get(body);
+        showRefPopup(node.ref, rect, "left", undefined, {
+          onImport: () => void importNode(item, node, view),
+        });
+      },
+      getNumPref("graphPopupDelay", 550),
+    );
   };
 }
 
@@ -264,9 +281,7 @@ async function renderGraph(
   const cacheKey = itemCacheKey(item) + (center.key ? `#${center.key}` : "");
   if (home) {
     home.style.display = center.key ? "" : "none";
-    home.textContent = center.key
-      ? `↩ ${getString("graph-back-home")}`
-      : "";
+    home.textContent = center.key ? `↩ ${getString("graph-back-home")}` : "";
     home.title = center.key
       ? `${getString("graph-centered-on")} ${center.label}`
       : "";
@@ -346,86 +361,86 @@ export function registerGraphSection() {
     onAsyncRender: guardAsync(
       "graph.onAsyncRender",
       async ({ body, item, setSectionSummary }) => {
-      if (!item?.isRegularItem?.()) return;
-      const doc = body.ownerDocument!;
-      body.textContent = "";
-      (body as HTMLElement).classList.add("references-panel");
+        if (!item?.isRegularItem?.()) return;
+        const doc = body.ownerDocument!;
+        body.textContent = "";
+        (body as HTMLElement).classList.add("references-panel");
 
-      const toolbar = doc.createElement("div");
-      toolbar.className = "references-toolbar";
-      const status = doc.createElement("span");
-      status.className = "references-graph-status references-count";
-      toolbar.append(status);
-      const spacer = doc.createElement("span");
-      spacer.className = "references-spacer";
-      toolbar.append(spacer);
-      // a fresh render always starts centred on the item itself
-      centers.delete(body as HTMLElement);
-      const home = doc.createElement("button");
-      home.className = "references-button references-graph-home";
-      home.style.display = "none";
-      home.addEventListener("click", () => {
+        const toolbar = doc.createElement("div");
+        toolbar.className = "references-toolbar";
+        const status = doc.createElement("span");
+        status.className = "references-graph-status references-count";
+        toolbar.append(status);
+        const spacer = doc.createElement("span");
+        spacer.className = "references-spacer";
+        toolbar.append(spacer);
+        // a fresh render always starts centred on the item itself
         centers.delete(body as HTMLElement);
-        void renderGraph(body as HTMLElement, item, setSectionSummary);
-      });
-      toolbar.append(home);
-      const rebuild = doc.createElement("button");
-      rebuild.className =
-        "references-button references-icon-button references-icon-refresh";
-      rebuild.title = getString("graph-rebuild");
-      rebuild.addEventListener("click", () =>
-        renderGraph(body as HTMLElement, item, setSectionSummary, true),
-      );
-      toolbar.append(rebuild);
-      body.append(toolbar);
-
-      // legend: node color semantics + the solid-means-in-library rule
-      const legend = doc.createElement("div");
-      legend.className = "references-graph-legend";
-      const legendEntries: Array<[string, string]> = [
-        ["#e8710a", getString("graph-legend-origin")],
-        ["#4a90d9", getString("graph-legend-reference")],
-        ["#35999a", getString("graph-legend-citation")],
-        ["#9b7fd4", getString("graph-legend-related")],
-      ];
-      for (const [color, label] of legendEntries) {
-        const entry = doc.createElement("span");
-        entry.className = "references-graph-legend-entry";
-        const dot = doc.createElement("span");
-        dot.className = "references-graph-legend-dot";
-        dot.style.backgroundColor = color;
-        entry.append(dot, label);
-        legend.append(entry);
-      }
-      const hint = doc.createElement("span");
-      hint.className = "references-graph-legend-hint";
-      hint.textContent = getString("graph-legend-hint");
-      legend.append(hint);
-      body.append(legend);
-
-      const container = doc.createElement("div");
-      container.className = "references-graph-container";
-      body.append(container);
-
-      const tip = doc.createElement("div");
-      tip.className = "references-graph-tip";
-      tip.textContent = "\u00a0";
-      body.append(tip);
-
-      if (dataCache.has(itemCacheKey(item))) {
-        await renderGraph(body as HTMLElement, item, setSectionSummary);
-        return;
-      }
-      // settle debounce OUTSIDE the awaited render — the OpenAlex build is
-      // the most expensive auto-fetch, so never fire it per arrow-key step
-      // and never hold up Zotero's item-pane render loop for it
-      setTimeout(
-        guard("graph.autoBuild", () => {
-          if (!container.isConnected) return;
+        const home = doc.createElement("button");
+        home.className = "references-button references-graph-home";
+        home.style.display = "none";
+        home.addEventListener("click", () => {
+          centers.delete(body as HTMLElement);
           void renderGraph(body as HTMLElement, item, setSectionSummary);
-        }),
-        350,
-      );
+        });
+        toolbar.append(home);
+        const rebuild = doc.createElement("button");
+        rebuild.className =
+          "references-button references-icon-button references-icon-refresh";
+        rebuild.title = getString("graph-rebuild");
+        rebuild.addEventListener("click", () =>
+          renderGraph(body as HTMLElement, item, setSectionSummary, true),
+        );
+        toolbar.append(rebuild);
+        body.append(toolbar);
+
+        // legend: node color semantics + the solid-means-in-library rule
+        const legend = doc.createElement("div");
+        legend.className = "references-graph-legend";
+        const legendEntries: Array<[string, string]> = [
+          ["#e8710a", getString("graph-legend-origin")],
+          ["#4a90d9", getString("graph-legend-reference")],
+          ["#35999a", getString("graph-legend-citation")],
+          ["#9b7fd4", getString("graph-legend-related")],
+        ];
+        for (const [color, label] of legendEntries) {
+          const entry = doc.createElement("span");
+          entry.className = "references-graph-legend-entry";
+          const dot = doc.createElement("span");
+          dot.className = "references-graph-legend-dot";
+          dot.style.backgroundColor = color;
+          entry.append(dot, label);
+          legend.append(entry);
+        }
+        const hint = doc.createElement("span");
+        hint.className = "references-graph-legend-hint";
+        hint.textContent = getString("graph-legend-hint");
+        legend.append(hint);
+        body.append(legend);
+
+        const container = doc.createElement("div");
+        container.className = "references-graph-container";
+        body.append(container);
+
+        const tip = doc.createElement("div");
+        tip.className = "references-graph-tip";
+        tip.textContent = "\u00a0";
+        body.append(tip);
+
+        if (dataCache.has(itemCacheKey(item))) {
+          await renderGraph(body as HTMLElement, item, setSectionSummary);
+          return;
+        }
+        // settle debounce OUTSIDE the awaited render — the OpenAlex build is
+        // the most expensive auto-fetch, so never fire it per arrow-key step
+        // and never hold up Zotero's item-pane render loop for it
+        setTimeout(
+          guard("graph.autoBuild", () => {
+            if (!container.isConnected) return;
+            void renderGraph(body as HTMLElement, item, setSectionSummary);
+          }),
+          350,
+        );
       },
     ),
   });

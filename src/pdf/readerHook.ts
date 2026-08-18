@@ -26,7 +26,9 @@ const anchoredRefs = new Map<string, RefItem[]>();
 const anchoring = new Map<string, Promise<void>>();
 
 function hasAnchors(refs?: RefItem[]): refs is RefItem[] {
-  return !!refs?.some((r) => typeof r.x === "number" && typeof r.y === "number");
+  return !!refs?.some(
+    (r) => typeof r.x === "number" && typeof r.y === "number",
+  );
 }
 
 function topItemOf(reader: any): Zotero.Item | undefined {
@@ -64,7 +66,8 @@ function ensureAnchored(reader: any) {
     const refs = await parsePDFReferences(reader, {});
     if (hasAnchors(refs)) {
       anchoredRefs.set(key, refs);
-      if (getPref("savePDFReferences")) void refStorage.set(topItem, "PDF", refs);
+      if (getPref("savePDFReferences"))
+        void refStorage.set(topItem, "PDF", refs);
     }
   })()
     .catch((e) => ztoolkit.log("[readerHook] anchor parse failed", e))
@@ -124,7 +127,8 @@ export function onReaderTabSelect(tabID: string) {
       // parse lazily, once the tab has settled (never during startup burst)
       setTimeout(() => {
         try {
-          if (Zotero.Reader.getByTabID(tabID) === reader) ensureAnchored(reader);
+          if (Zotero.Reader.getByTabID(tabID) === reader)
+            ensureAnchored(reader);
         } catch {
           // reader gone
         }
