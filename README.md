@@ -2,13 +2,13 @@
 
 **References, citations, related papers and a citation graph for every Zotero item.**
 
-A ground-up rebuild of [zotero-reference](https://github.com/MuiseDestiny/zotero-reference) for **Zotero 7 / 8 / 9**, implementing its full feature set on modern official APIs, plus new capabilities.
+A ground-up rebuild of [zotero-reference](https://github.com/MuiseDestiny/zotero-reference) for **Zotero 7–10**, implementing its full feature set on modern official APIs, plus new capabilities.
 
 [English](#install) | [中文说明](#中文说明) | [For AI agents](#for-ai-agents)
 
 ## Install
 
-Download `refs.xpi` from [Releases](https://github.com/yimmy23/zotero-refs/releases), then in Zotero: `Tools → Plugins → ⚙ → Install Plugin From File…`. Supports Zotero 7–9. Later versions arrive through Zotero's built-in plugin updater (`Tools → Plugins → ⚙ → Check for Updates`, or automatically).
+Download `refs.xpi` from [Releases](https://github.com/yimmy23/zotero-refs/releases), then in Zotero: `Tools → Plugins → ⚙ → Install Plugin From File…`. Supports Zotero 7–10 (tested on 9.0.6 and 10.0). Later versions arrive through Zotero's built-in plugin updater (`Tools → Plugins → ⚙ → Check for Updates`, or automatically).
 
 ## API keys — what do I need to fill in?
 
@@ -26,7 +26,7 @@ After install, four collapsible sections appear in the right-hand item pane (lib
 
 ### References
 
-The list loads automatically (configurable). The source is shown next to the count — `PDF` means parsed from the PDF text layer, `API` means fetched from Crossref → Semantic Scholar → OpenAlex → CNKI.
+The list loads automatically (configurable). The source is shown next to the count — `PDF` means parsed from the PDF text layer (numbered-sequence merging, column/footer handling, cross-page continuation; verified on a 32-journal corpus), `API` means fetched from Crossref → Semantic Scholar → OpenAlex → CNKI.
 
 - **Refresh button**: click to fetch the current source (the `PDF`/`API` badge switches sources); **long-press** to bypass the cache; `Ctrl+click` in a thesis/book PDF parses backwards from the current page (thesis mode).
 - **Per row**: solid = already in your library, dimmed = not. Click to **copy the citation** (clean text, list numbering stripped) · long-press to **edit** the raw text (`Esc` cancels) · `Ctrl+click` to **locate in library / open in browser** · `+` to **import and bidirectionally relate** (`Ctrl+click +` picks the target collection) · `−` to unlink. Every control has a hover tooltip. Works flagged as **retracted** by OpenAlex / PubMed carry a red RETRACTED badge and ask for confirmation before import.
@@ -80,7 +80,7 @@ Architecture, invariants, and verified gotchas (Fluent l10n rules, hook guarding
 
 ## 中文说明
 
-**Refs——为每个 Zotero 条目提供参考文献、被引、相关文献与引文图谱。** 支持 Zotero 7–9。
+**Refs——为每个 Zotero 条目提供参考文献、被引、相关文献与引文图谱。** 支持 Zotero 7–10（在 9.0.6 与 10.0 上实测）。
 
 ### 安装
 

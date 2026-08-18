@@ -16,3 +16,4 @@ build
 logs
 # local session archive (存档) — never publish
 session-notes.md
+.corpus/

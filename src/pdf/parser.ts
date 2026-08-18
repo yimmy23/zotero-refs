@@ -204,7 +204,95 @@ function mergeSameLine(items: PDFItem[]): PDFLine[] {
  * Noise trailing the bibliography (past 90% of the lines, far off-indent)
  * is cut off.
  */
+/**
+ * Leading bibliography number of a line: "12. ", "12) ", "[12] ", "(12) ",
+ * "12 Author". 0 when absent. Rejects "10.1016/…" (digit after the dot),
+ * years ("2019 …", four digits) and page numbers glued to text.
+ */
+function numAtStart(text: string): number {
+  // JAMA sets the number in bold as its own text run: "1 . Sung H" — allow
+  // whitespace between the number and its punctuation
+  // Punctuated forms ("12." "12)" "[12]" "(12)") may be followed by any
+  // non-digit; the bare form ("12 Author") must be followed by a letter,
+  // otherwise wrapped volume/page fragments ("41 , 1103–1117") pass as
+  // entry starts.
+  const m = text
+    .trim()
+    .match(
+      /^[[(]?(\d{1,3})(?:\s*[\].)]\s*(?=[^\d\s.])|\s+(?=[\p{L}[(“"']))/u,
+    );
+  return m ? Number(m[1]) : 0;
+}
+
+/** typical trailing matter that follows a bibliography on its last page */
+const TAIL_NOISE =
+  /^(open access|©|copyright|publisher'?s note|springer nature remains|correspondence|acknowledg|author contributions|competing interests|conflict of interest|supplementary|received:|accepted:|funding|data availability|ethics|cite this article|reprints and permissions|the author\(s\)|this article is licensed|figure legends?|figure \d|fig\. \d|table \d|e-table|e-figure|appendix)/i;
+
+/** index of the line that starts a numbered list at 1 (2 must follow soon) */
+function findNumberedStart(lines: PDFLine[], within = 12): number {
+  for (let i = 0; i < Math.min(lines.length, within); i++) {
+    if (numAtStart(lines[i].text) !== 1) continue;
+    const probe = lines
+      .slice(i + 1, i + 40)
+      .some((l) => numAtStart(l.text) === 2);
+    if (probe) return i;
+  }
+  return -1;
+}
+
+/**
+ * Numbered bibliographies (the vast majority of biomedical journals): a
+ * line starts a new entry iff it begins with the NEXT number in sequence.
+ * Monotonic numbering is far more robust than the indent geometry below,
+ * which breaks across columns / pages / justified layouts.
+ * Returns null when the input is not a numbered list starting at 1.
+ */
+function mergeNumberedRefs(input: PDFLine[]): PDFLine[] | null {
+  if (!input.length) return null;
+  const startIdx = findNumberedStart(input);
+  if (startIdx < 0) return null;
+  input = input.slice(startIdx);
+  const out: PDFLine[] = [];
+  let cur: PDFLine | undefined;
+  let expected = 1;
+  // after trailing matter (licence text, "Publisher's note"…) lines are
+  // dropped until the numbering resumes — Nature-family papers number
+  // their Methods references (69–83) after a block of front matter
+  let skipping = false;
+  for (const line of input) {
+    const n = numAtStart(line.text);
+    const text = line.text;
+    if (
+      n === expected ||
+      // one entry lost to OCR/layout: accept a single skip once the
+      // current entry already has real content
+      (n === expected + 1 && cur && cur.text.length >= 40)
+    ) {
+      cur = { ...line, text: text.trim() };
+      out.push(cur);
+      expected = n + 1;
+      skipping = false;
+      continue;
+    }
+    if (!cur) continue; // leading noise before entry 1 (should not happen)
+    if (skipping) continue;
+    if (out.length > 1 && TAIL_NOISE.test(text.trim())) {
+      skipping = true;
+      continue;
+    }
+    cur.text =
+      cur.text.replace(/-$/, "") + (cur.text.endsWith("-") ? "" : " ") + text;
+    if (line.url) cur.url = line.url;
+  }
+  return out.length >= 3 ? out : null;
+}
+
 function mergeSameRef(input: PDFLine[]): PDFLine[] {
+  const numbered = mergeNumberedRefs(input);
+  if (numbered) {
+    ztoolkit.log(`[pdfparser] numbered merge -> ${numbered.length}`);
+    return numbered;
+  }
   const _refLines = [...input];
   let refLines: (PDFLine | false)[] = input;
   const firstLine = input[0];
@@ -416,7 +504,7 @@ async function getRefLines(
   const parts: PDFLine[][] = [];
   let part: PDFLine[] = [];
   let refPart: PDFLine[] = [];
-  const _refPart: { done: boolean; parts: PDFLine[][] } = {
+  const _refPart: { done: boolean; parts: PDFLine[][]; heading?: PDFLine } = {
     done: false,
     parts: [],
   };
@@ -576,7 +664,10 @@ async function getRefLines(
     const isRefBreak = (text: string) => {
       text = text.replace(/\s+/g, "");
       return (
-        /(参考文献|reference|bibliography)/i.test(text) && text.length < 20
+        /(参考文献|reference|bibliography)/i.test(text) &&
+        text.length < 20 &&
+        // "References (160–200)" in a supplementary-materials list
+        !/reference[s]?\(?\d/i.test(text)
       );
     };
     // finish a bibliography part; the bibliography is complete when its
@@ -589,6 +680,18 @@ async function getRefLines(
         return;
       }
       part = donePart(part);
+      // false heading (Science's supplementary list says "References
+      // (160–200)", box titles mention "reference"…): the block under a
+      // real heading looks like references
+      const refLike =
+        part.filter((l) => getRefType(l.text) != -1).length / part.length;
+      const startsAtOne = part.some((l) => numAtStart(l.text) === 1);
+      if ((part.length < 3 && !startsAtOne) || refLike < 0.25) {
+        ztoolkit.log(
+          `[pdfparser] ignoring heading: block below is not references (n=${part.length}, refLike=${refLike.toFixed(2)})`,
+        );
+        return;
+      }
       _refPart.parts.push(part);
       const res = part[0].text.trim().match(/^\d+/);
       _refPart.done = !(res && res[0] != "1");
@@ -614,6 +717,15 @@ async function getRefLines(
         hh2.some((h2) => h1 - h2 < (h1 > h2 ? h2 : h1) * 0.3),
       );
     const endLine = endLines[endLines.length - 1];
+    // The "skip until the bottom-right body line" heuristic assumes the
+    // content stream ends with the body text. Many journals draw the
+    // running footer FIRST, so endLine sits at the start of the array and
+    // walking backwards would skip the entire page (JITC lost pages of
+    // references this way). Only skip when endLine is late in the stream.
+    const endIdx = lines.indexOf(endLine);
+    if (endIdx >= 0 && endIdx < lines.length * 0.5) {
+      isStart = true;
+    }
 
     for (let i = lines.length - 1; i >= 0; i--) {
       const line = lines[i];
@@ -646,6 +758,7 @@ async function getRefLines(
       }
       // check before pushing
       if (isRefBreak(line.text)) {
+        _refPart.heading = line;
         doneRefPart(part);
         part = [];
         break;
@@ -662,6 +775,7 @@ async function getRefLines(
             abs(line.y - lines[i - 1].y) > line.height * 3))
       ) {
         if (isRefBreak(lines[i - 1].text)) {
+          _refPart.heading = lines[i - 1];
           doneRefPart(part);
           part = [];
           break;
@@ -694,23 +808,71 @@ async function getRefLines(
       p.filter((l) => getRefType(l.text) != -1).length / p.length;
     // numbered bibliographies: the continuation must pick up at the next
     // number ("11." on page N → a line starting "12." / "[12]" on N+1)
-    const numOf = (t: string) =>
-      Number(t.trim().match(/^\[?(\d{1,3})\]?[.)\s]/)?.[1]) || 0;
-    const lastNum = Math.max(0, ...refPart.map((l) => numOf(l.text)));
+    // strict form (a real entry start, not a stray "839." page fragment)
+    const numOf = (t: string) => numAtStart(t);
+    let lastNum = Math.max(0, ...refPart.map((l) => numOf(l.text)));
     const numberedCount = (p: PDFLine[]) =>
       p.filter((l) => numOf(l.text) > 0).length;
     const picksUp = (p: PDFLine[]) =>
       lastNum > 0 &&
-      numberedCount(p) >= 3 &&
+      numberedCount(p) >= 2 &&
       p.some((l) => numOf(l.text) === lastNum + 1);
-    const continuation = parts
-      .filter(
-        (p) =>
-          p.length >= 3 &&
-          (p[0].pageNum ?? -1) > lastRefPage &&
-          (picksUp(p) || refScore(p) >= 0.3),
-      )
-      .sort((a, b) => (a[0].pageNum ?? 0) - (b[0].pageNum ?? 0));
+    // Heading page: the walk (bottom-up, breaking parts on big gaps) may
+    // have committed the entries between the heading and the page bottom
+    // as ordinary parts before it reached the heading — double-spaced
+    // manuscripts split every entry into its own part. Take every line of
+    // the heading page that comes AFTER the heading in reading order.
+    const heading = _refPart.heading;
+    if (heading && heading.pageNum === lastRefPage) {
+      const have = new Set(refPart);
+      const after = (l: PDFLine) =>
+        (l.column ?? 0) > (heading.column ?? 0) ||
+        ((l.column ?? 0) === (heading.column ?? 0) && l.y < heading.y);
+      const extra: PDFLine[] = [];
+      for (const p of parts) {
+        for (const l of p) {
+          if (l.pageNum === lastRefPage && !have.has(l) && after(l)) extra.push(l);
+        }
+      }
+      if (extra.length) {
+        const merged = [...refPart.filter((l) => l.pageNum === lastRefPage), ...extra]
+          .sort((a, b) => (a.column ?? 0) - (b.column ?? 0) || b.y - a.y);
+        refPart = [...merged, ...refPart.filter((l) => l.pageNum !== lastRefPage)];
+        ztoolkit.log(
+          `[pdfparser] heading page completed with ${extra.length} more lines`,
+        );
+        lastNum = Math.max(0, ...refPart.map((l) => numOf(l.text)));
+      }
+    }
+
+    // Parts may straddle pages (the walk carries an unbroken block from
+    // page N+1 into page N) and double-spaced manuscripts split every
+    // entry into its own part — so judge per PAGE: the union of all lines
+    // on each later page, restored to reading order (column, then top→down).
+    const byPage = new Map<number, PDFLine[]>();
+    for (const p of parts) {
+      for (const l of p) {
+        const pg = l.pageNum ?? -1;
+        if (pg > lastRefPage) {
+          if (!byPage.has(pg)) byPage.set(pg, []);
+          byPage.get(pg)!.push(l);
+        }
+      }
+    }
+    const continuation: PDFLine[][] = [];
+    for (const pg of [...byPage.keys()].sort((a, b) => a - b)) {
+      const lines = byPage
+        .get(pg)!
+        .sort((a, b) => (a.column ?? 0) - (b.column ?? 0) || b.y - a.y);
+      if (
+        lines.length >= 3 &&
+        (lastNum > 0 ? picksUp(lines) : refScore(lines) >= 0.5)
+      ) {
+        continuation.push(lines);
+      } else if (continuation.length) {
+        break; // the list ended on the previous page
+      }
+    }
     if (continuation.length) {
       // the carried-over stray lines from those pages are superseded by
       // the complete blocks (they were the running head / a fragment)
@@ -719,7 +881,7 @@ async function getRefLines(
     }
     for (const p of continuation) {
       ztoolkit.log(
-        `[pdfparser] appending continuation part p${p[0].pageNum} n=${p.length}`,
+        `[pdfparser] appending continuation page p${p[0].pageNum} n=${p.length}`,
       );
       refPart = [...refPart, ...p];
     }
@@ -733,15 +895,36 @@ async function getRefLines(
       ztoolkit.log("[pdfparser] no text parts found");
       return [];
     }
-    const partRefNum: [number, number][] = [];
+    // prefer a numbered list starting at 1 (score = numbered lines), else
+    // the part with the most reference-typed lines
+    const partRefNum: [number, number, number][] = [];
     for (let i = 0; i < parts.length; i++) {
-      const isRefs = parts[i].map((line) =>
-        Number(getRefType(line.text) != -1),
-      );
-      partRefNum.push([i, isRefs.reduce((a, b) => a + b, 0)]);
+      const p = parts[i];
+      const start = findNumberedStart(p, p.length);
+      const numbered =
+        start >= 0 ? p.slice(start).filter((l) => numAtStart(l.text) > 0).length : 0;
+      const isRefs = p.filter((line) => getRefType(line.text) != -1).length;
+      partRefNum.push([i, numbered, isRefs]);
     }
-    const best = partRefNum.sort((a, b) => b[1] - a[1])[0][0];
+    partRefNum.sort((a, b) => b[1] - a[1] || b[2] - a[2]);
+    const [best, bestNumbered, bestRefLike] = partRefNum[0];
+    // nothing that looks like a bibliography anywhere (conference
+    // abstract, poster, letter): return empty rather than one junk entry
+    if (
+      bestNumbered < 3 &&
+      (parts[best].length < 3 || bestRefLike / parts[best].length < 0.5)
+    ) {
+      ztoolkit.log("[pdfparser] no heading and no reference-like block");
+      return [];
+    }
     refPart = parts[best];
+    if (bestNumbered >= 3) {
+      const start = findNumberedStart(refPart, refPart.length);
+      if (start > 0) refPart = refPart.slice(start);
+    }
+    ztoolkit.log(
+      `[pdfparser] no heading — fallback part p${refPart[0]?.pageNum} n=${refPart.length} numbered=${bestNumbered}`,
+    );
   }
   onProgress("Done", 100);
   return refPart;
@@ -793,10 +976,13 @@ export async function parsePDFReferences(
       // leading bibliography number: "(1)", "[12]", "12.", "1 " ...
       // ({1,3} so a leading year is never mistaken for a number)
       const numMatch = raw.match(/^[^0-9a-zA-Z]?\s*(\d{1,3})\s*[^0-9a-zA-Z]/);
-      const text = raw
-        .replace(/^[^0-9a-zA-Z]\s*\d+\s*[^0-9a-zA-Z]/, "")
-        .replace(/^\d+[.\s]?/, "")
-        .trim();
+      const text = (
+        numAtStart(raw) > 0
+          ? raw.replace(/^[[(]?\d{1,3}(?:\s*[\].)]\s*|\s+)/, "")
+          : raw
+              .replace(/^[^0-9a-zA-Z]\s*\d+\s*[^0-9a-zA-Z]/, "")
+              .replace(/^\d+[.\s]?/, "")
+      ).trim();
       const item: RefItem = {
         text,
         ...refTextToInfo(text),
