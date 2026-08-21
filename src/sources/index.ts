@@ -159,6 +159,13 @@ export type CitationSource = "semanticscholar" | "openalex";
  * Works citing this work; S2 first (rich paging), OpenAlex fallback.
  * Pass `only` to pin one source: mixing sources across pages would
  * interleave two differently-ordered lists and show duplicates.
+ *
+ * null means "nobody could answer" — the caller shows a warning and keeps
+ * the retry button. A source that ANSWERED with an empty list is not that:
+ * a paper published last week has no citations yet, and reporting it as a
+ * failure marks a correct "0" with a warning and an endless "load more".
+ * So an answered-but-empty page is kept and returned when no source has
+ * anything better.
  */
 export async function getCitationsByAPI(
   ids: Identifiers,
@@ -166,12 +173,14 @@ export async function getCitationsByAPI(
   limit = 25,
   only?: CitationSource,
 ): Promise<(PagedRefs & { source: CitationSource }) | null> {
+  let empty: (PagedRefs & { source: CitationSource }) | null = null;
   if (only !== "openalex") {
     try {
       const res = await semanticscholar.getCitations?.(ids, offset, limit);
       if (res?.items.length || only === "semanticscholar") {
         return res ? { ...res, source: "semanticscholar" } : null;
       }
+      if (res) empty = { ...res, source: "semanticscholar" };
     } catch (e) {
       ztoolkit.log("[sources] s2 citations failed", e);
       if (only === "semanticscholar") return null;
@@ -180,10 +189,13 @@ export async function getCitationsByAPI(
   try {
     const res = await openalex.getCitations?.(ids, offset, limit);
     if (res?.items.length) return { ...res, source: "openalex" };
+    // OpenAlex reports the real total (meta.count), S2 does not — prefer
+    // its empty answer so the section can show a definitive 0
+    if (res) empty = { ...res, source: "openalex" };
   } catch (e) {
     ztoolkit.log("[sources] openalex citations failed", e);
   }
-  return null;
+  return empty;
 }
 
 /** recommended / related works; S2 recommendations first */

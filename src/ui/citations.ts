@@ -137,8 +137,13 @@ async function loadMore(item: Zotero.Item, state: CitationsState) {
       live.count.textContent = `${state.refs.length}${
         state.total ? ` / ${state.total}` : ""
       } ${getString("citations-count-suffix")}${failed ? " ⚠" : ""}`;
+      // "+" means "there are more than this" — only true while the
+      // total is unknown AND the list has not been exhausted (a source
+      // that answered "0" must not read as "0+")
       state.setSummary?.(
-        `${state.total ?? state.refs.length}${state.total ? "" : "+"}`,
+        `${state.total ?? state.refs.length}${
+          state.total === undefined && !state.exhausted ? "+" : ""
+        }`,
       );
     }
   }
