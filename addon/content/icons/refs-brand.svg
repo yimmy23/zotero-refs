@@ -1,1 +1,59 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96"><rect width="96" height="96" rx="21" fill="#4a63d8"/><g fill="none" stroke="#fff" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"><path d="M33 22H24v52h9M63 22h9v52h-9"/><path d="M40 34h16M40 48h11M40 62h16"/></g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0.25" y2="1">
+      <stop offset="0" stop-color="#4a68e0"/><stop offset="0.45" stop-color="#2740aa"/><stop offset="1" stop-color="#131c5e"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.38"/>
+      <stop offset="0.44" stop-color="#ffffff" stop-opacity="0.04"/>
+      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.7"/>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0.1"/>
+      <stop offset="1" stop-color="#0b1152" stop-opacity="0.45"/>
+    </linearGradient>
+    <linearGradient id="cover" x1="0.1" y1="0" x2="0.95" y2="0.9">
+      <stop offset="0" stop-color="#d6584d"/><stop offset="0.45" stop-color="#ac3130"/><stop offset="1" stop-color="#7a1c20"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#fffdf6"/><stop offset="0.65" stop-color="#f3ecd9"/><stop offset="1" stop-color="#d5cbb2"/>
+    </linearGradient>
+    <linearGradient id="ribbon" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#f5d685"/><stop offset="0.55" stop-color="#e0b44e"/><stop offset="1" stop-color="#b98a24"/>
+    </linearGradient>
+    <linearGradient id="spine" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.34"/><stop offset="1" stop-color="#000000" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="cast" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="2.1"/><feOffset dy="2.4" result="s"/>
+      <feFlood flood-color="#0a0f3a" flood-opacity="0.55"/><feComposite in2="s" operator="in"/>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="96" height="96" rx="22" fill="url(#tile)"/>
+  <rect width="96" height="96" rx="22" fill="url(#gloss)"/>
+  <rect x="0.9" y="0.9" width="94.2" height="94.2" rx="21.2" fill="none" stroke="url(#rim)" stroke-width="1.8"/>
+
+  <g filter="url(#cast)">
+    <!-- page block -->
+    <path d="M27 20h44a5 5 0 0 1 5 5v46a5 5 0 0 1-5 5H27Z" fill="url(#paper)"/>
+    <g stroke="#c4b99f" stroke-opacity="0.85" stroke-width="1.5" stroke-linecap="round">
+      <path d="M74.5 30h-9M74.5 40h-9M74.5 50h-9M74.5 60h-9"/>
+    </g>
+    <!-- cover -->
+    <path d="M22 17h36a9 9 0 0 1 9 9v44a9 9 0 0 1-9 9H22Z" fill="url(#cover)"/>
+    <path d="M22 17h11v62H22Z" fill="url(#spine)"/>
+    <path d="M33.6 17.6v60.8" stroke="#ffffff" stroke-opacity="0.16" stroke-width="1.4"/>
+    <path d="M22 17h36a9 9 0 0 1 9 9v6H22Z" fill="#ffffff" fill-opacity="0.12"/>
+    <!-- title lines -->
+    <g stroke="#f6dda6" stroke-linecap="round">
+      <path d="M40 41h18" stroke-width="3.4" stroke-opacity="0.92"/>
+      <path d="M40 50h11" stroke-width="3.4" stroke-opacity="0.62"/>
+    </g>
+    <!-- ribbon -->
+    <path d="M52 17h9v40l-4.5-5.5L52 57Z" fill="url(#ribbon)"/>
+    <path d="M52 17h2.6v38.5L52 57Z" fill="#ffffff" fill-opacity="0.28"/>
+  </g>
+</svg>
