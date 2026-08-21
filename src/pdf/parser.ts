@@ -159,17 +159,44 @@ function mergeSameLine(items: PDFItem[]): PDFLine[] {
   for (j = 1; j < items.length; j++) {
     const line = toLine(items[j]);
     const lastLine = lines[lines.length - 1];
+    // Gutter-set entry numbers (BMJ and friends put the "1" in the margin
+    // as its own text run, in a smaller font whose baseline sits a
+    // fraction of a point above the entry's) fall just outside the
+    // containment tests below, so the number stays a line of its own and
+    // numbering-driven entry detection downstream sees none. Glue such a
+    // number to the text that follows it on the same visual band. Kept
+    // deliberately narrow — a general band-overlap rule also swallows the
+    // page number into the running head, which breaks header/footer
+    // removal (widths stop matching across pages).
+    const gutterNumber =
+      /^[[(]?\d{1,3}[.)\]]?$/.test(lastLine.text.trim()) &&
+      // what follows must read as the entry proper (the character class
+      // numAtStart accepts after a bare number), so a stray numeral in
+      // scanned body text does not swallow the digits next to it
+      /^[\p{L}[(\u201c"']/u.test(line.text.trim()) &&
+      line.x >= lastLine.x + lastLine.width - 1 &&
+      line.x - (lastLine.x + lastLine.width) < 5 * lastLine.height &&
+      Math.min(line.y + line.height, lastLine.y + lastLine.height) -
+        Math.max(line.y, lastLine.y) >
+        Math.min(line.height, lastLine.height) * 0.5;
     // same line, with sub/superscript tolerance
     if (
       line.y == lastLine.y ||
       (line.y >= lastLine.y && line.y < lastLine.y + lastLine.height) ||
       (line.y + line.height > lastLine.y &&
-        line.y + line.height <= lastLine.y + lastLine.height)
+        line.y + line.height <= lastLine.y + lastLine.height) ||
+      gutterNumber
     ) {
       lastLine.text += " " + line.text;
       lastLine.width += line.width;
       lastLine.url = lastLine.url || line.url;
       lastLine._height.push(line.height);
+      if (gutterNumber) {
+        // adopt the entry text's band (keeping the margin number's x) so
+        // the rest of that visual line still merges normally
+        lastLine.y = line.y;
+        lastLine.height = line.height;
+      }
     } else {
       // finish the previous line: height = mode of merged heights
       const hh = lastLine._height;
@@ -281,6 +308,20 @@ function mergeNumberedRefs(input: PDFLine[]): PDFLine[] | null {
     cur.text =
       cur.text.replace(/-$/, "") + (cur.text.endsWith("-") ? "" : " ") + text;
     if (line.url) cur.url = line.url;
+  }
+  // A scrambled text stream (OCR'd scans) carries its numbered starts out
+  // of order; the walk above then stalls after a couple of entries and
+  // appends the whole rest of the block to them. Detect that stall — a
+  // handful of entries against many numbered starts — and hand the block
+  // back to the indent-based merge, which does not need the numbers to be
+  // in sequence. Deliberately tight: a healthy bibliography whose block
+  // also carries numeric noise (tables, page fragments) must not qualify.
+  const numberedLines = input.filter((l) => numAtStart(l.text) > 0).length;
+  if (out.length <= 5 && numberedLines >= out.length * 4) {
+    ztoolkit.log(
+      `[pdfparser] numbering out of sequence (${out.length} of ${numberedLines}) — indent merge`,
+    );
+    return null;
   }
   return out.length >= 3 ? out : null;
 }
