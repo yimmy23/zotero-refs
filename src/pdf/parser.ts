@@ -547,7 +547,7 @@ async function getRefLines(
     done: false,
     parts: [],
   };
-  for (let pageNum = totalPageNum - 1; pageNum >= 1; pageNum--) {
+  for (let pageNum = totalPageNum - 1; pageNum >= 0; pageNum--) {
     const pdfPage = pages[pageNum].pdfPage;
     maxWidth = pdfPage._pageInfo.view[2];
     maxHeight = pdfPage._pageInfo.view[3];
@@ -972,6 +972,21 @@ async function getRefLines(
     ztoolkit.log(
       `[pdfparser] no heading — fallback part p${refPart[0]?.pageNum} n=${refPart.length} numbered=${bestNumbered}`,
     );
+    // A numbered block is not automatically a bibliography: author
+    // affiliation lists, statistics tables, search strategies and section
+    // headings all number their lines too. With no heading to trust,
+    // demand the one thing every real reference carries — a publication
+    // year. (mergeSameRef mutates the lines it merges, so score a copy.)
+    const probe = mergeSameRef(refPart.map((l) => ({ ...l })));
+    const dated = probe.filter((e) =>
+      /\b(1[89]|20)\d{2}\b/.test(e.text),
+    ).length;
+    if (!probe.length || dated / probe.length < 0.5) {
+      ztoolkit.log(
+        `[pdfparser] fallback block carries no publication years (${dated}/${probe.length}) — not a bibliography`,
+      );
+      return [];
+    }
   }
   onProgress("Done", 100);
   return refPart;
