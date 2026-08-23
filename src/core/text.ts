@@ -8,6 +8,16 @@ import type { Identifiers, RefItem } from "./types";
 
 export const REGEX = {
   DOI: /10\.\d{4,9}\/[-._;()/:A-Za-z0-9<>]+[^.\]\s]/,
+  /**
+   * DOI as printed in a bibliography line: the text layer may break it
+   * with a space after "." "/" or "-" ("10.1001/jama.2015. 13480",
+   * "10.1080/ 01621459…", "doi.org/10. 1016/…"), so one whitespace run is
+   * tolerated there — but only when the continuation carries a digit, so
+   * "dyw323. pmid:28039382", "…0920. [PubMed]", "…01767-y. ll" and
+   * "…pub2. Concurrent" stop at the DOI's real end.
+   */
+  DOI_PRINTED:
+    /10\.\s?\d{4,9}\s?\/(?:[-._;()/:A-Za-z0-9<>]|(?<=[./-])\s+(?=[A-Za-z./]*\d))+/,
   arXiv: /arXiv[.:](\d{4}\.\d{4,5}(?:v\d+)?)/i,
   arXivOld: /arXiv[.:]([a-z-]+(?:\.[A-Z]{2})?\/\d{7})/i,
   PMID: /PMID[:\s]*(\d{6,9})/i,
@@ -17,10 +27,46 @@ export const REGEX = {
 export function extractIdentifiers(text: string): Identifiers {
   const identifiers: Identifiers = {};
   const compact = text.replace(/\s+/g, "");
-  const doi = compact.match(REGEX.DOI);
+  // Two readings of the DOI. The whitespace-stripped text recovers DOIs
+  // that the text layer broke anywhere ("doi. org/ 10. 1016/j. jclin epi.
+  // 2016. 04. 014", "S0140 - 6736(21)02333 - 3") but runs the DOI into
+  // whatever follows it ("…1234pmid:27891526", 6 % of all DOIs the parser
+  // extracted) — so it is cut at the tokens a DOI never continues with.
+  // The as-printed reading (DOI_PRINTED) tolerates a break only after
+  // . / - and before a digit-bearing token, so it stops cleanly but
+  // gives up on the badly broken ones. Take the longer of the two when
+  // one is a prefix of the other, else the cut compact one.
+  const cutDOI = (d: string) =>
+    d
+      .replace(
+        /(pmid|pmcid|pmc\d|epub|accessed|available|published|retrieved|cited|erratum|http|www\.|\[).*$/i,
+        "",
+      )
+      .replace(/\(\d{4}\).*$/, "") // "(2022)" a year in parens: citation text
+      .replace(/(?<=\d)(?=[A-Z]\.).*$/, "") // "…0138944A.S.Goldfarb" initials
+      // "…0597-xAvoidableflaws…": a capitalised word glued on — unless the
+      // word is part of the DOI and continues with "." or a digit (eLife)
+      .replace(/(?<=[\da-z])(?=[A-Z][a-z]{2,}(?![.\d])).*$/, "")
+      .replace(/\.(?=[A-Z][a-z]{3,}).*$/, ""); // "…pub2.Concurrent"
+  const printed = text.match(REGEX.DOI_PRINTED)?.[0].replace(/\s+/g, "");
+  const compacted = compact.match(REGEX.DOI)?.[0];
+  let doi: string | undefined;
+  if (printed && compacted) {
+    const cut = cutDOI(compacted);
+    doi =
+      printed.startsWith(cut) || cut.startsWith(printed)
+        ? printed.length >= cut.length
+          ? printed
+          : cut
+        : cut;
+  } else if (compacted) {
+    doi = cutDOI(compacted);
+  } else {
+    doi = printed;
+  }
   if (doi) {
     // strip trailing punctuation that regex may swallow
-    identifiers.DOI = doi[0].replace(/[.,;]+$/, "");
+    identifiers.DOI = doi.replace(/[.,;]+$/, "");
   }
   const arxiv = compact.match(REGEX.arXiv) || compact.match(REGEX.arXivOld);
   if (arxiv) {
