@@ -244,12 +244,25 @@ function numAtStart(text: string): number {
   // non-digit; the bare form ("12 Author") must be followed by a letter or
   // an opening quote, otherwise wrapped volume/page fragments ("41 , 1103")
   // and table cells ("25 (12%)") pass as entry starts.
-  const m = text
-    .trim()
-    .match(
-      /^[[(]?(\d{1,3})(?:\s*[\].)．）]\s*(?=[^\d\s.])|\s+(?=[\p{L}“"']))/u,
-    );
+  // some PDFs emit every digit of the number as its own glyph run, which
+  // mergeSameLine joins with spaces ("1 0 . Hosny A") — close them up
+  const m = compactLeadingDigits(text.trim()).match(
+    /^[[(]?(\d{1,3})(?:\s*[\].)．）]\s*(?=[^\d\s.])|\s+(?=[\p{L}“"']))/u,
+  );
   return m ? Number(m[1]) : 0;
+}
+
+/**
+ * "1 0 . Hosny" → "10 . Hosny"; "[ 1 2 ]" → "[12]". Only before the
+ * number's punctuation — a bare "1 7 insight.jci.org" is a spaced page
+ * number in a running footer, and closing it up once turned it into entry
+ * 17 of a list that was waiting for 17.
+ */
+function compactLeadingDigits(t: string): string {
+  return t.replace(
+    /^([[(]?)(\d)(?:\s(\d))?(?:\s(\d))?(?=\s?[\].)．）])/,
+    (_, b, a, c, d) => `${b}${a}${c ?? ""}${d ?? ""}`,
+  );
 }
 
 /**
@@ -704,14 +717,122 @@ function updateItemsAnnotions(items: PDFItem[], annotations: PDFAnnotation[]) {
 /* page reading                                                        */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Drop the line numbers of a manuscript page (submitted / accepted
+ * manuscripts, pre-proofs, bioRxiv: "427 428 429…" down the left or right
+ * margin). They are bare-integer text runs that share a column in the
+ * margin, run consecutively down the page and sit beside (almost) every
+ * text line; merged into the lines they corrupt both the entry numbers
+ * ("456 1 0 . Hosny A") and the text ("…RGPM, 454 Granton P"). Entry
+ * numbers set as their own run (BMJ, JAMA) also live in the margin and
+ * also count up — but beside one line in three or four, not beside every
+ * line, which is what the coverage test separates.
+ */
+function findLineNumbers(items: PDFItem[]): Set<PDFItem> {
+  const drop = new Set<PDFItem>();
+  const ints: PDFItem[] = [];
+  const texts: PDFItem[] = [];
+  for (const it of items) {
+    const t = it.str.trim();
+    if (/^\d{1,4}$/.test(t)) ints.push(it);
+    else if (/\p{L}/u.test(t)) texts.push(it);
+  }
+  if (ints.length < 8 || texts.length < 8) return drop;
+  const pct = (arr: number[], q: number) => {
+    const a = [...arr].sort((x, y) => x - y);
+    return a[Math.min(a.length - 1, Math.floor(q * a.length))];
+  };
+  const x = (it: PDFItem) => it.transform[4];
+  const y = (it: PDFItem) => it.transform[5];
+  const wide = texts.filter((t) => t.width >= 30);
+  if (wide.length < 4) return drop;
+  const bodyLeft = pct(wide.map(x), 0.1);
+  const bodyRight = pct(
+    wide.map((t) => x(t) + t.width),
+    0.9,
+  );
+  const bands = [...new Set(texts.map((t) => Math.round(y(t))))];
+  // cluster the margin integers by x — the line-number column is the big one
+  const margin = ints.filter(
+    (it) => x(it) + it.width <= bodyLeft + 1.5 || x(it) >= bodyRight - 1.5,
+  );
+  // (left-aligned columns share x, right-aligned ones — "9" under "10" —
+  // share the right edge)
+  const clusters: PDFItem[][] = [];
+  for (const it of margin) {
+    const c = clusters.find(
+      (k) =>
+        Math.abs(x(it) - x(k[0])) <= 3 ||
+        Math.abs(x(it) + it.width - (x(k[0]) + k[0].width)) <= 3,
+    );
+    if (c) c.push(it);
+    else clusters.push([it]);
+  }
+  for (const c of clusters) {
+    if (c.length < 8) continue;
+    c.sort((a, b) => y(b) - y(a));
+    const v = c.map((it) => Number(it.str.trim()));
+    let consecutive = 0;
+    for (let i = 1; i < v.length; i++) if (v[i] - v[i - 1] === 1) consecutive++;
+    if (consecutive < 0.8 * (v.length - 1)) continue;
+    const covered = bands.filter((b) =>
+      c.some((it) => Math.abs(y(it) - b) <= Math.max(2, 0.5 * it.height)),
+    ).length;
+    if (covered < 0.6 * bands.length) continue;
+    for (const it of c) drop.add(it);
+  }
+  return drop;
+}
+
+/**
+ * Does this document carry manuscript line numbers? Decided on BODY pages
+ * (the second page and the middle one), never on the bibliography itself:
+ * a published review whose 189 one-line references carry bare numbers in
+ * the margin looks exactly like a line-numbered page, but its body pages
+ * do not. Manuscripts number every page.
+ */
+async function hasLineNumbers(pages: any[]): Promise<boolean> {
+  // a handful of body pages from the first third of the document: the
+  // title page has none, a pre-proof cover sheet has no text, and pages
+  // further in may already be the bibliography (a review's one-line
+  // references with bare numbers in the margin would pass for line numbers)
+  const n = pages.length;
+  const probes = new Set<number>(
+    [1, 2, 3, Math.floor(n / 4), Math.floor(n / 3)].filter(
+      (i) => i > 0 && i < n,
+    ),
+  );
+  for (const i of probes) {
+    try {
+      const tc = await pages[i].pdfPage.getTextContent();
+      if (findLineNumbers(tc.items).size) return true;
+    } catch {
+      // unreadable page — no evidence
+    }
+  }
+  return false;
+}
+
 /** read one pdf.js page into merged PDFLine objects */
-async function readPdfPage(pdfPage: any): Promise<PDFLine[]> {
+async function readPdfPage(
+  pdfPage: any,
+  stripLineNumbers = false,
+): Promise<PDFLine[]> {
   const textContent = await pdfPage.getTextContent();
-  const items: PDFItem[] = textContent.items.filter(
+  let items: PDFItem[] = textContent.items.filter(
     (item: PDFItem) => item.str.trim().length,
   );
   if (items.length == 0) {
     return [];
+  }
+  if (stripLineNumbers) {
+    const drop = findLineNumbers(items);
+    if (drop.size) {
+      ztoolkit.log(
+        `[pdfparser] page: ${drop.size} margin line numbers dropped`,
+      );
+      items = items.filter((it) => !drop.has(it));
+    }
   }
   const annotations: PDFAnnotation[] = await pdfPage.getAnnotations();
   updateItemsAnnotions(items, annotations);
@@ -763,6 +884,9 @@ async function getRefLines(
   const pageLines: Record<number, PDFLine[]> = {};
   let maxWidth = 0;
   let maxHeight = 0;
+  const lineNumbered = await hasLineNumbers(pages);
+  if (lineNumbered)
+    ztoolkit.log("[pdfparser] manuscript line numbers detected");
   // Ctrl+refresh support for theses: treat the current page as the last
   // page, so the bibliography of the current chapter is found
   let offset = 0;
@@ -789,7 +913,7 @@ async function getRefLines(
     const pdfPage = pages[pageNum].pdfPage;
     maxWidth = pdfPage._pageInfo.view[2];
     maxHeight = pdfPage._pageInfo.view[3];
-    const lines = await readPdfPage(pdfPage);
+    const lines = await readPdfPage(pdfPage, lineNumbered);
     if (lines.length == 0) {
       continue;
     }
@@ -810,6 +934,19 @@ async function getRefLines(
     done: false,
     parts: [],
   };
+  // A bibliography found late in the document may not be THE bibliography:
+  // manuscripts append a separately numbered "Methods References" /
+  // "Supplementary References", and bundled supplements carry their own
+  // three-entry list. When the heading is qualified like that, or the list
+  // is tiny, keep walking and prefer an earlier plain "References" list
+  // (a plain one over a qualified one, or one at least twice as long).
+  const PLAIN_HEADING =
+    /^(\d+[.．]?)?(references?|referencelist|bibliography|参考文献|literaturecited|workscited|references?andnotes|notesandreferences)$/i;
+  let stash: {
+    lines: PDFLine[];
+    heading?: PDFLine;
+    qualified: boolean;
+  } | null = null;
   for (let pageNum = totalPageNum - 1; pageNum >= 0; pageNum--) {
     const pdfPage = pages[pageNum].pdfPage;
     maxWidth = pdfPage._pageInfo.view[2];
@@ -818,7 +955,7 @@ async function getRefLines(
     if (pageNum in pageLines) {
       lines = [...pageLines[pageNum]];
     } else {
-      lines = await readPdfPage(pdfPage);
+      lines = await readPdfPage(pdfPage, lineNumbered);
       pageLines[pageNum] = [...lines];
       const p = totalPageNum - pageNum;
       onProgress(`Read text ${p}/${p}`, 90);
@@ -1087,11 +1224,57 @@ async function getRefLines(
       }
     }
     if (_refPart.done) {
+      let lines: PDFLine[] = [];
       _refPart.parts.reverse().forEach((p) => {
-        refPart = [...refPart, ...p];
+        lines = [...lines, ...p];
       });
+      const headingText = (_refPart.heading?.text ?? "").replace(/\s+/g, "");
+      const qualified = !!_refPart.heading && !PLAIN_HEADING.test(headingText);
+      const starts = lines.filter((l) => numAtStart(l.text) > 0).length;
+      const dated = lines.filter((l) =>
+        /\b(1[89]|20)\d{2}\b/.test(l.text),
+      ).length;
+      if (!stash) {
+        // "tiny" is judged on numbered entry starts, not lines: the walk
+        // may have split a double-spaced heading page into parts that the
+        // completion step only adds later
+        if ((qualified || (starts < 6 && lines.length < 40)) && pageNum > 0) {
+          ztoolkit.log(
+            `[pdfparser] bibliography on p${pageNum} is ${qualified ? `"${headingText}"` : "tiny"} (${lines.length} lines, ${starts} numbered) — looking for an earlier one`,
+          );
+          stash = { lines, heading: _refPart.heading, qualified };
+          _refPart.done = false;
+          _refPart.parts = [];
+          _refPart.heading = undefined;
+          continue;
+        }
+        refPart = lines;
+        break;
+      }
+      // second list: the earlier one wins when it is the plain bibliography
+      // (the later was qualified) or clearly the larger of two plain ones —
+      // and it must read like a bibliography itself (one year per entry,
+      // so ≥ 15% of lines): a manuscript's front matter also survives the
+      // heading guard
+      const better =
+        !qualified &&
+        dated >= 0.15 * lines.length &&
+        (stash.qualified || lines.length >= 2 * stash.lines.length);
+      if (better) {
+        ztoolkit.log(
+          `[pdfparser] using the earlier bibliography on p${pageNum} (${lines.length} lines)`,
+        );
+        refPart = lines;
+      } else {
+        refPart = stash.lines;
+        _refPart.heading = stash.heading;
+      }
       break;
     }
+  }
+  if (refPart.length == 0 && stash) {
+    refPart = stash.lines;
+    _refPart.heading = stash.heading;
   }
 
   // The bibliography may CONTINUE past the page that carries the heading
@@ -1244,6 +1427,10 @@ async function getRefLines(
         (lastNum > 0 ? picksUp(lines) : refScore(lines) >= 0.5)
       ) {
         continuation.push(lines);
+        // the next page must pick up where THIS page ends, not where the
+        // heading page ended — double-spaced manuscripts split every page
+        // into parts, so nothing but this step carries the count forward
+        lastNum = Math.max(lastNum, ...lines.map((l) => numOf(l.text)));
       } else if (continuation.length) {
         break; // the list ended on the previous page
       }
@@ -1364,7 +1551,7 @@ export async function parsePDFReferences(
     const references: RefItem[] = [];
     for (let i = 0; i < merged.length; i++) {
       const line = merged[i];
-      const raw = line.text.trim();
+      const raw = compactLeadingDigits(line.text.trim());
       // leading bibliography number: "(1)", "[12]", "12.", "1 " ...
       // ({1,3} so a leading year is never mistaken for a number)
       const numMatch = raw.match(/^[^0-9a-zA-Z]?\s*(\d{1,3})\s*[^0-9a-zA-Z]/);
