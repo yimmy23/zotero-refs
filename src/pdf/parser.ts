@@ -238,20 +238,85 @@ function mergeSameLine(items: PDFItem[]): PDFLine[] {
  */
 function numAtStart(text: string): number {
   // JAMA sets the number in bold as its own text run: "1 . Sung H" — allow
-  // whitespace between the number and its punctuation
+  // whitespace between the number and its punctuation; Chinese PDFs use
+  // the full-width period ("33 ．Lin B")
   // Punctuated forms ("12." "12)" "[12]" "(12)") may be followed by any
-  // non-digit; the bare form ("12 Author") must be followed by a letter,
-  // otherwise wrapped volume/page fragments ("41 , 1103–1117") pass as
-  // entry starts.
+  // non-digit; the bare form ("12 Author") must be followed by a letter or
+  // an opening quote, otherwise wrapped volume/page fragments ("41 , 1103")
+  // and table cells ("25 (12%)") pass as entry starts.
   const m = text
     .trim()
-    .match(/^[[(]?(\d{1,3})(?:\s*[\].)]\s*(?=[^\d\s.])|\s+(?=[\p{L}[(“"']))/u);
+    .match(
+      /^[[(]?(\d{1,3})(?:\s*[\].)．）]\s*(?=[^\d\s.])|\s+(?=[\p{L}“"']))/u,
+    );
   return m ? Number(m[1]) : 0;
 }
 
-/** typical trailing matter that follows a bibliography on its last page */
-const TAIL_NOISE =
-  /^(open access|©|copyright|publisher'?s note|springer nature remains|correspondence|acknowledg|author contributions|competing interests|conflict of interest|supplementary|received:|accepted:|funding|data availability|ethics|cite this article|reprints and permissions|the author\(s\)|this article is licensed|figure legends?|figure \d|fig\. \d|table \d|e-table|e-figure|appendix)/i;
+/**
+ * Typical trailing matter that follows a bibliography: back-matter headings
+ * (acknowledgements, contributions, disclosures…), licence / copyright
+ * boilerplate, figure legends and tables. Anchored at the line start;
+ * nothing in here may plausibly start a wrapped line INSIDE an entry
+ * ("Published online…" or "Available from:" would, so they are absent).
+ */
+/**
+ * Headings that introduce the blocks which follow a bibliography
+ * (back matter, legends, tables, appendices). Anchored at the line start;
+ * nothing in here may plausibly start a wrapped line INSIDE an entry
+ * ("Published online…" or "Available from:" would, so they are absent).
+ */
+const TAIL_HEADING_SRC =
+  "acknowledg|authors?'?\\s*(contributions?|disclosures?)|contributors|author information|additional information|competing (interests?|financial)|conflicts? of interest|disclosures?\\b|disclaimer|declarations? of|role of the funding|financial (support|disclosure)|grant support|sources? of (support|funding)|supplementary|supporting information|supplemental|funding|data availability|availability of data|data sharing|code availability|ethics (approval|statement|committee)|ethical (approval|statement)|informed consent|patient consent|consent for publication|trial registration|correspondence|abbreviations|key ?words|footnotes|affiliations|article (info|history)|online content|extended data|reporting summary|peer review|web resources|key resources|star\\W*methods|source data|figure legends?|figure \\d|fig\\. \\d|table \\d|e-table|e-figure|appendix|notes?:?$|[［[（(【]?(致谢|基金项目|作者贡献|利益冲突|作者简介|收稿日期|修回日期|责任编辑|通信作者|通讯作者|编辑[:：])";
+/**
+ * Licence / copyright / running-head boilerplate. Ends the list when it
+ * sits directly below the entry; on a later page it is more likely the
+ * running head above the entry's real continuation and is only dropped.
+ */
+const TAIL_BOILER_SRC =
+  "open access|©|copyright|creative commons|cc by|licensee\\b|licen[cs]ed under|licen[cs]e:|publisher'?s note|springer nature remains|received:|accepted:|accepted article|cite this article|how to cite|citation:|reprints and permissions|the author\\(s\\)|this (article|work|journal)|for personal use only|no part of this|all rights reserved|downloaded from|author manuscript|ready to submit|biomedcentral|check for updates|crossmark|orcid|e-?mail:";
+const TAIL_HEADING = new RegExp(`^(${TAIL_HEADING_SRC})`, "i");
+const TAIL_BOILER = new RegExp(`^(${TAIL_BOILER_SRC})`, "i");
+/** the same patterns without the inter-word spaces, for text with all
+ * whitespace removed (Science and Wiley letter-space their headings:
+ * "AC KNOWLED GME NTS", "S U P P O R T I N G I N F O R M A T I O N") */
+const TAIL_HEADING_COMPACT = new RegExp(
+  `^(${TAIL_HEADING_SRC.replace(/ /g, "")})`,
+  "i",
+);
+const TAIL_BOILER_COMPACT = new RegExp(
+  `^(${TAIL_BOILER_SRC.replace(/ /g, "")})`,
+  "i",
+);
+
+type TailKind = "heading" | "boilerplate" | null;
+function tailNoiseKind(text: string): TailKind {
+  const t = text.trim();
+  const c = t.replace(/\s+/g, "");
+  if (TAIL_HEADING.test(t) || TAIL_HEADING_COMPACT.test(c)) return "heading";
+  if (TAIL_BOILER.test(t) || TAIL_BOILER_COMPACT.test(c)) return "boilerplate";
+  return null;
+}
+
+/**
+ * A reference line that ends the way complete entries end: page range,
+ * volume:pages, a DOI / URL / PMID / e-locator, or a closing bracket
+ * ("[PubMed: …]"). Deliberately NOT a bare year or number — titles end in
+ * those ("Cancer statistics, 2019", "RECIST 1.1", "COVID-19").
+ */
+const ENTRY_END =
+  /(\d[-–‒]\d+\.?|;\s*\d+(?:\s*\(\d+\))?\s*:\s*\d+\.?|\]\.?|\bdoi[:\s]*\S+|https?:\/\/\S+|\bPMID:?\s*\d+\.?|\bPMC\d+\.?|\be\d{4,}\.?|print\]\.?)\s*$/i;
+
+/**
+ * A line that starts like a new block rather than the wrapped tail of an
+ * entry: a capital letter that is not one of the tokens references do put
+ * at a line start after the citation proper.
+ */
+const CONTINUATION_START =
+  /^(DOI|PMID|PMCID|URL|Available|Accessed|Epub|Retrieved|Published|Cited|Updated|Online|Erratum|Corrigendum|Comment|Reply|Discussion|In:|Vol\b|Suppl|Abstract|Chapter|Pages?\b|Et al|Eds?\b|Translated|Reprinted)/;
+function startsNewBlock(text: string): boolean {
+  const t = text.trim();
+  return /^[A-Z]/.test(t) && !CONTINUATION_START.test(t);
+}
 
 /** index of the line that starts a numbered list at 1 (2 must follow soon) */
 function findNumberedStart(lines: PDFLine[], within = 12): number {
@@ -265,6 +330,79 @@ function findNumberedStart(lines: PDFLine[], within = 12): number {
   return -1;
 }
 
+/** absolute x of a line (donePart normalizes `x` per column, keeps `_x`) */
+function absX(l: PDFLine): number {
+  return l._x ?? l.x;
+}
+
+type Verdict = "accept" | "stray" | "end";
+
+/**
+ * May `line` continue the entry whose most recent accepted line is `prev`?
+ *
+ * The text stream of a page is NOT reading order: figures, axis labels,
+ * captions, running heads and footers are frequently drawn AFTER the body
+ * text, so the lines that follow an entry in the stream can sit anywhere on
+ * the page (JAMA draws the whole figure after the references — 45 lines of
+ * axis labels were glued to the last entry). Geometry decides:
+ *  - a later page continues the entry (the cut-off tail of the last entry
+ *    of page N is the top of page N+1);
+ *  - below `prev` in the same column band (entry starts and wrapped lines
+ *    differ by the hanging indent only) without a block-sized vertical gap
+ *    continues it — double-spaced manuscripts put ~2.4 heights between
+ *    wrapped lines, so 4.5 is generous;
+ *  - above `prev` and clearly to its RIGHT is the top of the next column;
+ *  - anything else is a stray line of another block: dropped, and the
+ *    entry goes on with its next plausible line (a running footer drawn
+ *    between the two halves of an entry must not cost the second half).
+ *
+ * The LAST entry has no following number to bound the damage, so it gets
+ * stricter treatment: after a stray line no more column jumps; a column
+ * jump must look like a column line (not an axis label, not a page-wide
+ * caption); and once the entry reads as complete (ENTRY_END) a line that
+ * starts like a new block ends it.
+ */
+function continuationVerdict(
+  prev: PDFLine,
+  line: PDFLine,
+  ctx: { isLast: boolean; strayed: boolean; firstWidth: number },
+): Verdict {
+  const pp = prev.pageNum ?? 0;
+  const lp = line.pageNum ?? 0;
+  const closes =
+    ctx.isLast && ENTRY_END.test(prev.text) && startsNewBlock(line.text);
+  if (lp !== pp) {
+    if (lp < pp) return "stray";
+    return closes ? "end" : "accept";
+  }
+  // floor the unit so PDFs that report tiny text heights (some OCR text
+  // layers say 1) do not reject every continuation line
+  const h = Math.max(prev.height, line.height, 6);
+  const px = absX(prev);
+  const lx = absX(line);
+  if (line.y < prev.y) {
+    if (abs(lx - px) < 5 * h && prev.y - line.y < 4.5 * h) {
+      return closes ? "end" : "accept";
+    }
+    return "stray";
+  }
+  if (lx > px + 4 * h) {
+    // a one- or two-letter run up there is a logo ("ll"), not a column
+    if (line.text.replace(/\s+/g, "").length < 4) return "stray";
+    if (!ctx.isLast) return "accept";
+    if (ctx.strayed) return "stray";
+    const w = ctx.firstWidth;
+    if (w > 0 && (line.width < 0.5 * w || line.width > 1.3 * w)) {
+      return "stray";
+    }
+    return "accept";
+  }
+  return "stray";
+}
+
+/** a real entry never needs this many wrapped lines — bound the last one */
+const MAX_TAIL_LINES = 12;
+
 /**
  * Numbered bibliographies (the vast majority of biomedical journals): a
  * line starts a new entry iff it begins with the NEXT number in sequence.
@@ -277,37 +415,162 @@ function mergeNumberedRefs(input: PDFLine[]): PDFLine[] | null {
   const startIdx = findNumberedStart(input);
   if (startIdx < 0) return null;
   input = input.slice(startIdx);
+  const nums = input.map((l) => numAtStart(l.text));
+  // last index at which each number starts a line — tells whether more
+  // entries can still follow the current one
+  const lastIdx = new Map<number, number>();
+  nums.forEach((n, i) => {
+    if (n > 0) lastIdx.set(n, i);
+  });
+  const moreToCome = (i: number, expected: number) =>
+    (lastIdx.get(expected) ?? -1) > i || (lastIdx.get(expected + 1) ?? -1) > i;
+
   const out: PDFLine[] = [];
   let cur: PDFLine | undefined;
+  // the lines accepted into `cur`, in order; its text is rebuilt from them
+  // when the entry closes, so a line can still be retracted
+  let entryLines: PDFLine[] = [];
+  // the line most recently merged into `cur` (geometry of the entry's tail)
+  let last: PDFLine | undefined;
+  // The last line known to sit in the entry's own column flow (the entry
+  // start, or a line found directly below one). Lines accepted through the
+  // page-change / column-jump rules are only PROVISIONAL: the first line
+  // of a new page is as likely a running head or footer as the entry's
+  // continuation. When a later line does not follow the provisional run
+  // but does follow the anchor (same rules, and it is a real column line),
+  // the run was the running head — retract it and take that line instead.
+  let anchor: PDFLine | undefined;
+  let provisional: PDFLine[] = [];
   let expected = 1;
   // after trailing matter (licence text, "Publisher's note"…) lines are
   // dropped until the numbering resumes — Nature-family papers number
   // their Methods references (69–83) after a block of front matter
   let skipping = false;
-  for (const line of input) {
-    const n = numAtStart(line.text);
+  let strayed = false;
+  let tailLines = 0;
+  let strayCount = 0;
+  let endedAt = "";
+  const joinLines = (lines: PDFLine[]) =>
+    lines.reduce((acc, l) => {
+      const t = l.text.trim();
+      if (!acc) return t;
+      return acc.replace(/-$/, "") + (acc.endsWith("-") ? "" : " ") + t;
+    }, "");
+  const closeEntry = () => {
+    if (!cur) return;
+    cur.text = joinLines(entryLines);
+    for (const l of entryLines) if (l.url) cur.url = l.url;
+  };
+  const accept = (line: PDFLine, solid: boolean) => {
+    entryLines.push(line);
+    if (solid) {
+      anchor = line;
+      provisional = [];
+    } else {
+      provisional.push(line);
+    }
+    last = line;
+    tailLines++;
+  };
+  for (let i = 0; i < input.length; i++) {
+    const line = input[i];
+    const n = nums[i];
     const text = line.text;
     if (
       n === expected ||
       // one entry lost to OCR/layout: accept a single skip once the
       // current entry already has real content
-      (n === expected + 1 && cur && cur.text.length >= 40)
+      (n === expected + 1 && cur && joinLines(entryLines).length >= 40)
     ) {
+      closeEntry();
       cur = { ...line, text: text.trim() };
+      entryLines = [line];
+      last = line;
+      anchor = line;
+      provisional = [];
       out.push(cur);
       expected = n + 1;
       skipping = false;
+      strayed = false;
+      tailLines = 0;
       continue;
     }
-    if (!cur) continue; // leading noise before entry 1 (should not happen)
+    if (!cur || !last || !anchor) continue; // leading noise before entry 1
     if (skipping) continue;
-    if (out.length > 1 && TAIL_NOISE.test(text.trim())) {
-      skipping = true;
+    const isLast = !moreToCome(i, expected);
+    const ctx = { isLast, strayed, firstWidth: cur.width };
+    let verdict: Verdict = continuationVerdict(last, line, ctx);
+    if (verdict === "stray") {
+      // does it follow the anchor instead, as a real column line?
+      if (
+        !isLast &&
+        provisional.length &&
+        line.width >= 0.5 * cur.width &&
+        continuationVerdict(anchor, line, ctx) === "accept"
+      ) {
+        strayCount += provisional.length;
+        const drop = new Set(provisional);
+        entryLines = entryLines.filter((l) => !drop.has(l));
+        provisional = [];
+        accept(line, false);
+        continue;
+      }
+      strayed = true;
+      strayCount++;
       continue;
     }
-    cur.text =
-      cur.text.replace(/-$/, "") + (cur.text.endsWith("-") ? "" : " ") + text;
-    if (line.url) cur.url = line.url;
+    // Trailing matter is only trailing when it sits where the list would
+    // continue (geometry above). A block heading ("Acknowledgments",
+    // "Figure legends", "Supplementary Table 1") ends the list wherever it
+    // is. Boilerplate ("Open Access This article is licensed…", "© 2024…",
+    // "Accepted Article") ends it when it opens a block directly below the
+    // entry on the same page (the licence paragraph), or below the LAST
+    // entry, or on a later page once the entry reads as complete; a lone
+    // boilerplate line — a footer or watermark the stream placed between
+    // the two halves of an entry — is only dropped.
+    const noise = out.length > 1 ? tailNoiseKind(text) : null;
+    if (noise) {
+      const lp = line.pageNum ?? 0;
+      const pp = last.pageNum ?? 0;
+      const below = lp === pp && line.y < last.y;
+      const next = input[i + 1];
+      const blockFollows =
+        !!next &&
+        nums[i + 1] === 0 &&
+        next.pageNum === line.pageNum &&
+        next.y < line.y;
+      if (
+        noise === "heading" ||
+        (below && (isLast || blockFollows)) ||
+        (lp > pp && ENTRY_END.test(last.text))
+      ) {
+        skipping = true;
+        endedAt ||= `tail noise "${text.trim().slice(0, 40)}"`;
+      } else {
+        strayCount++;
+      }
+      continue;
+    }
+    if (verdict === "accept" && isLast && tailLines >= MAX_TAIL_LINES) {
+      verdict = "end";
+    }
+    if (verdict === "end") {
+      skipping = true;
+      endedAt ||= `#${out.length} closed before "${text.trim().slice(0, 40)}"`;
+      continue;
+    }
+    // solid = directly below a line of the entry's own flow
+    const solid =
+      provisional.length === 0 &&
+      line.pageNum === last.pageNum &&
+      line.y < last.y;
+    accept(line, solid);
+  }
+  closeEntry();
+  if (strayCount || endedAt) {
+    ztoolkit.log(
+      `[pdfparser] numbered merge: ${strayCount} stray line(s) dropped${endedAt ? "; " + endedAt : ""}`,
+    );
   }
   // A scrambled text stream (OCR'd scans) carries its numbered starts out
   // of order; the walk above then stalls after a couple of entries and
@@ -859,21 +1122,88 @@ async function getRefLines(
     // Heading page: the walk (bottom-up, breaking parts on big gaps) may
     // have committed the entries between the heading and the page bottom
     // as ordinary parts before it reached the heading — double-spaced
-    // manuscripts split every entry into its own part. Take every line of
-    // the heading page that comes AFTER the heading in reading order.
+    // manuscripts split every entry into its own part. Take the lines of
+    // the heading page that come AFTER the heading in reading order.
+    //
+    // "After" must be judged spatially, not by stream order: the stream
+    // column index only says "drawn later", and JAMA draws the figure at
+    // the top of the page after the references. So a line qualifies when
+    // it is (1) below the heading inside the heading's column band and
+    // chained to the block without a block-sized gap (rules out the page
+    // footer), or (2) in a column to the right of the heading's and that
+    // right-hand block really continues the bibliography — it picks up
+    // the numbering, or (unnumbered lists) its entries carry publication
+    // years. Axis labels, legends and captions fail both.
     const heading = _refPart.heading;
     if (heading && heading.pageNum === lastRefPage) {
       const have = new Set(refPart);
-      const after = (l: PDFLine) =>
-        (l.column ?? 0) > (heading.column ?? 0) ||
-        ((l.column ?? 0) === (heading.column ?? 0) && l.y < heading.y);
+      const onPage = (l: PDFLine) => l.pageNum === lastRefPage;
+      const pageLinesAll = [
+        ...refPart.filter(onPage),
+        ...parts.flat().filter((l) => onPage(l) && !have.has(l)),
+      ];
+      const colLines = pageLinesAll.filter((l) => l.column === heading.column);
+      const spanL = Math.min(absX(heading), ...colLines.map(absX));
+      const spanR = Math.max(
+        absX(heading) + heading.width,
+        ...colLines.map((l) => absX(l) + l.width),
+      );
+      const hh = Math.max(heading.height, 6);
+      const inSpan = (l: PDFLine) =>
+        absX(l) < spanR - hh && absX(l) + l.width > spanL + hh;
+      const candidates = pageLinesAll.filter((l) => !have.has(l));
       const extra: PDFLine[] = [];
-      for (const p of parts) {
-        for (const l of p) {
-          if (l.pageNum === lastRefPage && !have.has(l) && after(l))
-            extra.push(l);
-        }
+      // (1) below the heading, in its column band, chained downward
+      let floorY = Math.min(
+        heading.y,
+        ...refPart
+          .filter((l) => onPage(l) && l.column === heading.column)
+          .map((l) => l.y),
+      );
+      const below = candidates
+        .filter((l) => l.y < heading.y && inSpan(l))
+        .sort((a, b) => b.y - a.y);
+      for (const l of below) {
+        if (floorY - l.y > 5 * Math.max(l.height, hh)) break;
+        extra.push(l);
+        floorY = Math.min(floorY, l.y);
       }
+      // (2) columns to the right of the heading's column
+      const right = candidates
+        .filter((l) => absX(l) >= spanR - hh)
+        .sort((a, b) => (a.column ?? 0) - (b.column ?? 0) || b.y - a.y);
+      if (right.length >= 2) {
+        const YEAR = /\b(1[89]|20)\d{2}\b/;
+        const probe = mergeSameRef(right.map((l) => ({ ...l })));
+        const dated = probe.filter((e) => YEAR.test(e.text)).length;
+        // the merge may over-split a block whose entry numbers are set as
+        // separate runs (NEJM 2006: 48 "entries" for 14 references), so
+        // also judge the raw lines: a justified text column (most lines
+        // near the block's full width) in which years occur at the rate
+        // of one per entry (≥ 1 in 7 lines — 3-column layouts wrap an
+        // entry over ~6 lines). Axis labels fail the width test, legends
+        // and captions the year rate.
+        const widths = right.map((l) => l.width).sort((a, b) => a - b);
+        const wide = widths[Math.floor(widths.length * 0.9)] || 0;
+        const columnLike =
+          right.filter((l) => l.width >= 0.7 * wide).length >=
+          right.length * 0.5;
+        const yearLines = right.filter((l) => YEAR.test(l.text)).length;
+        const continues =
+          (lastNum > 0 && picksUp(right)) ||
+          (probe.length > 0 && dated / probe.length >= 0.5) ||
+          (columnLike && yearLines >= right.length / 7);
+        if (continues) extra.push(...right);
+        else
+          ztoolkit.log(
+            `[pdfparser] heading page: ${right.length} lines right of the heading column are not references (lastNum=${lastNum}, entries=${probe.length}, dated=${dated}, yearLines=${yearLines}, columnLike=${columnLike})`,
+          );
+      }
+      const dropped = candidates.length - extra.length;
+      if (dropped)
+        ztoolkit.log(
+          `[pdfparser] heading page: ${dropped} lines not after the heading in reading order`,
+        );
       if (extra.length) {
         const merged = [
           ...refPart.filter((l) => l.pageNum === lastRefPage),
@@ -1040,7 +1370,7 @@ export async function parsePDFReferences(
       const numMatch = raw.match(/^[^0-9a-zA-Z]?\s*(\d{1,3})\s*[^0-9a-zA-Z]/);
       const text = (
         numAtStart(raw) > 0
-          ? raw.replace(/^[[(]?\d{1,3}(?:\s*[\].)]\s*|\s+)/, "")
+          ? raw.replace(/^[[(]?\d{1,3}(?:\s*[\].)．）]\s*|\s+)/, "")
           : raw
               .replace(/^[^0-9a-zA-Z]\s*\d+\s*[^0-9a-zA-Z]/, "")
               .replace(/^\d+[.\s]?/, "")
