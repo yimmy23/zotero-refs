@@ -1,4 +1,5 @@
 import { libraryIndex } from "../core/libmatch";
+import { getString } from "../utils/locale";
 import type {
   GraphData,
   GraphEdge,
@@ -35,7 +36,7 @@ export async function buildGraph(
       return null;
     }
 
-    onStatus?.("Looking up work on OpenAlex…");
+    onStatus?.(getString("graph-status-lookup"));
     const origin = await getWorkFull(hostIds);
     if (!origin) {
       ztoolkit.log(`[graph] OpenAlex work not found for`, hostIds);
@@ -62,7 +63,11 @@ export async function buildGraph(
     // Reference lists of reference-kind nodes, for co-citation edges.
     const refWorksOf = new Map<string, Set<string>>();
 
-    onStatus?.(`Loading ${origin.referencedWorks.length} references…`);
+    onStatus?.(
+      getString("graph-status-refs", {
+        args: { count: origin.referencedWorks.length },
+      }),
+    );
     const refMap = await getWorksBatch(origin.referencedWorks, true, {
       lean: true,
     });
@@ -77,7 +82,7 @@ export async function buildGraph(
       refWorksOf.set(wid, new Set(work.referencedWorks));
     }
 
-    onStatus?.("Loading citing works…");
+    onStatus?.(getString("graph-status-citing"));
     const cites = await openalex.getCitations(
       { openAlex: originId },
       0,
@@ -89,7 +94,7 @@ export async function buildGraph(
       nodes.set(wid, { id: wid, ref, kind: "citation", inLibrary: false });
     }
 
-    onStatus?.("Loading related works…");
+    onStatus?.(getString("graph-status-related"));
     const relMap = await getWorksBatch(
       origin.relatedWorks.slice(0, RELATED_LIMIT),
       false,
@@ -116,7 +121,7 @@ export async function buildGraph(
       ...others.slice(0, Math.max(0, opts.maxNodes - 1)),
     ];
 
-    onStatus?.("Matching against your library…");
+    onStatus?.(getString("graph-status-match"));
     for (const node of kept) {
       try {
         node.inLibrary = !!(await libraryIndex.match(
@@ -128,7 +133,7 @@ export async function buildGraph(
       }
     }
 
-    onStatus?.("Building edges…");
+    onStatus?.(getString("graph-status-edges"));
     const edges: GraphEdge[] = [];
     for (const node of kept) {
       if (node.id === originId) continue;
@@ -166,7 +171,11 @@ export async function buildGraph(
     cocite.sort((x, y) => y.weight - x.weight);
     edges.push(...cocite.slice(0, COCITE_MAX_EDGES));
 
-    onStatus?.(`Graph ready: ${kept.length} nodes, ${edges.length} edges`);
+    onStatus?.(
+      getString("graph-status-ready", {
+        args: { nodes: kept.length, edges: edges.length },
+      }),
+    );
     return { nodes: kept, edges, originId };
   } catch (e) {
     ztoolkit.log("[graph] buildGraph failed", e);

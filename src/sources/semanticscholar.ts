@@ -7,6 +7,8 @@ import type {
   RefTag,
 } from "../core/types";
 import { http } from "../core/http";
+import { CITED_CHIP_COLOR } from "../core/types";
+import { getString } from "../utils/locale";
 import { getPref } from "../utils/prefs";
 
 /**
@@ -68,8 +70,10 @@ function mapPaper(data: any): RefItem {
   if (data.citationCount && data.citationCount > 0) {
     tags.push({
       text: data.citationCount,
-      color: "#1857b6",
-      tip: "citationCount",
+      color: CITED_CHIP_COLOR,
+      tip: getString("tag-cited-tip", {
+        args: { source: "Semantic Scholar" },
+      }),
     });
   }
   return {

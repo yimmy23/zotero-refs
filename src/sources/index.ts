@@ -1,4 +1,6 @@
 import { hostIdentifiers, isChinese, normalizeTitle } from "../core/text";
+import { SOURCE_NAME } from "../core/types";
+import { getString } from "../utils/locale";
 import type {
   Identifiers,
   MetaSource,
@@ -118,7 +120,11 @@ export async function getReferencesByAPI(
       ? [crossref, semanticscholar, openalex]
       : [semanticscholar, openalex];
     for (const src of chain) {
-      onStatus?.(`Requesting ${src.id} references…`);
+      onStatus?.(
+        getString("panel-requesting-source", {
+          args: { source: SOURCE_NAME[src.id] || src.id },
+        }),
+      );
       try {
         const refs = await src.getReferences?.(ids, title);
         if (refs?.length) return { refs, source: src.id };
@@ -128,7 +134,9 @@ export async function getReferencesByAPI(
     }
   }
   if (isChinese(title) || ids.CNKI) {
-    onStatus?.("Requesting CNKI references…");
+    onStatus?.(
+      getString("panel-requesting-source", { args: { source: "CNKI" } }),
+    );
     try {
       const refs = await cnki.getReferences?.(ids, title);
       if (refs?.length) return { refs, source: cnki.id };

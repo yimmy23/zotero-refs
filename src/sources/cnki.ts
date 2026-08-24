@@ -1,6 +1,8 @@
 import { isChinese, parseCNKIURL } from "../core/text";
 import type { Identifiers, MetaSource, RefItem, RefTag } from "../core/types";
 import { http } from "../core/http";
+import { CITED_CHIP_COLOR } from "../core/types";
+import { getString } from "../utils/locale";
 import { getPref, setPref } from "../utils/prefs";
 
 /**
@@ -413,7 +415,11 @@ async function getInfoByTitle(
   // base info straight from the result row (survives captcha-gated details)
   const tags: (RefTag | string)[] = [];
   if (row.citation && /\d/.test(row.citation)) {
-    tags.push({ text: row.citation, color: "#1b66e6", tip: "知网被引" });
+    tags.push({
+      text: row.citation,
+      color: CITED_CHIP_COLOR,
+      tip: getString("tag-cited-tip", { args: { source: "CNKI" } }),
+    });
   }
   const info: RefItem = {
     identifiers: { CNKI: row.url },
@@ -454,7 +460,11 @@ async function getInfoByTitle(
         .find((t) => t.includes("下载"));
       const downloadCount = downloadText?.match(/\d+/)?.[0];
       if (downloadCount) {
-        tags.push({ text: downloadCount, color: "#cc7c08", tip: "知网下载量" });
+        tags.push({
+          text: downloadCount,
+          color: "#cc7c08",
+          tip: getString("tag-download-tip"),
+        });
       }
     } catch (e) {
       ztoolkit.log("[cnki] detail parse failed", e);

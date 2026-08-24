@@ -83,3 +83,54 @@ graph-menu-recenter = Re-centre graph on this work
 graph-back-home = back to this item
 graph-centered-on = Graph centred on
 popup-import = + Import
+
+# chip tooltips — one unified label per concept, never a raw API field name
+tag-cited-tip = Times cited ({ $source })
+tag-refcount-tip = Reference count ({ $source })
+tag-download-tip = CNKI download count
+tag-oa-tip = Open access ({ $status })
+tag-oa-pdf-tip = Open-access PDF full text
+tag-scholar-tip = Search this title on Google Scholar
+tag-pubmed-search-tip = Search this title on PubMed
+popup-untitled = Reference
+
+# source-badge tooltips
+source-tip-pdf = Parsed from the PDF text layer
+source-tip-crossref = Crossref — official DOI registration agency metadata
+source-tip-semanticscholar = Semantic Scholar — AI-powered research tool by Allen Institute for AI
+source-tip-openalex = OpenAlex — fully open catalog of scholarly works
+source-tip-pubmed = PubMed — biomedical literature from NLM
+source-tip-unpaywall = Unpaywall — open-access status
+source-tip-readpaper = ReadPaper — paper reading platform
+source-tip-connectedpapers = Connected Papers — visual exploration of academic papers
+source-tip-cnki = CNKI — China National Knowledge Infrastructure
+source-tip-arxiv = arXiv — open-access preprint archive
+source-tip-zotero = This reference is in your Zotero library
+
+# progress-window headlines / lines
+progress-refs = References
+progress-refs-local = [Local] References
+progress-refs-pending = [Pending] References
+progress-refs-done = [Done] References
+progress-refs-fail = [Fail] References
+progress-searching-url = Searching URL
+progress-no-url = No URL found
+progress-importing = Importing Reference
+progress-import-done = [Done] Import
+progress-import-fail = [Fail] Import
+progress-unlinking = Removing Relation
+progress-unlinked = Removed
+panel-requesting-source = Requesting { $source } references…
+importer-search-doi = Searching DOI
+importer-importing = Importing
+importer-create = Creating item
+parser-read-text = Read text
+parser-analyze = Analyze layout
+parser-done = Done
+graph-status-lookup = Looking up work on OpenAlex…
+graph-status-refs = Loading { $count } references…
+graph-status-citing = Loading citing works…
+graph-status-related = Loading related works…
+graph-status-match = Matching against your library…
+graph-status-edges = Building edges…
+graph-status-ready = Graph ready: { $nodes } nodes, { $edges } edges

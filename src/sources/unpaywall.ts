@@ -1,5 +1,6 @@
 import { cleanText } from "../core/text";
 import { http, politeEmail } from "../core/http";
+import { getString } from "../utils/locale";
 import type { Identifiers, MetaSource, RefItem, RefTag } from "../core/types";
 
 /**
@@ -40,7 +41,16 @@ export const unpaywall: MetaSource & {
     const oaUrl: string | undefined =
       data.best_oa_location?.url_for_pdf || data.best_oa_location?.url;
     const tags: RefTag[] = data.is_oa
-      ? [{ text: "OA", color: "#00b8a9", tip: data.oa_status, url: oaUrl }]
+      ? [
+          {
+            text: "OA",
+            color: "#00b8a9",
+            tip: getString("tag-oa-tip", {
+              args: { status: data.oa_status || "OA" },
+            }),
+            url: oaUrl,
+          },
+        ]
       : [];
 
     return {

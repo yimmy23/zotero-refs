@@ -1,6 +1,7 @@
 import { refTextToInfo, isHttpUrl } from "../core/text";
 import type { RefItem } from "../core/types";
 import { getPref } from "../utils/prefs";
+import { getString } from "../utils/locale";
 
 /**
  * PDF bibliography extraction engine.
@@ -899,7 +900,7 @@ async function getRefLines(
     Number.isFinite(prefNum) && prefNum > 0 ? Math.floor(prefNum) : 4;
   const preLoadPageNum =
     totalPageNum > minPreLoadPageNum ? minPreLoadPageNum : totalPageNum;
-  onProgress(`Read text 0/${preLoadPageNum}`, 1);
+  onProgress(`${getString("parser-read-text")} 0/${preLoadPageNum}`, 1);
 
   // pre-read the last pages (needed to detect repeated headers/footers)
   for (
@@ -920,7 +921,7 @@ async function getRefLines(
     pageLines[pageNum] = lines;
     const pct = ((totalPageNum - pageNum) / preLoadPageNum) * 100;
     onProgress(
-      `Read text ${totalPageNum - pageNum}/${preLoadPageNum}`,
+      `${getString("parser-read-text")} ${totalPageNum - pageNum}/${preLoadPageNum}`,
       pct > 90 ? 90 : pct,
     );
   }
@@ -958,7 +959,7 @@ async function getRefLines(
       lines = await readPdfPage(pdfPage, lineNumbered);
       pageLines[pageNum] = [...lines];
       const p = totalPageNum - pageNum;
-      onProgress(`Read text ${p}/${p}`, 90);
+      onProgress(`${getString("parser-read-text")} ${p}/${p}`, 90);
     }
     if (lines.length == 0) {
       continue;
@@ -1449,7 +1450,7 @@ async function getRefLines(
     }
   }
 
-  onProgress("Analyze layout", 95);
+  onProgress(getString("parser-analyze"), 95);
   if (refPart.length == 0) {
     // no explicit References heading found — fall back to the part with
     // the most reference-typed lines
@@ -1505,7 +1506,7 @@ async function getRefLines(
       return [];
     }
   }
-  onProgress("Done", 100);
+  onProgress(getString("parser-done"), 100);
   return refPart;
 }
 

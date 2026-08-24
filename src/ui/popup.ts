@@ -2,6 +2,7 @@ import { isHttpUrl } from "../core/text";
 import type { TagElementProps } from "zotero-plugin-toolkit";
 import type { RefTag } from "../core/types";
 import { getNumPref, getPref, setPref } from "../utils/prefs";
+import { getString } from "../utils/locale";
 import { clearTimeout, getDoc, getWin, setTimeout } from "../utils/window";
 
 /**
@@ -573,7 +574,7 @@ export class PopupCard {
 
   private copyText(text: string) {
     new ztoolkit.Clipboard().addText(text, "text/unicode").copy();
-    new ztoolkit.ProgressWindow("Copy")
+    new ztoolkit.ProgressWindow(getString("panel-copied"))
       .createLine({ text, type: "success" })
       .show();
   }

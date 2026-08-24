@@ -1,5 +1,7 @@
 import { cleanText } from "../core/text";
 import { http, politeEmail } from "../core/http";
+import { CITED_CHIP_COLOR } from "../core/types";
+import { getString } from "../utils/locale";
 import type {
   Identifiers,
   MetaSource,
@@ -99,7 +101,13 @@ function mapWork(w: any): RefItem {
     typeof w.cited_by_count === "number" ? w.cited_by_count : undefined;
   const tags: RefTag[] =
     citationCount && citationCount > 0
-      ? [{ text: citationCount, color: "#e8710a", tip: "cited_by_count" }]
+      ? [
+          {
+            text: citationCount,
+            color: CITED_CHIP_COLOR,
+            tip: getString("tag-cited-tip", { args: { source: "OpenAlex" } }),
+          },
+        ]
       : [];
 
   const oaUrl: string | undefined = w.open_access?.oa_url || undefined;

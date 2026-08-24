@@ -83,3 +83,54 @@ graph-menu-recenter = 以此文献为中心重建图谱
 graph-back-home = 回到本文
 graph-centered-on = 当前中心：
 popup-import = + 导入
+
+# 徽章提示——同一概念统一文案，绝不显示原始 API 字段名
+tag-cited-tip = 被引次数（{ $source } 统计）
+tag-refcount-tip = 参考文献数（{ $source } 统计）
+tag-download-tip = 知网下载量
+tag-oa-tip = 开放获取（{ $status }）
+tag-oa-pdf-tip = 开放获取 PDF 全文
+tag-scholar-tip = 在 Google Scholar 检索该标题
+tag-pubmed-search-tip = 在 PubMed 检索该标题
+popup-untitled = 文献
+
+# 来源徽章提示
+source-tip-pdf = 从 PDF 文本层解析
+source-tip-crossref = Crossref——DOI 注册机构的官方元数据
+source-tip-semanticscholar = Semantic Scholar——Allen AI 研究所的学术检索
+source-tip-openalex = OpenAlex——完全开放的学术著作目录
+source-tip-pubmed = PubMed——美国国立医学图书馆生物医学文献库
+source-tip-unpaywall = Unpaywall——开放获取状态
+source-tip-readpaper = ReadPaper 论文阅读平台
+source-tip-connectedpapers = Connected Papers——可视化文献探索
+source-tip-cnki = 中国知网 CNKI
+source-tip-arxiv = arXiv——开放获取预印本库
+source-tip-zotero = 该文献已在你的 Zotero 文库中
+
+# 进度窗口标题/行
+progress-refs = 参考文献
+progress-refs-local = [缓存] 参考文献
+progress-refs-pending = [获取中] 参考文献
+progress-refs-done = [完成] 参考文献
+progress-refs-fail = [失败] 参考文献
+progress-searching-url = 正在查找链接
+progress-no-url = 未找到可打开的链接
+progress-importing = 正在导入文献
+progress-import-done = [完成] 导入
+progress-import-fail = [失败] 导入
+progress-unlinking = 正在取消关联
+progress-unlinked = 已取消关联
+panel-requesting-source = 正在请求 { $source } 参考文献…
+importer-search-doi = 正在查找 DOI
+importer-importing = 正在导入
+importer-create = 正在创建条目
+parser-read-text = 读取文本
+parser-analyze = 分析版面
+parser-done = 完成
+graph-status-lookup = 正在 OpenAlex 查询本文…
+graph-status-refs = 正在加载 { $count } 条参考文献…
+graph-status-citing = 正在加载引证文献…
+graph-status-related = 正在加载相关文献…
+graph-status-match = 正在与文库匹配…
+graph-status-edges = 正在构建连线…
+graph-status-ready = 图谱就绪：{ $nodes } 个节点，{ $edges } 条连线

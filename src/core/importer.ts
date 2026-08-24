@@ -1,6 +1,7 @@
 import { isChinese, isHttpUrl } from "./text";
 import { libraryIndex, isRelated } from "./libmatch";
 import type { RefItem } from "./types";
+import { getString } from "../utils/locale";
 import { resolveDOIByTitle, sources } from "../sources";
 import { importCNKIItem, searchCNKI } from "../sources/cnki";
 
@@ -152,7 +153,7 @@ export async function importReference(
   else if (ref.identifiers.arXiv) ids = { arXiv: ref.identifiers.arXiv };
   else if (ref.identifiers.PMID) ids = { PMID: ref.identifiers.PMID };
   if (!Object.keys(ids).length && ref.title) {
-    onStatus?.(`Searching DOI: ${ref.title}`);
+    onStatus?.(`${getString("importer-search-doi")}: ${ref.title}`);
     const DOI = await resolveDOIByTitle(ref.title);
     if (DOI) {
       ref.identifiers.DOI = DOI;
@@ -160,7 +161,7 @@ export async function importReference(
     }
   }
   if (Object.keys(ids).length) {
-    onStatus?.(`Importing: ${Object.values(ids)[0]}`);
+    onStatus?.(`${getString("importer-importing")}: ${Object.values(ids)[0]}`);
     try {
       refItem = await createItemByIdentifier(ids, cols, libraryID);
     } catch (e) {
@@ -172,7 +173,7 @@ export async function importReference(
 
   // 4. last resort: create from whatever metadata we have
   if (ref.title && (ref.authors?.length || ref.year)) {
-    onStatus?.(`Creating item: ${ref.title}`);
+    onStatus?.(`${getString("importer-create")}: ${ref.title}`);
     refItem = await createItemFromInfo(ref, cols, libraryID);
     return refItem;
   }

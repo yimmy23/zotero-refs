@@ -1,6 +1,8 @@
 import { isDOI } from "../core/text";
 import type { MetaSource, RefItem, RefTag } from "../core/types";
 import { http } from "../core/http";
+import { CITED_CHIP_COLOR, REFCOUNT_CHIP_COLOR } from "../core/types";
+import { getString } from "../utils/locale";
 
 /**
  * Connected Papers — unofficial REST API, used for its similarity-graph
@@ -28,13 +30,17 @@ function mapPaper(item: any): RefItem {
   if (item.citationStats) {
     tags.push({
       text: item.citationStats.numCitations,
-      tip: "citationStats.numCitations",
-      color: "rgba(53, 153, 154, 0.5)",
+      tip: getString("tag-cited-tip", {
+        args: { source: "Connected Papers" },
+      }),
+      color: CITED_CHIP_COLOR,
     });
     tags.push({
       text: item.citationStats.numReferences,
-      tip: "citationStats.numReferences",
-      color: "rgba(53, 153, 154, 0.75)",
+      tip: getString("tag-refcount-tip", {
+        args: { source: "Connected Papers" },
+      }),
+      color: REFCOUNT_CHIP_COLOR,
     });
   }
   return {

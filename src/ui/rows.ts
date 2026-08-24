@@ -58,8 +58,25 @@ function toTimeInfo(t?: string | number): string | undefined {
   if (!t) return undefined;
   const d = new Date(String(t));
   if (isNaN(d.getTime())) return String(t);
-  const info = d.toString().split(" ");
-  return `${info[1]} ${info[3]}`;
+  try {
+    // month + year in the UI language ("Jan 1994" / "1994年1月")
+    return new Intl.DateTimeFormat((Zotero as any).locale || "en-US", {
+      year: "numeric",
+      month: "short",
+    }).format(d);
+  } catch {
+    const info = d.toString().split(" ");
+    return `${info[1]} ${info[3]}`;
+  }
+}
+
+/** localized tooltip for a source badge (static English tip as fallback) */
+function sourceTip(source?: string): string | undefined {
+  if (!source) return undefined;
+  const id = `source-tip-${source.toLowerCase()}`;
+  const s = getString(id as any);
+  // getString returns the prefixed id itself when the key is missing
+  return s.endsWith(id) ? SOURCE_BADGE[source]?.tip : s;
 }
 
 /** local metadata candidate for the popup (index 0) */
@@ -101,7 +118,7 @@ async function localInfo(ref: RefItem, idText?: string): Promise<RefItem> {
     authors: ref.authors || [],
     type: "",
     year: ref.year,
-    title: ref.title || idText || "Reference",
+    title: ref.title || idText || getString("popup-untitled"),
     tags: ref.tags || [],
     text: ref.text,
     abstract: ref.abstract || ref.text,
@@ -151,7 +168,7 @@ export function showRefPopup(
           tags.push({
             text: SOURCE_NAME[info.source] || info.source,
             color: SOURCE_BADGE[info.source]?.color || "#59C1BD",
-            tip: SOURCE_BADGE[info.source]?.tip,
+            tip: sourceTip(info.source),
             source: info.source,
           });
         }
@@ -192,7 +209,7 @@ export function showRefPopup(
           tags.push({
             text: "PDF",
             color: "#00b8a9",
-            tip: "Open Access PDF",
+            tip: getString("tag-oa-pdf-tip"),
             url: info.oaUrl,
           });
         }
@@ -210,7 +227,7 @@ export function showRefPopup(
           tags.push({
             text: "Zotero",
             color: SOURCE_BADGE.Zotero.color,
-            tip: SOURCE_BADGE.Zotero.tip,
+            tip: sourceTip("Zotero"),
             itemID: ref.libItemID,
           });
         } else if (actions?.onImport) {
@@ -233,14 +250,14 @@ export function showRefPopup(
           tags.push({
             text: "Scholar",
             color: "#4285f4",
-            tip: "Search title on Google Scholar",
+            tip: getString("tag-scholar-tip"),
             url: `https://scholar.google.com/scholar?q=${q}`,
           });
           if (!ids.PMID && !isChinese(searchTitle)) {
             tags.push({
               text: "PubMed",
               color: SOURCE_BADGE.pubmed.color,
-              tip: "Search title on PubMed",
+              tip: getString("tag-pubmed-search-tip"),
               url: `https://pubmed.ncbi.nlm.nih.gov/?term=${q}`,
             });
           }
@@ -306,11 +323,14 @@ async function locateReference(ref: RefItem, libraryID: number) {
     (isHttpUrl(ref.url) ? ref.url : undefined) ||
     identifiersToURL(ref.identifiers);
   if (!url) {
-    const popupWin = new ztoolkit.ProgressWindow("Searching URL", {
-      closeTime: -1,
-    })
+    const popupWin = new ztoolkit.ProgressWindow(
+      getString("progress-searching-url"),
+      {
+        closeTime: -1,
+      },
+    )
       .createLine({
-        text: `Title: ${collapseText(ref.title || ref.text || "")}`,
+        text: collapseText(ref.title || ref.text || ""),
         type: "default",
       })
       .show();
@@ -328,8 +348,8 @@ async function locateReference(ref: RefItem, libraryID: number) {
   if (isHttpUrl(url)) {
     Zotero.launchURL(url);
   } else {
-    new ztoolkit.ProgressWindow("References")
-      .createLine({ text: "No URL found", type: "fail" })
+    new ztoolkit.ProgressWindow(getString("progress-refs"))
+      .createLine({ text: getString("progress-no-url"), type: "fail" })
       .show();
   }
 }
@@ -353,10 +373,13 @@ async function addReference(
   row: HTMLElement,
   collections?: number[],
 ) {
-  const popupWin = new ztoolkit.ProgressWindow("Importing Reference", {
-    closeTime: -1,
-    closeOtherProgressWindows: true,
-  })
+  const popupWin = new ztoolkit.ProgressWindow(
+    getString("progress-importing"),
+    {
+      closeTime: -1,
+      closeOtherProgressWindows: true,
+    },
+  )
     .createLine({
       text: collapseText(ref.title || ref.text || ""),
       type: "default",
@@ -371,7 +394,7 @@ async function addReference(
       (msg) => popupWin.changeLine({ text: collapseText(msg, 45) }),
     );
     if (!refItem) {
-      popupWin.changeHeadline("[Fail] Import");
+      popupWin.changeHeadline(getString("progress-import-fail"));
       popupWin.changeLine({ type: "fail" });
       popupWin.startCloseTimer(3000);
       setActionState(action, "+");
@@ -381,7 +404,7 @@ async function addReference(
     if (!isRelated(ctx.hostItem, refItem)) {
       await addRelation(ctx.hostItem, refItem);
     }
-    popupWin.changeHeadline("[Done] Import");
+    popupWin.changeHeadline(getString("progress-import-done"));
     popupWin.changeLine({
       text: collapseText(refItem.getField("title") as string),
       type: "success",
@@ -391,7 +414,7 @@ async function addReference(
     row.style.opacity = "1";
   } catch (e) {
     ztoolkit.log("[rows] import failed", e);
-    popupWin.changeHeadline("[Fail] Import");
+    popupWin.changeHeadline(getString("progress-import-fail"));
     popupWin.changeLine({ type: "fail" });
     popupWin.startCloseTimer(3000);
     setActionState(action, "+");
@@ -403,10 +426,13 @@ async function unlinkReference(
   ref: RefItem,
   action: HTMLElement,
 ) {
-  const popupWin = new ztoolkit.ProgressWindow("Removing Relation", {
-    closeTime: -1,
-    closeOtherProgressWindows: true,
-  })
+  const popupWin = new ztoolkit.ProgressWindow(
+    getString("progress-unlinking"),
+    {
+      closeTime: -1,
+      closeOtherProgressWindows: true,
+    },
+  )
     .createLine({
       text: collapseText(ref.title || ref.text || ""),
       type: "default",
@@ -418,7 +444,7 @@ async function unlinkReference(
     if (refItem && isRelated(ctx.hostItem, refItem)) {
       await removeRelation(ctx.hostItem, refItem);
     }
-    popupWin.changeHeadline("Removed");
+    popupWin.changeHeadline(getString("progress-unlinked"));
     popupWin.changeLine({ type: "success" });
     popupWin.startCloseTimer(2000);
     setActionState(action, "+");

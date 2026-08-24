@@ -127,7 +127,7 @@ async function fetchReferences(
   if (options.useCache && !options.fromCurrentPage) {
     const fused = await refStorage.get(item, "FUSED");
     if (fused?.length) {
-      new ztoolkit.ProgressWindow("[Local] References", {
+      new ztoolkit.ProgressWindow(getString("progress-refs-local"), {
         closeOtherProgressWindows: true,
       })
         .createLine({
@@ -140,10 +140,13 @@ async function fetchReferences(
     }
   }
   const reader = findReaderForItem(item);
-  const popupWin = new ztoolkit.ProgressWindow("[Pending] References", {
-    closeTime: -1,
-    closeOtherProgressWindows: true,
-  });
+  const popupWin = new ztoolkit.ProgressWindow(
+    getString("progress-refs-pending"),
+    {
+      closeTime: -1,
+      closeOtherProgressWindows: true,
+    },
+  );
   popupWin.createLine({
     text: `PDF: ${reader ? getString("panel-parsing") : "—"}`,
     type: "default",
@@ -250,7 +253,7 @@ async function fetchReferences(
 
   const [pdfRefs, api] = await Promise.all([pdfPromise, apiPromise]);
   if (!pdfRefs.length && !api?.refs.length) {
-    popupWin.changeHeadline("[Fail] References");
+    popupWin.changeHeadline(getString("progress-refs-fail"));
     if (!reader) {
       popupWin.changeLine({
         idx: 0,
@@ -279,7 +282,7 @@ async function fetchReferences(
     parts.push((api.source && SOURCE_NAME[api.source]) || api.source || "API");
   }
   state.sourceUsed = parts.join(" + ");
-  popupWin.changeHeadline("[Done] References");
+  popupWin.changeHeadline(getString("progress-refs-done"));
   popupWin.startCloseTimer(3000);
   if (refs.length && cachingEnabled()) {
     void refStorage.set(item, "FUSED", refs);
@@ -292,7 +295,7 @@ function copyAll(state: PanelState) {
     (r, i) => `[${r.number || i + 1}] ${r.text || r.title || ""}`,
   );
   new ztoolkit.Clipboard().addText(texts.join("\n"), "text/unicode").copy();
-  new ztoolkit.ProgressWindow("References")
+  new ztoolkit.ProgressWindow(getString("progress-refs"))
     .createLine({ text: getString("panel-copy-all-done"), type: "success" })
     .show();
 }
@@ -335,7 +338,7 @@ function exportRefs(state: PanelState, format: "text" | "markdown" | "csv") {
     ].join("\n");
   }
   new ztoolkit.Clipboard().addText(out, "text/unicode").copy();
-  new ztoolkit.ProgressWindow("References")
+  new ztoolkit.ProgressWindow(getString("progress-refs"))
     .createLine({
       text: `${getString("panel-export-done")} (${format})`,
       type: "success",
@@ -428,7 +431,7 @@ async function refresh(
     renderList(body, item, state, setSectionSummary);
   } catch (e) {
     ztoolkit.log("[section] refresh failed", e);
-    new ztoolkit.ProgressWindow("[Fail] References", {
+    new ztoolkit.ProgressWindow(getString("progress-refs-fail"), {
       closeOtherProgressWindows: true,
     })
       .createLine({ text: String(e), type: "fail" })

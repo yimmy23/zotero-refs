@@ -165,6 +165,14 @@ export const SOURCE_NAME: Record<string, string> = {
   pdf: "PDF",
 };
 
+/**
+ * Every source's "times cited" chip shares one color — the number means the
+ * same thing everywhere; the tooltip names the counting source.
+ */
+export const CITED_CHIP_COLOR = "#2fb8cb";
+/** reference-count chip (Connected Papers) */
+export const REFCOUNT_CHIP_COLOR = "#8aa0ad";
+
 export const SOURCE_BADGE: Record<string, { color: string; tip?: string }> = {
   pdf: { color: "#a05a2c", tip: "Parsed from the PDF text layer" },
   arxiv: { color: "#b31b1b", tip: "arXiv — open-access preprint archive" },

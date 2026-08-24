@@ -1,6 +1,8 @@
 import { htmlToText } from "../core/text";
 import type { MetaSource, RefItem, RefTag } from "../core/types";
 import { http } from "../core/http";
+import { CITED_CHIP_COLOR } from "../core/types";
+import { getString } from "../utils/locale";
 
 /** ReadPaper — 论文阅读平台 internal microservice API. */
 
@@ -14,8 +16,8 @@ function mapPaper(data: any): RefItem {
   if (data.citationCount && data.citationCount > 0) {
     tags.push({
       text: data.citationCount,
-      tip: "citationCount",
-      color: "#1f71e0",
+      tip: getString("tag-cited-tip", { args: { source: "ReadPaper" } }),
+      color: CITED_CHIP_COLOR,
     });
   }
   return {

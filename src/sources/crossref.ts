@@ -1,4 +1,6 @@
 import { http, politeEmail } from "../core/http";
+import { CITED_CHIP_COLOR } from "../core/types";
+import { getString } from "../utils/locale";
 import {
   htmlToText,
   identifiersToURL,
@@ -99,7 +101,13 @@ function mapWork(w: any): RefItem {
   const refCount = w["is-referenced-by-count"];
   const tags: RefTag[] =
     typeof refCount === "number" && refCount > 0
-      ? [{ text: refCount, color: "#2fb8cb", tip: "is-referenced-by-count" }]
+      ? [
+          {
+            text: refCount,
+            color: CITED_CHIP_COLOR,
+            tip: getString("tag-cited-tip", { args: { source: "Crossref" } }),
+          },
+        ]
       : [];
 
   const references: RefItem[] | undefined = Array.isArray(w.reference)
