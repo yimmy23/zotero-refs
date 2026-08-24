@@ -541,6 +541,18 @@ export function renderRefRow(
     label.prepend(flag, " ");
   };
   markRetracted();
+  // fused lists append online-only entries at the tail with an "API" tag;
+  // ref.tags otherwise only reach the hover card, so flag the row here
+  const apiTag = (ref.tags || []).find(
+    (t) => typeof t === "object" && t.text === "API",
+  );
+  if (apiTag && typeof apiTag === "object") {
+    const flag = doc.createElement("span");
+    flag.className = "references-apitag";
+    flag.textContent = "API";
+    if (apiTag.tip) flag.title = apiTag.tip;
+    label.prepend(flag, " ");
+  }
 
   const action = doc.createElement("span");
   action.className = "references-row-action zotero-clicky";

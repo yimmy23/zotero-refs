@@ -203,12 +203,14 @@ async function fetchReferences(
 
   const apiPromise = (async (): Promise<{
     refs: RefItem[];
-    source: string;
+    source: string | null;
   } | null> => {
     if (options.useCache) {
       const cached = await refStorage.get(item, "API");
       if (cached?.length) {
-        const source = (cached[0]?.source as string) || "crossref";
+        // pre-1.0.12 caches carry no source stamp — leave it unknown, so
+        // positional alignment (Crossref-order only) stays off for them
+        const source = (cached[0]?.source as string) ?? null;
         popupWin.changeLine({
           idx: 1,
           text: `API: ${cached.length} (${getString("panel-cached")})`,
@@ -239,6 +241,7 @@ async function fetchReferences(
       text: `API: ${result.refs.length} (${SOURCE_NAME[result.source] || result.source})`,
       type: "success",
     });
+    // (freshly fetched results always carry a source)
     if (result.refs.length && getPref("saveAPIReferences")) {
       void refStorage.set(item, "API", result.refs);
     }
@@ -272,7 +275,9 @@ async function fetchReferences(
   );
   const parts: string[] = [];
   if (pdfRefs.length) parts.push("PDF");
-  if (api?.refs.length) parts.push(SOURCE_NAME[api.source] || api.source);
+  if (api?.refs.length) {
+    parts.push((api.source && SOURCE_NAME[api.source]) || api.source || "API");
+  }
   state.sourceUsed = parts.join(" + ");
   popupWin.changeHeadline("[Done] References");
   popupWin.startCloseTimer(3000);

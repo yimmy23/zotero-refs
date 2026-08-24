@@ -96,6 +96,16 @@ export function registerStyles(win: Window) {
     .references-icon-copy    { background-image: url("${icons}/copy.svg"); }
 
     /* PDF | API segmented switch: selected segment = source of the next fetch */
+    .references-apitag {
+      display: inline-block;
+      padding: 0 4px;
+      border-radius: 4px;
+      font-size: calc(var(--refs-font-secondary) * .9);
+      font-weight: 600;
+      color: var(--refs-accent-strong);
+      background-color: var(--refs-accent-wash);
+    }
+
     /* ---------- search ---------- */
     .references-search {
       display: flex;

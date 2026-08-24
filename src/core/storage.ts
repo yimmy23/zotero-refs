@@ -42,7 +42,28 @@ function sanitizeRef(r: any): RefItem | null {
     url: isHttpUrl(r.url) ? r.url : undefined,
     oaUrl: isHttpUrl(r.oaUrl) ? r.oaUrl : undefined,
     retracted: r.retracted === true ? true : undefined,
+    // display-only tag fields; clickable fields (url/itemID/onClick) must
+    // never come back from the file
+    tags: Array.isArray(r.tags)
+      ? r.tags
+          .filter((t: any) => t && typeof t === "object")
+          .map((t: any) => ({
+            text:
+              typeof t.text === "string"
+                ? t.text.slice(0, 60)
+                : typeof t.text === "number"
+                  ? t.text
+                  : "",
+            color: /^#[0-9a-fA-F]{3,8}$/.test(String(t.color))
+              ? String(t.color)
+              : undefined,
+            tip: typeof t.tip === "string" ? t.tip.slice(0, 200) : undefined,
+          }))
+          .filter((t: any) => t.text !== "")
+          .slice(0, 4)
+      : undefined,
   };
+  if (out.tags && !out.tags.length) out.tags = undefined;
   if (!out.text && !out.title) return null;
   return out;
 }
@@ -64,7 +85,8 @@ const SCHEMA_VERSION = 2;
  * Zotero data directory. Writes are debounced.
  *
  * File layout: { v, items: { [libraryID/itemKey]:
- *   { [slot]: { t: epochMs, refs: RefItem[] } } } } — slot is "PDF" or "API".
+ *   { [slot]: { t: epochMs, refs: RefItem[] } } } } — slots: "PDF" / "API"
+ *   (raw fetch layers) and "FUSED" (the fused list the panel shows).
  */
 class RefStorage {
   private cache: Record<
