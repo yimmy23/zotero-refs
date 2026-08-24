@@ -1,4 +1,5 @@
 import type { RefItem } from "../core/types";
+import { normalizeTitle } from "../core/text";
 import { getPref } from "../utils/prefs";
 
 /**
@@ -7,11 +8,13 @@ import { getPref } from "../utils/prefs";
  * Zotero renders internal links / citations through its own overlay system,
  * which is why the original plugin shipped this feature disabled).
  *
- * Verified against the Zotero 9.0.6 reader bundle:
+ * Verified against the Zotero 9.0.6 and 10.0 reader bundles:
  *   - hover: PDFView calls `this._onSetOverlayPopup({...overlay, rect})`
  *     for overlays of type "internal-link" (destinationPosition) and
- *     "citation"/"reference" (references[0].position); `rect` is a client
- *     rect in the pdf.js iframe viewport; `null` means hover ended.
+ *     "citation"/"reference", whose `references[]` carry the printed
+ *     bibliography entry the reader extracted itself ({ text, index?,
+ *     position }); `rect` is a client rect in the pdf.js iframe viewport;
+ *     `null` means hover ended.
  *   - click: PDFView pointer-up resolves `_getSelectableOverlay(position)`
  *     and calls `this.navigate({ position })` for internal links/citations.
  *   - split view: `internal.toggleHorizontalSplit(true)` /
@@ -84,6 +87,43 @@ function nearestRef(
   return best && Math.sqrt(bestD) <= MAX_ANCHOR_DIST ? best : null;
 }
 
+/**
+ * Match a citation overlay's extracted entry (Zotero's reader parses the
+ * printed bibliography itself: { text, index?, position }) against our
+ * fused list. Both texts are the same printed entry, so agreement is
+ * strict normalized-prefix equality — never mid-string containment.
+ */
+export function refForCitation(refs: RefItem[], cite: any): RefItem | null {
+  const text = String(cite?.text || "");
+  if (!text) return null;
+  const norm = normalizeTitle(text);
+  const agree = (a?: string, b?: string) => {
+    if (!a || !b) return false;
+    const n = Math.min(a.length, b.length, 25);
+    return n >= 10 && a.slice(0, n) === b.slice(0, n);
+  };
+  const num =
+    typeof cite?.index === "number"
+      ? cite.index
+      : Number(/^\s*[[(]?(\d{1,4})[\])]?[.．、]?\s/.exec(text)?.[1]) ||
+        undefined;
+  if (num !== undefined) {
+    const cands = refs.filter((r) => r.number === num);
+    if (cands.length === 1 && agree(norm, normalizeTitle(cands[0].text))) {
+      return cands[0];
+    }
+    // a numbered bibliography that disagrees on this number: don't guess
+    if (cands.length) return null;
+  }
+  // author–year styles carry no number: unique long-prefix match
+  if (norm.length >= 30) {
+    const pre = norm.slice(0, 30);
+    const cands = refs.filter((r) => normalizeTitle(r.text).startsWith(pre));
+    if (cands.length === 1) return cands[0];
+  }
+  return null;
+}
+
 /** [x1,y1,x2,y2] | DOMRect-ish -> {x1,y1,x2,y2} */
 function normRect(
   rect: any,
@@ -110,10 +150,12 @@ function overlayDestPosition(overlay: any): any {
 
 /**
  * Convert a client rect inside the pdf.js iframe into main-window
- * coordinates by walking up the frame chain. Returns null when the chain
- * cannot be walked.
+ * coordinates: walk the frame chain as far as frameElement reaches, then
+ * hop the chrome boundary via the reader's own browser element. Returns
+ * null when the main window cannot be reached.
  */
-function toMainWindowRect(
+export function toMainWindowRect(
+  reader: any,
   win: any,
   rect: any,
 ): { x: number; y: number; width: number; height: number } | null {
@@ -132,11 +174,23 @@ function toMainWindowRect(
       y2 += fr.y;
       w = frame.ownerDocument?.defaultView;
     }
-    // sanity: we should have surfaced in the main window. A detached
-    // (separate-window) reader never does — the popup renders into the
-    // main window, so a fabricated position there would be plain wrong.
-    // Returning null keeps the native preview for that reader instead.
-    if (!w || !(w as any).Zotero_Tabs) return null;
+    if (!w || !(w as any).Zotero_Tabs) {
+      // Zotero 10 hosts reader.html in a chrome <browser>: frameElement
+      // (and even browsingContext.embedderElement, hidden by the sandbox
+      // wrapper) cannot cross it — but the reader knows its own browser
+      // element, whose rect lives in the window that owns the tab.
+      // A detached (separate-window) reader's owner has no Zotero_Tabs:
+      // return null so that reader keeps the native preview (the popup
+      // renders into the main window and would be misplaced there).
+      const browser = reader?._iframe;
+      const owner = browser?.ownerDocument?.defaultView;
+      if (!browser || !owner?.Zotero_Tabs) return null;
+      const fr = browser.getBoundingClientRect();
+      x1 += fr.x;
+      y1 += fr.y;
+      x2 += fr.x;
+      y2 += fr.y;
+    }
   } catch {
     return null;
   }
@@ -291,19 +345,31 @@ export class ReaderLinks {
             )
           ) {
             const refs = getRefs();
-            const destPos = overlayDestPosition(overlayPopup);
-            const destRect = destPos?.rects?.[0];
-            if (refs?.length && Array.isArray(destRect)) {
-              const ref = nearestRef(
-                refs,
-                destRect[0],
-                destRect[3],
-                typeof destPos.pageIndex === "number"
-                  ? destPos.pageIndex
-                  : undefined,
-              );
+            if (refs?.length) {
+              const cites = overlayPopup.references;
+              let ref: RefItem | null = null;
+              // citation overlays hand us the printed entry text — match it
+              // directly; a multi-entry cluster keeps the native popup (it
+              // lists every entry, our card shows one)
+              if (Array.isArray(cites) && cites.length === 1) {
+                ref = refForCitation(refs, cites[0]);
+              }
+              if (!ref && (!Array.isArray(cites) || cites.length <= 1)) {
+                const destPos = overlayDestPosition(overlayPopup);
+                const destRect = destPos?.rects?.[0];
+                if (Array.isArray(destRect)) {
+                  ref = nearestRef(
+                    refs,
+                    destRect[0],
+                    destRect[3],
+                    typeof destPos.pageIndex === "number"
+                      ? destPos.pageIndex
+                      : undefined,
+                  );
+                }
+              }
               if (ref) {
-                const rect = toMainWindowRect(win, overlayPopup.rect);
+                const rect = toMainWindowRect(reader, win, overlayPopup.rect);
                 if (rect) {
                   showPopup({ ...rect, y: rect.y + rect.height }, ref);
                   // suppress the native preview popup
