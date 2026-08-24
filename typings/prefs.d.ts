@@ -7,7 +7,6 @@
 declare namespace _ZoteroTypes {
   interface Prefs {
     PluginPrefsMap: {
-      "prioritySource": string;
       "preLoadingPageNum": number;
       "autoRefresh": boolean;
       "notAutoRefreshItemTypes": string;
