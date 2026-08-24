@@ -204,7 +204,10 @@ export function parseRefText(text: string): {
       .trim();
     let title: string;
     let titleMatch: string;
-    const quoted = text.match(/[“"](.+?)[”"]/);
+    // a quoted span is the title only when it is long enough to BE one —
+    // quotes inside a title ('The evolving uses of "real-world" data')
+    // otherwise swallow it
+    const quoted = text.match(/[“"](.{15,}?)[”"]/);
     if (quoted) {
       titleMatch = quoted[0];
       title = quoted[1];

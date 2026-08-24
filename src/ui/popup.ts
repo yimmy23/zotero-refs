@@ -23,9 +23,10 @@ export interface PopupRect {
 /** Option-dot row geometry / colors (ported constants). */
 const OPTION = {
   size: 8,
+  // the plugin accent (Zest green): active = solid, idle = a light wash
   color: {
-    active: "#FF597B",
-    default: "#F9B5D0",
+    active: "#2da44e",
+    default: "#b5e6c4",
   },
 };
 
@@ -108,15 +109,12 @@ export class PopupCard {
     return { background: custom, color };
   }
 
-  /** default = the plugin accent, tuned per theme so the title stays
-   * readable ("#2270d9" was the old shipped default — treat it as unset) */
+  /** the light-mode default title blue is unreadable on the dark card */
   private resolveTitleColor(): string {
     const pref = String(getPref("popupTitleColor") || "").trim();
     const dark =
       getWin().matchMedia("(prefers-color-scheme: dark)")?.matches ?? false;
-    if (!pref || pref.toLowerCase() === "#2270d9") {
-      return dark ? "#7fd996" : "#1a7f37";
-    }
+    if (dark && (!pref || pref.toLowerCase() === "#2270d9")) return "#7fb0ff";
     return pref;
   }
 

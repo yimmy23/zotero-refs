@@ -71,7 +71,13 @@ const normDOI = (d?: string) =>
 const surname = (author?: string) =>
   normalizeTitle((author || "").split(/[,\s]/)[0]);
 
-/** merge one API record into a PDF entry, filling only what is missing */
+/**
+ * Merge one API record into a PDF entry. Identifiers printed in the PDF
+ * are exact and win; everything else guessed from the raw text (title,
+ * authors, year — parseRefText took the quoted span "real-world" for a
+ * title once) loses to the API's structured metadata. The entry's text,
+ * number and anchors are the PDF's and never change.
+ */
 function enrich(p: RefItem, a: RefItem): RefItem {
   const tags = [...(p.tags || [])];
   for (const t of a.tags || []) {
@@ -88,15 +94,15 @@ function enrich(p: RefItem, a: RefItem): RefItem {
   return {
     ...p,
     identifiers: { ...a.identifiers, ...p.identifiers },
-    title: p.title || a.title,
-    authors: p.authors?.length ? p.authors : a.authors,
-    year: p.year || a.year,
-    publishDate: p.publishDate || a.publishDate,
-    primaryVenue: p.primaryVenue || a.primaryVenue,
-    abstract: p.abstract || a.abstract,
-    oaUrl: p.oaUrl || a.oaUrl,
+    title: a.title || p.title,
+    authors: a.authors?.length ? a.authors : p.authors,
+    year: a.year || p.year,
+    publishDate: a.publishDate || p.publishDate,
+    primaryVenue: a.primaryVenue || p.primaryVenue,
+    abstract: a.abstract || p.abstract,
+    oaUrl: a.oaUrl || p.oaUrl,
     url: p.url || a.url,
-    type: p.type || a.type,
+    type: a.type || p.type,
     citationCount: p.citationCount ?? a.citationCount,
     referenceCount: p.referenceCount ?? a.referenceCount,
     source: a.source ?? p.source,
