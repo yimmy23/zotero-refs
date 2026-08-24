@@ -108,12 +108,15 @@ export class PopupCard {
     return { background: custom, color };
   }
 
-  /** the light-mode default title blue is unreadable on the dark card */
+  /** default = the plugin accent, tuned per theme so the title stays
+   * readable ("#2270d9" was the old shipped default — treat it as unset) */
   private resolveTitleColor(): string {
     const pref = String(getPref("popupTitleColor") || "").trim();
     const dark =
       getWin().matchMedia("(prefers-color-scheme: dark)")?.matches ?? false;
-    if (dark && (!pref || pref.toLowerCase() === "#2270d9")) return "#7fb0ff";
+    if (!pref || pref.toLowerCase() === "#2270d9") {
+      return dark ? "#7fd996" : "#1a7f37";
+    }
     return pref;
   }
 

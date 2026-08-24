@@ -1,5 +1,4 @@
 // Reference list behavior
-pref("prioritySource", "PDF");
 pref("preLoadingPageNum", 4);
 pref("autoRefresh", true);
 pref("notAutoRefreshItemTypes", "book, letter, note, thesis");
@@ -17,7 +16,7 @@ pref("popupFadeMs", 233);
 pref("popupRemoveDelay", 500);
 pref("ctrlClickTranslate", true);
 pref("popupBackgroundColor", "");
-pref("popupTitleColor", "#2270d9");
+pref("popupTitleColor", "");
 
 // Preferred metadata source index per identifier kind (popup dots)
 pref("arXivInfoIndex", 0);

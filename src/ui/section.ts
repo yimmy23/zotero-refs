@@ -4,9 +4,10 @@ import { getPref } from "../utils/prefs";
 import { setTimeout, clearTimeout } from "../utils/window";
 import { refStorage, itemCacheKey } from "../core/storage";
 import { hostIdentifiers, isChinese } from "../core/text";
-import type { RefItem } from "../core/types";
+import { fuseReferences } from "../core/fuse";
+import type { RefItem, SourceID } from "../core/types";
 import { SOURCE_NAME } from "../core/types";
-import { getReferencesByAPI } from "../sources";
+import { getReferencesByAPI, sources } from "../sources";
 import { parsePDFReferences } from "../pdf/parser";
 import { runBatchImport } from "./batchImport";
 import { renderRefRow, filterRows, closePopup } from "./rows";
@@ -15,30 +16,33 @@ import type { RowContext } from "./rows";
 
 /**
  * The "References" item pane section (library + reader), the heart of the
- * plugin. Ported from zotero-reference Views.refreshReferences with the
- * original interaction set:
- *   - refresh click: fetch from the current source, toggling PDF <-> API on
- *     subsequent clicks
+ * plugin.
+ *
+ * ONE list, two readings fused behind it (core/fuse.ts): the PDF parse is
+ * the skeleton — order, numbering, raw text, in-page anchors — and the
+ * API result (Crossref → S2 → OpenAlex → CNKI) fills in the metadata each
+ * entry lacks, above all the DOI. Whichever side is unavailable (no open
+ * reader / no identifiers / offline), the other one alone still renders.
+ * The mechanism is deliberately invisible: no source switch, just the
+ * contributing sources named next to the count.
+ *
+ * Interactions:
+ *   - refresh click: refresh (cache-first)
  *   - refresh long-press (>=1s): ignore local cache, force re-fetch
- *   - Ctrl+refresh: PDF source parses from the current page backwards
+ *   - Ctrl+refresh: parse the PDF from the current page backwards (theses)
  *   - double-click on the count label: copy all references
  *   - per-row: copy / edit / locate / import(+) / unlink(−) / hover popup
- * New: import-all button, export menu, cached-state indicator, search box.
+ * Plus: import-all button, export menu, cached-state indicator, search box.
  *
  * The section body is shared and re-rendered as the user switches items, so
  * every async completion is guarded by an item stamp on the body — a slow
  * fetch for item A must never paint into item B's panel.
  */
 
-type SourceKind = "PDF" | "API";
-
 interface PanelState {
   stateKey: string;
   refs: RefItem[];
-  /** source used for the NEXT fetch */
-  source: SourceKind;
-  /** cache slot the currently displayed refs were loaded from */
-  loadedSlot?: SourceKind;
+  /** label naming what produced the shown list ("PDF + Crossref", …) */
   sourceUsed?: string;
   loading: boolean;
   importing: boolean;
@@ -57,7 +61,6 @@ function getState(item: Zotero.Item): PanelState {
     state = {
       stateKey,
       refs: [],
-      source: (getPref("prioritySource") as SourceKind) || "PDF",
       loading: false,
       importing: false,
       loadedOnce: false,
@@ -70,17 +73,6 @@ function getState(item: Zotero.Item): PanelState {
     states.set(stateKey, state);
   }
   return state;
-}
-
-/** reflect state.source in the PDF | API segmented control */
-function syncSourceControl(body: HTMLElement, state: PanelState) {
-  body
-    .querySelectorAll<HTMLElement>(".references-source-opt")
-    .forEach((opt: HTMLElement) => {
-      const on = opt.dataset.src === state.source;
-      opt.classList.toggle("is-on", on);
-      opt.setAttribute("aria-checked", on ? "true" : "false");
-    });
 }
 
 /** does the shared section body still show this item? */
@@ -107,108 +99,187 @@ function findReaderForItem(item: Zotero.Item): any {
   return null;
 }
 
+/** mark the API-only tail rows so the user can tell them apart */
+function tagTail(refs: RefItem[], tailStart: number) {
+  for (let i = tailStart; i < refs.length; i++) {
+    refs[i] = {
+      ...refs[i],
+      tags: [
+        ...(refs[i].tags || []),
+        { text: "API", color: "#2da44e", tip: getString("row-api-only-tip") },
+      ],
+    };
+  }
+}
+
+/** may caching be used at all (either layer enabled)? */
+function cachingEnabled(): boolean {
+  return !!(getPref("savePDFReferences") || getPref("saveAPIReferences"));
+}
+
 async function fetchReferences(
   item: Zotero.Item,
   state: PanelState,
   options: { useCache: boolean; fromCurrentPage: boolean },
 ): Promise<RefItem[]> {
-  const slot = state.source;
-  if (options.useCache) {
-    const cached = await refStorage.get(item, slot);
-    if (cached?.length) {
-      new ztoolkit.ProgressWindow(`[Local] ${slot}`, {
+  // fused fast path (plain click); Ctrl = re-parse from the current page,
+  // which must not be answered from cache
+  if (options.useCache && !options.fromCurrentPage) {
+    const fused = await refStorage.get(item, "FUSED");
+    if (fused?.length) {
+      new ztoolkit.ProgressWindow("[Local] References", {
         closeOtherProgressWindows: true,
       })
         .createLine({
-          text: `${cached.length} ${getString("panel-count-suffix")}`,
+          text: `${fused.length} ${getString("panel-count-suffix")} (${getString("panel-cached")})`,
           type: "success",
         })
         .show();
-      state.sourceUsed = `${slot} (cached)`;
-      state.loadedSlot = slot;
-      return cached;
+      state.sourceUsed = getString("panel-cached");
+      return fused;
     }
   }
-  if (slot === "PDF") {
-    const reader = findReaderForItem(item);
-    if (!reader) {
-      new ztoolkit.ProgressWindow("[Fail] PDF", {
-        closeOtherProgressWindows: true,
-      })
-        .createLine({ text: getString("panel-need-reader"), type: "fail" })
-        .show();
-      return [];
-    }
-    const popupWin = new ztoolkit.ProgressWindow("[Pending] PDF", {
-      closeTime: -1,
-      closeOtherProgressWindows: true,
-    });
-    popupWin.createLine({
-      text: getString("panel-parsing"),
-      type: "default",
-      progress: 1,
-    });
-    popupWin.show();
-    let refs: RefItem[] = [];
-    try {
-      refs = await parsePDFReferences(reader, {
-        fromCurrentPage: options.fromCurrentPage,
-        onProgress: (message, pct) =>
-          popupWin.changeLine({ text: message, progress: pct }),
-      });
-    } finally {
-      if (refs.length) {
-        popupWin.changeHeadline("[Done] PDF");
-        popupWin.changeLine({
-          text: `${refs.length} ${getString("panel-count-suffix")}`,
-          type: "success",
-          progress: 100,
-        });
-      } else {
-        popupWin.changeHeadline("[Fail] PDF");
-        popupWin.changeLine({
-          text: `0 ${getString("panel-count-suffix")}`,
-          type: "fail",
-        });
-      }
-      popupWin.startCloseTimer(3000);
-    }
-    state.sourceUsed = "PDF";
-    state.loadedSlot = "PDF";
-    if (refs.length && getPref("savePDFReferences")) {
-      void refStorage.set(item, "PDF", refs);
-    }
-    return refs;
-  }
-  // API source
-  const popupWin = new ztoolkit.ProgressWindow("[Pending] API", {
+  const reader = findReaderForItem(item);
+  const popupWin = new ztoolkit.ProgressWindow("[Pending] References", {
     closeTime: -1,
     closeOtherProgressWindows: true,
   });
-  popupWin.createLine({ text: getString("panel-requesting"), type: "default" });
+  popupWin.createLine({
+    text: `PDF: ${reader ? getString("panel-parsing") : "—"}`,
+    type: "default",
+    progress: reader ? 1 : 100,
+  });
+  popupWin.createLine({
+    text: `API: ${getString("panel-requesting")}`,
+    type: "default",
+  });
   popupWin.show();
-  const result = await getReferencesByAPI(item, (msg) =>
-    popupWin.changeLine({ text: msg }),
-  );
-  if (!result) {
-    popupWin.changeHeadline("[Fail] API");
-    popupWin.changeLine({ text: getString("panel-api-fail"), type: "fail" });
+
+  const pdfPromise = (async (): Promise<RefItem[]> => {
+    if (options.useCache && !options.fromCurrentPage) {
+      const cached = await refStorage.get(item, "PDF");
+      if (cached?.length) {
+        popupWin.changeLine({
+          idx: 0,
+          text: `PDF: ${cached.length} (${getString("panel-cached")})`,
+          type: "success",
+          progress: 100,
+        });
+        return cached;
+      }
+    }
+    if (!reader) return [];
+    try {
+      const refs = await parsePDFReferences(reader, {
+        fromCurrentPage: options.fromCurrentPage,
+        onProgress: (message, pct) =>
+          popupWin.changeLine({
+            idx: 0,
+            text: `PDF: ${message}`,
+            progress: pct,
+          }),
+      });
+      popupWin.changeLine({
+        idx: 0,
+        text: `PDF: ${refs.length} ${getString("panel-count-suffix")}`,
+        type: refs.length ? "success" : "fail",
+        progress: 100,
+      });
+      if (refs.length && getPref("savePDFReferences")) {
+        void refStorage.set(item, "PDF", refs);
+      }
+      return refs;
+    } catch (e) {
+      ztoolkit.log("[section] PDF parse failed", e);
+      popupWin.changeLine({
+        idx: 0,
+        text: "PDF: ✗",
+        type: "fail",
+        progress: 100,
+      });
+      return [];
+    }
+  })();
+
+  const apiPromise = (async (): Promise<{
+    refs: RefItem[];
+    source: string;
+  } | null> => {
+    if (options.useCache) {
+      const cached = await refStorage.get(item, "API");
+      if (cached?.length) {
+        const source = (cached[0]?.source as string) || "crossref";
+        popupWin.changeLine({
+          idx: 1,
+          text: `API: ${cached.length} (${getString("panel-cached")})`,
+          type: "success",
+        });
+        return { refs: cached, source };
+      }
+    }
+    const result = await getReferencesByAPI(item, (msg) =>
+      popupWin.changeLine({ idx: 1, text: `API: ${msg}` }),
+    );
+    if (!result) {
+      popupWin.changeLine({
+        idx: 1,
+        text: `API: ${getString("panel-api-fail")}`,
+        type: "fail",
+      });
+      return null;
+    }
+    // stamp the producing source on every record: the cache keeps it, the
+    // row badge shows it, and the fusion needs it (positional alignment is
+    // trusted for Crossref order only)
+    for (const r of result.refs) {
+      r.source = (r.source ?? result.source) as SourceID;
+    }
+    popupWin.changeLine({
+      idx: 1,
+      text: `API: ${result.refs.length} (${SOURCE_NAME[result.source] || result.source})`,
+      type: "success",
+    });
+    if (result.refs.length && getPref("saveAPIReferences")) {
+      void refStorage.set(item, "API", result.refs);
+    }
+    return result;
+  })();
+
+  const [pdfRefs, api] = await Promise.all([pdfPromise, apiPromise]);
+  if (!pdfRefs.length && !api?.refs.length) {
+    popupWin.changeHeadline("[Fail] References");
+    if (!reader) {
+      popupWin.changeLine({
+        idx: 0,
+        text: getString("panel-no-source"),
+        type: "fail",
+        progress: 100,
+      });
+    }
     popupWin.startCloseTimer(3000);
     return [];
   }
-  popupWin.changeHeadline("[Done] API");
-  const sourceLabel = SOURCE_NAME[result.source] || result.source;
-  popupWin.changeLine({
-    text: `${result.refs.length} ${getString("panel-count-suffix")} (${sourceLabel})`,
-    type: "success",
-  });
+
+  const { refs, tailStart, stats } = await fuseReferences(
+    pdfRefs,
+    api?.refs ?? [],
+    api?.source ?? null,
+    (doi) => sources.crossref.getInfoByDOI!(doi),
+  );
+  tagTail(refs, tailStart);
+  ztoolkit.log(
+    `[section] fused pdf=${pdfRefs.length} api=${api?.refs.length ?? 0} -> ${refs.length} (id=${stats.id} title=${stats.title} volPage=${stats.volPage} pos=${stats.positional} [${stats.posMode}] unmatched=${stats.unmatched} appended=${stats.appended})`,
+  );
+  const parts: string[] = [];
+  if (pdfRefs.length) parts.push("PDF");
+  if (api?.refs.length) parts.push(SOURCE_NAME[api.source] || api.source);
+  state.sourceUsed = parts.join(" + ");
+  popupWin.changeHeadline("[Done] References");
   popupWin.startCloseTimer(3000);
-  state.sourceUsed = sourceLabel;
-  state.loadedSlot = "API";
-  if (result.refs.length && getPref("saveAPIReferences")) {
-    void refStorage.set(item, "API", result.refs);
+  if (refs.length && cachingEnabled()) {
+    void refStorage.set(item, "FUSED", refs);
   }
-  return result.refs;
+  return refs;
 }
 
 function copyAll(state: PanelState) {
@@ -304,15 +375,8 @@ function renderList(
     editable: true,
     onEdited: (ref, index) => {
       state.refs[index] = ref;
-      // persist into the slot the refs were LOADED from — the badge only
-      // selects the next fetch and must not redirect edits — and only if
-      // the user has caching for that slot enabled
-      const slot = state.loadedSlot ?? state.source;
-      const allowed =
-        slot === "PDF"
-          ? getPref("savePDFReferences")
-          : getPref("saveAPIReferences");
-      if (allowed) void refStorage.set(item, slot, state.refs);
+      // the shown (fused) list is what the user edited — persist it there
+      if (cachingEnabled()) void refStorage.set(item, "FUSED", state.refs);
     },
   };
   // chunked rendering keeps the pane responsive for long bibliographies.
@@ -347,7 +411,6 @@ async function refresh(
   options: { useCache: boolean; fromCurrentPage: boolean },
 ) {
   if (state.loading) return;
-  syncSourceControl(body, state);
   state.loading = true;
   try {
     const refs = await fetchReferences(item, state, options);
@@ -390,28 +453,6 @@ function buildToolbar(
   const spacer = doc.createElement("span");
   spacer.className = "references-spacer";
   toolbar.append(spacer);
-
-  // two-segment source switch (PDF | API): the selected segment is the
-  // source the refresh button will use — readable as a toggle, unlike a
-  // lone status-looking pill
-  const seg = doc.createElement("span");
-  seg.className = "references-source-seg";
-  seg.setAttribute("role", "radiogroup");
-  seg.title = getString("panel-source-tip");
-  for (const kind of ["PDF", "API"] as const) {
-    const opt = doc.createElement("span");
-    opt.className = "references-source-opt";
-    opt.dataset.src = kind;
-    opt.textContent = kind;
-    opt.setAttribute("role", "radio");
-    opt.addEventListener("click", () => {
-      state.source = kind;
-      syncSourceControl(body, state);
-    });
-    seg.append(opt);
-  }
-  toolbar.append(seg);
-  syncSourceControl(body, state);
 
   const mkIconButton = (iconClass: string, tip: string) => {
     const button = doc.createElement("button");
@@ -544,14 +585,34 @@ export function registerReferencesSection() {
           return;
         }
         if (state.loadedOnce) return;
-        // cache-first initial fill
-        const cached = await refStorage.get(item, state.source);
+        // cache-first initial fill: the fused list if we have it, else
+        // fuse whatever raw layers are cached (offline, no network)
+        const fused = await refStorage.get(item, "FUSED");
         if (!isCurrent(body as HTMLElement, state)) return;
-        if (cached?.length) {
-          state.refs = cached;
+        if (fused?.length) {
+          state.refs = fused;
           state.loadedOnce = true;
-          state.loadedSlot = state.source;
-          state.sourceUsed = `${state.source} (cached)`;
+          state.sourceUsed = getString("panel-cached");
+          renderList(body as HTMLElement, item, state, setSectionSummary);
+          return;
+        }
+        const [cachedPDF, cachedAPI] = await Promise.all([
+          refStorage.get(item, "PDF"),
+          refStorage.get(item, "API"),
+        ]);
+        if (!isCurrent(body as HTMLElement, state)) return;
+        if (cachedPDF?.length || cachedAPI?.length) {
+          const { refs, tailStart } = await fuseReferences(
+            cachedPDF ?? [],
+            cachedAPI ?? [],
+            (cachedAPI?.[0]?.source as string) ?? null,
+          );
+          if (!isCurrent(body as HTMLElement, state)) return;
+          tagTail(refs, tailStart);
+          state.refs = refs;
+          state.loadedOnce = true;
+          state.sourceUsed = getString("panel-cached");
+          if (cachingEnabled()) void refStorage.set(item, "FUSED", refs);
           renderList(body as HTMLElement, item, state, setSectionSummary);
           return;
         }
@@ -560,15 +621,12 @@ export function registerReferencesSection() {
             .split(/,\s*/)
             .map((s) => s.trim());
           if (excluded.includes(item.itemType)) return;
-          // without an open reader the PDF source can only fail — fall back
-          // to API when it can answer, else skip silently (no popup spam
-          // while browsing the library)
-          if (state.source === "PDF" && !findReaderForItem(item)) {
+          // without an open reader only the API side can answer — skip
+          // silently when it cannot (no popup spam while browsing)
+          if (!findReaderForItem(item)) {
             const ids = hostIdentifiers(item);
             const title = (item.getField("title") as string) || "";
-            if (ids.DOI || ids.PMID || ids.arXiv || isChinese(title)) {
-              state.source = "API";
-            } else {
+            if (!ids.DOI && !ids.PMID && !ids.arXiv && !isChinese(title)) {
               return;
             }
           }

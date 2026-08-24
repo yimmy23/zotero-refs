@@ -398,9 +398,9 @@ export function registerGraphSection() {
         const legend = doc.createElement("div");
         legend.className = "references-graph-legend";
         const legendEntries: Array<[string, string]> = [
-          ["#e8710a", getString("graph-legend-origin")],
+          ["#2da44e", getString("graph-legend-origin")],
           ["#4a90d9", getString("graph-legend-reference")],
-          ["#35999a", getString("graph-legend-citation")],
+          ["#e8710a", getString("graph-legend-citation")],
           ["#9b7fd4", getString("graph-legend-related")],
         ];
         for (const [color, label] of legendEntries) {

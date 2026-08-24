@@ -26,11 +26,11 @@ After install, four collapsible sections appear in the right-hand item pane (lib
 
 ### References
 
-The list loads automatically (configurable). The source is shown next to the count — `PDF` means parsed from the PDF text layer (numbered-sequence merging, column/footer handling, cross-page continuation; verified on a 32-journal corpus), `API` means fetched from Crossref → Semantic Scholar → OpenAlex → CNKI.
+The list loads automatically (configurable) and is a single **fused** view: the PDF text layer provides the skeleton — the exact entries the paper prints, their order, numbering and in-page positions — and web APIs (Crossref → Semantic Scholar → OpenAlex → CNKI) fill in what the text lacks, above all the DOI (validated on a 699-paper corpus: DOI coverage rises from ~19% to ~80%). Whichever side is unavailable (no open PDF, no identifiers, offline), the other alone still renders; the sources that contributed are named next to the count. Entries found only online are appended at the tail with an `API` tag — only when the parsed list is genuinely shorter.
 
-- **Refresh button**: click to fetch the current source (the `PDF`/`API` badge switches sources); **long-press** to bypass the cache; `Ctrl+click` in a thesis/book PDF parses backwards from the current page (thesis mode).
+- **Refresh button**: click to refresh (cache-first); **long-press** to bypass the cache and re-fetch both sides; `Ctrl+click` in a thesis/book PDF parses backwards from the current page (thesis mode).
 - **Per row**: solid = already in your library, dimmed = not. Click to **copy the citation** (clean text, list numbering stripped) · long-press to **edit** the raw text (`Esc` cancels) · `Ctrl+click` to **locate in library / open in browser** · `+` to **import and bidirectionally relate** (`Ctrl+click +` picks the target collection) · `−` to unlink. Every control has a hover tooltip. Works flagged as **retracted** by OpenAlex / PubMed carry a red RETRACTED badge and ask for confirmation before import.
-- **Toolbar**: `PDF | API` source switch · keyword filter box · Import All (respects the filter; asks for confirmation, click the progress window to stop midway) · export list (click = plain text, `Ctrl` = Markdown, `Shift` = CSV) · double-click the count to copy the whole list.
+- **Toolbar**: keyword filter box · Import All (respects the filter; asks for confirmation, click the progress window to stop midway) · export list (click = plain text, `Ctrl` = Markdown, `Shift` = CSV) · double-click the count to copy the whole list.
 
 ### Hover card
 
@@ -50,7 +50,7 @@ Items are looked up by DOI, or — when there is none — by PMID / arXiv id fro
 
 ### Settings overview
 
-`Settings → Refs`: auto-refresh & priority source (PDF/API), item types excluded from auto-refresh, PDF pre-parse page count, per-item caching of PDF/API results and cache TTL, hover-card delay/behavior/translation, reader link behavior (hover card, click-to-jump, split direction), Cited By page size, graph max nodes, dimming opacity for not-in-library rows, network identity (email / S2 key), CNKI account.
+`Settings → Refs`: auto-refresh, item types excluded from auto-refresh, PDF pre-parse page count, per-item caching of PDF/API results and cache TTL, hover-card delay/behavior/translation, reader link behavior (hover card, click-to-jump, split direction), Cited By page size, graph max nodes, dimming opacity for not-in-library rows, network identity (email / S2 key), CNKI account.
 
 ## Build & develop
 
@@ -98,7 +98,7 @@ Architecture, invariants, and verified gotchas (Fluent l10n rules, hook guarding
 
 安装后，右侧条目面板（文库和 PDF 阅读器中均有）出现四个折叠区：**参考文献**、**被引用**、**相关文献**、**引文图谱**。
 
-**参考文献**：自动加载，计数旁标注来源（`PDF` = 从 PDF 文本层解析；`API` = Crossref → Semantic Scholar → OpenAlex → 知网）。刷新按钮：单击获取当前数据源（点 `PDF`/`API` 徽章切换来源），**长按**跳过缓存，学位论文中 `Ctrl+单击` 从当前页向前解析。行内操作：实心行=已入库、半透明=未入库；单击**复制干净引文**（自动去掉序号）；长按**编辑**原文（`Esc` 取消）；`Ctrl+单击` 在文库定位或浏览器打开；`+` **导入并双向关联**（`Ctrl+单击 +` 选择目标分类）；`−` 取消关联；所有控件悬停均有提示。被 OpenAlex / PubMed 标记**撤稿**的文献显示红色「已撤稿」标签，导入前会再次确认。工具栏：`PDF | API` 数据源开关、关键词筛选、批量导入（遵循筛选；执行前确认，中途点击进度窗口即可停止）、导出（单击=纯文本，`Ctrl`=Markdown，`Shift`=CSV）、双击计数复制全部。条目按 DOI 查询，无 DOI 时用 Extra/URL 中的 PMID 或 arXiv 号，PubMed 导入的条目同样可用。
+**参考文献**：自动加载，单一**融合**列表——PDF 文本层提供骨架（论文实际印出的条目、顺序、编号、页内位置），Crossref → Semantic Scholar → OpenAlex → 知网 逐条补全元数据（尤其是 DOI；699 篇全库验证：DOI 覆盖率约 19% → 80%）。任一侧不可用（未打开 PDF / 无标识符 / 离线）另一侧独立成表；计数旁标注参与的来源，仅在线找到的条目带 `API` 标签追加在表尾。刷新按钮：单击刷新（优先缓存），**长按**跳过缓存重新获取，学位论文中 `Ctrl+单击` 从当前页向前解析。行内操作：实心行=已入库、半透明=未入库；单击**复制干净引文**（自动去掉序号）；长按**编辑**原文（`Esc` 取消）；`Ctrl+单击` 在文库定位或浏览器打开；`+` **导入并双向关联**（`Ctrl+单击 +` 选择目标分类）；`−` 取消关联；所有控件悬停均有提示。被 OpenAlex / PubMed 标记**撤稿**的文献显示红色「已撤稿」标签，导入前会再次确认。工具栏：关键词筛选、批量导入（遵循筛选；执行前确认，中途点击进度窗口即可停止）、导出（单击=纯文本，`Ctrl`=Markdown，`Shift`=CSV）、双击计数复制全部。条目按 DOI 查询，无 DOI 时用 Extra/URL 中的 PMID 或 arXiv 号，PubMed 导入的条目同样可用。
 
 **悬浮卡片**：悬停任意行，多源并发获取标题/期刊/作者/摘要，顶部圆点切换数据源并按标识符类型记忆偏好。标签可点击跳转 **DOI / arXiv / PMID / 知网 / OA-PDF**，并对每条文献提供 **Scholar**（Google Scholar 检索）与 **PubMed**（标题检索）链接。文本可选中，`Ctrl+滚轮` 缩放，装有 Translate for Zotero 时 `Ctrl+单击` 翻译。
 

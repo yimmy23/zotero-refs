@@ -19,13 +19,12 @@ item-section-graph-sidenav-tooltip =
     .tooltiptext = Citation graph of this item
 
 panel-count-suffix = references
-panel-need-reader = Open the PDF in the reader first, or switch source to API
+panel-no-source = No reference source available — open the PDF in the reader, or add a DOI / arXiv / PMID to the item
 panel-api-fail = No references found from web APIs
 panel-copy-all-done = All references copied
 panel-copy-all-tip = Double-click to copy all references
-panel-source-tip = Data source for the next refresh (click to toggle PDF / API)
 panel-refresh = Refresh
-panel-refresh-tip = Click: fetch current source · Long press: bypass cache · Ctrl+click: parse from current page (PDF)
+panel-refresh-tip = Click: refresh · Long press: bypass cache and re-fetch · Ctrl+click: parse from the current page (theses)
 panel-parsing = Parsing PDF…
 panel-requesting = Requesting references…
 panel-copied = Copied
@@ -35,6 +34,8 @@ panel-import-all-tip = Import all (or filtered) references into the library and 
 panel-export-tip = Copy list — click: plain text · Ctrl+click: Markdown · Shift+click: CSV
 panel-export-done = References copied
 panel-search-placeholder = Filter references…
+panel-cached = cached
+row-api-only-tip = Found online only — not matched to an entry printed in the PDF
 
 citations-count-suffix = citations
 citations-load-more = Load more

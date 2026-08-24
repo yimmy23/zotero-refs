@@ -19,13 +19,12 @@ item-section-graph-sidenav-tooltip =
     .tooltiptext = 本文献的引文图谱
 
 panel-count-suffix = 条参考文献
-panel-need-reader = 请先在阅读器中打开 PDF，或切换数据源为 API
+panel-no-source = 没有可用的数据来源——请在阅读器中打开 PDF，或为条目补充 DOI / arXiv / PMID
 panel-api-fail = 未能从网络 API 获取参考文献
 panel-copy-all-done = 已复制全部参考文献
 panel-copy-all-tip = 双击复制全部参考文献
-panel-source-tip = 下次刷新的数据源（点击切换 PDF / API）
 panel-refresh = 刷新
-panel-refresh-tip = 单击：获取当前数据源 · 长按：忽略缓存重新获取 · Ctrl+单击：从当前页向前解析（PDF）
+panel-refresh-tip = 单击：刷新 · 长按：跳过缓存重新获取 · Ctrl+单击：从当前页向前解析（学位论文）
 panel-parsing = 正在解析 PDF…
 panel-requesting = 正在请求参考文献…
 panel-copied = 已复制
@@ -35,6 +34,8 @@ panel-import-all-tip = 将全部（或筛选后的）参考文献导入文库并
 panel-export-tip = 复制列表 — 单击：纯文本 · Ctrl+单击：Markdown · Shift+单击：CSV
 panel-export-done = 参考文献已复制
 panel-search-placeholder = 筛选参考文献…
+panel-cached = 缓存
+row-api-only-tip = 仅在线来源——未能与 PDF 中印出的条目对齐
 
 citations-count-suffix = 篇引证文献
 citations-load-more = 加载更多

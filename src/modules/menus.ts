@@ -16,13 +16,17 @@ let registeredID: string | undefined;
 let usedFallback = false;
 
 async function refsFor(item: Zotero.Item): Promise<RefItem[] | null> {
-  // cached first (either slot), then API
-  for (const slot of ["API", "PDF"]) {
+  // cached first (the fused list the panel shows, then either raw layer),
+  // then API
+  for (const slot of ["FUSED", "API", "PDF"]) {
     const cached = await refStorage.get(item, slot);
     if (cached?.length) return cached;
   }
   const result = await getReferencesByAPI(item);
   if (result?.refs.length) {
+    for (const r of result.refs) {
+      r.source = (r.source ?? result.source) as RefItem["source"];
+    }
     if (getPref("saveAPIReferences")) {
       void refStorage.set(item, "API", result.refs);
     }

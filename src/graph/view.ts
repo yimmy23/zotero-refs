@@ -33,9 +33,11 @@ export interface GraphHandlers {
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 const KIND_COLOR: Record<GraphNode["kind"], string> = {
-  origin: "#e8710a",
+  // origin carries the plugin accent (Zest green); the other kinds stay
+  // on distinguishable hues away from it
+  origin: "#2da44e",
   reference: "#4a90d9",
-  citation: "#35999a",
+  citation: "#e8710a",
   related: "#9b7fd4",
 };
 

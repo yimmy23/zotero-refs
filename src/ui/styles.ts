@@ -22,6 +22,17 @@ export function registerStyles(win: Window) {
   style.id = id;
   const icons = `chrome://${config.addonRef}/content/icons`;
   style.textContent = `
+    /* ---------- accent ----------
+       Refs' own accent, shared with Zest: a light GitHub green. Zotero's
+       --color-accent is the system selection blue, so the plugin draws its
+       own surfaces from these tokens instead. --refs-accent-strong mixes
+       toward the theme's text colour, so it darkens on light and lightens
+       on dark and stays readable in both. */
+    :root {
+      --refs-accent: #40c463;
+      --refs-accent-strong: color-mix(in srgb, var(--refs-accent) 72%, var(--fill-primary, #000));
+      --refs-accent-wash: color-mix(in srgb, var(--refs-accent) 26%, transparent);
+    }
     .references-panel {
       display: flex;
       flex-direction: column;
@@ -85,31 +96,6 @@ export function registerStyles(win: Window) {
     .references-icon-copy    { background-image: url("${icons}/copy.svg"); }
 
     /* PDF | API segmented switch: selected segment = source of the next fetch */
-    .references-source-seg {
-      display: inline-flex;
-      flex: 0 0 auto;
-      border: 1px solid var(--fill-quarternary);
-      border-radius: 6px;
-      overflow: hidden;
-      font-size: var(--refs-font-secondary);
-      user-select: none;
-    }
-    .references-source-opt {
-      padding: 0 7px;
-      line-height: 18px;
-      color: var(--fill-secondary);
-      cursor: pointer;
-    }
-    .references-source-opt + .references-source-opt {
-      border-inline-start: 1px solid var(--fill-quarternary);
-    }
-    .references-source-opt:hover { background-color: var(--fill-quinary); }
-    .references-source-opt.is-on {
-      background-color: var(--fill-quarternary);
-      color: var(--fill-primary);
-      font-weight: 600;
-    }
-
     /* ---------- search ---------- */
     .references-search {
       display: flex;
@@ -120,7 +106,7 @@ export function registerStyles(win: Window) {
       margin: 2px 0 4px 0;
     }
     .references-search:focus-within {
-      box-shadow: 0 0 0 1px var(--color-accent);
+      box-shadow: 0 0 0 1px var(--refs-accent-strong);
     }
     .references-search input {
       border: none;
@@ -192,7 +178,7 @@ export function registerStyles(win: Window) {
       border-radius: 4px;
       color: var(--fill-tertiary);
     }
-    .references-row:hover .references-row-action.is-plus { color: var(--accent-green); }
+    .references-row:hover .references-row-action.is-plus { color: var(--refs-accent-strong); }
     .references-row:hover .references-row-action.is-minus { color: var(--fill-secondary); }
     .references-row-action.is-minus:hover { color: var(--accent-red); }
     .references-row-action:hover { background-color: var(--fill-quarternary); }
