@@ -83,6 +83,7 @@ graph-menu-recenter = 以此文献为中心重建图谱
 graph-back-home = 回到本文
 graph-centered-on = 当前中心：
 popup-import = + 导入
+popup-list-expand-tip = 单击查看详情
 
 # 徽章提示——同一概念统一文案，绝不显示原始 API 字段名
 tag-cited-tip = 被引次数（{ $source } 统计）

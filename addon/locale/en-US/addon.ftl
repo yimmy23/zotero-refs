@@ -83,6 +83,7 @@ graph-menu-recenter = Re-centre graph on this work
 graph-back-home = back to this item
 graph-centered-on = Graph centred on
 popup-import = + Import
+popup-list-expand-tip = Click for details
 
 # chip tooltips — one unified label per concept, never a raw API field name
 tag-cited-tip = Times cited ({ $source })

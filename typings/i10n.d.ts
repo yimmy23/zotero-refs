@@ -69,6 +69,7 @@ export type FluentMessageId =
   | 'parser-done'
   | 'parser-read-text'
   | 'popup-import'
+  | 'popup-list-expand-tip'
   | 'popup-source-local'
   | 'popup-untitled'
   | 'pref-autoRefresh'

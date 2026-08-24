@@ -86,6 +86,7 @@ async function registerWhenReady() {
             parsePDFReferences,
             openalex,
             crossref,
+            selfTest: selfTestReaderHook,
           });
           if (typeof result !== "string") {
             try {
@@ -284,12 +285,36 @@ async function selfTestReaderHook(report: (m: string) => void) {
     report(`selftest NEGATIVE: ourCard=${card()} nativeDom=${nativeDom()}`);
     view._onSetOverlayPopup(null);
     await delay(700);
-    // multi-entry cluster -> native list popup
+    // multi-entry cluster, every entry real -> OUR compact list card
+    const probe2 = refs?.find(
+      (r: any) =>
+        r !== probe &&
+        r.number &&
+        r.number !== probe.number &&
+        (r.text || "").length > 60,
+    );
+    if (probe2) {
+      const cite2 = {
+        text: probe2.text,
+        chars: [],
+        index: probe2.number,
+        position: cite.position,
+      };
+      view._onSetOverlayPopup(overlay([cite, cite2]));
+      await delay(500);
+      const entries = doc.querySelectorAll(".references-popup-entry").length;
+      report(`selftest MULTI-REAL: ourCard=${card()} entries=${entries}`);
+      view._onSetOverlayPopup(null);
+      await delay(900);
+    } else {
+      report("selftest MULTI-REAL: skipped (no second numbered ref)");
+    }
+    // mixed cluster (one entry unmatched) -> native popup untouched
     view._onSetOverlayPopup(
       overlay([cite, { ...cite, index: (probe.number || 0) + 1 }]),
     );
     await delay(500);
-    report(`selftest MULTI: ourCard=${card()} nativeDom=${nativeDom()}`);
+    report(`selftest MULTI-MIXED: ourCard=${card()} nativeDom=${nativeDom()}`);
     view._onSetOverlayPopup(null);
     report("selftest done");
   } catch (e) {

@@ -1,7 +1,7 @@
 import { ReaderLinks } from "./readerLinks";
 import { parsePDFReferences } from "./parser";
 import { getRefsForItem } from "../ui/section";
-import { getCurrentPopup, showRefPopup } from "../ui/rows";
+import { getCurrentPopup, showRefPopup, showRefListPopup } from "../ui/rows";
 import { itemCacheKey, refStorage } from "../core/storage";
 import { importReference, addRelation } from "../core/importer";
 import { isRelated } from "../core/libmatch";
@@ -149,6 +149,25 @@ export function attachReader(reader: any) {
         // clear() removes every card in the document, so guard identity
         if (getCurrentPopup() === popup) popup.clear();
       }, popup.removeTipAfterMillisecond);
+    },
+    (rect, refs) => {
+      const topItem = topItemOf(reader);
+      showRefListPopup(refs, rect, {
+        onImport: topItem
+          ? (ref) => void importFromReader(topItem, ref)
+          : undefined,
+        onExpand: (ref) => {
+          showRefPopup(
+            ref,
+            rect,
+            "top center",
+            undefined,
+            topItem
+              ? { onImport: () => void importFromReader(topItem, ref) }
+              : undefined,
+          );
+        },
+      });
     },
   );
 }
