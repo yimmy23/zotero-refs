@@ -38,18 +38,9 @@ export interface LinkPopupHandler {
   ): void;
 }
 
-export interface ListPopupHandler {
-  (
-    anchorRect: { x: number; y: number; width: number; height: number },
-    refs: RefItem[],
-  ): void;
-}
-
 const READY_TIMEOUT = 10000;
 /** max ms between an overlay pointerup and the navigate() it triggers */
 const NAV_CORRELATION_MS = 300;
-/** citation clusters bigger than this keep the native popup */
-const MAX_CLUSTER = 12;
 
 interface ReaderState {
   cancelled: boolean;
@@ -214,7 +205,6 @@ export class ReaderLinks {
     getRefs: () => RefItem[] | undefined,
     showPopup: LinkPopupHandler,
     onLeave?: () => void,
-    showListPopup?: ListPopupHandler,
   ): void {
     const existing = this.states.get(reader);
     if (existing && !existing.cancelled) {
@@ -227,8 +217,8 @@ export class ReaderLinks {
     if (existing) this.teardown(existing);
     const state: ReaderState = { cancelled: false, view: null, win: null };
     this.states.set(reader, state);
-    this.setup(reader, state, getRefs, showPopup, onLeave, showListPopup).catch(
-      (e) => ztoolkit.log("[readerLinks] attach failed", e),
+    this.setup(reader, state, getRefs, showPopup, onLeave).catch((e) =>
+      ztoolkit.log("[readerLinks] attach failed", e),
     );
   }
 
@@ -314,7 +304,6 @@ export class ReaderLinks {
     getRefs: () => RefItem[] | undefined,
     showPopup: LinkPopupHandler,
     onLeave?: () => void,
-    showListPopup?: ListPopupHandler,
   ): Promise<void> {
     const resolved = await this.resolveView(reader, state);
     if (!resolved) {
@@ -358,33 +347,10 @@ export class ReaderLinks {
             const refs = getRefs();
             if (refs?.length) {
               const cites = overlayPopup.references;
-              // citation clusters ("[6-10]"): take over ONLY when every
-              // entry matches a distinct reference — anything less would
-              // drop entries the native popup does list
-              if (
-                showListPopup &&
-                Array.isArray(cites) &&
-                cites.length > 1 &&
-                cites.length <= MAX_CLUSTER
-              ) {
-                const matched = cites.map((c: any) => refForCitation(refs, c));
-                if (
-                  matched.every(Boolean) &&
-                  new Set(matched).size === matched.length
-                ) {
-                  const rect = toMainWindowRect(reader, win, overlayPopup.rect);
-                  if (rect) {
-                    showListPopup(
-                      { ...rect, y: rect.y + rect.height },
-                      matched as RefItem[],
-                    );
-                    // suppress the native preview popup
-                    return orig(null);
-                  }
-                }
-              }
               let ref: RefItem | null = null;
-              // single-entry overlays: match the printed entry text directly
+              // citation overlays hand us the printed entry text — match it
+              // directly; a multi-entry cluster keeps the native popup (it
+              // lists every entry, our card shows one)
               if (Array.isArray(cites) && cites.length === 1) {
                 ref = refForCitation(refs, cites[0]);
               }
