@@ -239,7 +239,9 @@ export function registerCitationsSection() {
             state.total ? ` / ${state.total}` : ""
           } ${getString("citations-count-suffix")}`;
           setSectionSummary(
-            `${state.total ?? state.refs.length}${state.total ? "" : "+"}`,
+            `${state.total ?? state.refs.length}${
+              state.total === undefined && !state.exhausted ? "+" : ""
+            }`,
           );
           more.style.display = state.exhausted ? "none" : "";
           return;

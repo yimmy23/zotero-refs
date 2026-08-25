@@ -4,7 +4,9 @@
  * Registered on Zotero's localhost-only connector server (port 23119)
  * and ONLY when the bundle was built with NODE_ENV=development — the
  * production xpi never contains an active endpoint (the whole module is
- * a no-op there). A shared-secret token is still required per request.
+ * a no-op there). A per-boot RANDOM token is still required per request;
+ * it is written to <dataDir>/dev-eval-token.txt so local tooling can read
+ * it — no shared secret lives in the repository.
  */
 
 import { libraryIndex } from "../core/libmatch";
@@ -14,7 +16,7 @@ import { openalex } from "../sources/openalex";
 import { crossref } from "../sources/crossref";
 import { attachReader, readerLinkState } from "../pdf/readerHook";
 
-const TOKEN = "refs-dev-7f3fa390";
+let TOKEN = "";
 
 export function registerDevEval() {
   if (__env__ !== "development") return;
@@ -55,6 +57,23 @@ async function registerWhenReady() {
     if (!endpoints) {
       report("endpoints unavailable after 30s");
       ztoolkit.log("[devEval] Zotero.Server not available");
+      return;
+    }
+    TOKEN = Array.from(
+      { length: 24 },
+      () => "abcdefghijklmnopqrstuvwxyz0123456789"[(Math.random() * 36) | 0],
+    ).join("");
+    try {
+      const iou = (globalThis as any).IOUtils;
+      const pu = (globalThis as any).PathUtils;
+      await iou.writeUTF8(
+        pu.join(Zotero.DataDirectory.dir, "dev-eval-token.txt"),
+        TOKEN,
+      );
+    } catch (e) {
+      // no readable token file -> an unusable endpoint; don't register one
+      report(`token write failed: ${e}`);
+      ztoolkit.log("[devEval] token write failed", e);
       return;
     }
     report(

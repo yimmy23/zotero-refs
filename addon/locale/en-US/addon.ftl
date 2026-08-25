@@ -1,6 +1,3 @@
-startup-begin = References is loading
-startup-finish = References is ready
-
 item-section-references-head-text =
     .label = References
 item-section-references-sidenav-tooltip =
@@ -23,7 +20,6 @@ panel-no-source = No reference source available — open the PDF in the reader, 
 panel-api-fail = No references found from web APIs
 panel-copy-all-done = All references copied
 panel-copy-all-tip = Double-click to copy all references
-panel-refresh = Refresh
 panel-refresh-tip = Click: refresh · Long press: bypass cache and re-fetch · Ctrl+click: parse from the current page (theses)
 panel-parsing = Parsing PDF…
 panel-requesting = Requesting references…

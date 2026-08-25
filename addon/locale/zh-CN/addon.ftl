@@ -1,6 +1,3 @@
-startup-begin = References 加载中
-startup-finish = References 已就绪
-
 item-section-references-head-text =
     .label = 参考文献
 item-section-references-sidenav-tooltip =
@@ -23,7 +20,6 @@ panel-no-source = 没有可用的数据来源——请在阅读器中打开 PDF�
 panel-api-fail = 未能从网络 API 获取参考文献
 panel-copy-all-done = 已复制全部参考文献
 panel-copy-all-tip = 双击复制全部参考文献
-panel-refresh = 刷新
 panel-refresh-tip = 单击：刷新 · 长按：跳过缓存重新获取 · Ctrl+单击：从当前页向前解析（学位论文）
 panel-parsing = 正在解析 PDF…
 panel-requesting = 正在请求参考文献…

@@ -1,7 +1,7 @@
 {
   "name": "zotero-refs",
   "type": "module",
-  "version": "1.0.18",
+  "version": "1.0.19",
   "description": "Refs — references, citations, related papers and a citation graph for every Zotero item",
   "config": {
     "addonName": "Refs",

@@ -61,7 +61,7 @@ async function fetchAction(items: Zotero.Item[]) {
       ztoolkit.log("[menus] fetch failed", e);
     }
   }
-  popupWin.changeHeadline("[Done]");
+  popupWin.changeHeadline(getString("progress-refs-done"));
   popupWin.changeLine({
     text: `✓ ${ok}/${targets.length}`,
     type: ok ? "success" : "fail",

@@ -516,7 +516,7 @@ export function renderRefRow(
     (ref.identifiers &&
       Object.keys(ref.identifiers).length > 0 &&
       `${Object.keys(ref.identifiers)[0]}: ${Object.values(ref.identifiers)[0]}`) ||
-    "Reference";
+    undefined;
 
   // skip rows whose normalized text is already rendered (the original
   // plugin suppressed duplicates the same way)
@@ -669,7 +669,7 @@ export function renderRefRow(
         /^\s*(?:\[\d+\]|\d{1,3}[.)])\s+/,
         "",
       );
-      copyText((idText !== "Reference" ? idText + "\n" : "") + clean);
+      copyText((idText ? idText + "\n" : "") + clean);
     }
   });
 
@@ -751,25 +751,34 @@ export function renderRefRow(
   return row;
 }
 
-/** AND-match keyword filter over rendered rows */
-export function filterRows(list: HTMLElement, keyword: string) {
+/**
+ * Shared AND-keyword predicate — the ONE definition of the filter
+ * semantics, used by the rendered-row filter here and by section.ts's
+ * import-all data filter (they must never drift apart).
+ */
+export function keywordPredicate(
+  keyword: string,
+): (content: string) => boolean {
   const keywords = keyword
     .split(/[ ,，]/)
     .map((s) => s.trim())
     .filter(Boolean)
     .map((s) => s.toLowerCase());
+  if (!keywords.length) return () => true;
+  return (content) => {
+    const c = content.toLowerCase();
+    return keywords.every((k) => c.includes(k));
+  };
+}
+
+/** AND-match keyword filter over rendered rows */
+export function filterRows(list: HTMLElement, keyword: string) {
+  const match = keywordPredicate(keyword);
   const rows = Array.from(
     list.querySelectorAll(".references-row"),
   ) as HTMLElement[];
   for (const row of rows) {
-    if (!keywords.length) {
-      row.style.display = "";
-      continue;
-    }
     const label = row.querySelector(".references-row-label");
-    const content = label?.textContent?.toLowerCase() || "";
-    row.style.display = keywords.every((k) => content.includes(k))
-      ? ""
-      : "none";
+    row.style.display = match(label?.textContent || "") ? "" : "none";
   }
 }

@@ -1,4 +1,4 @@
-import { isDOI } from "../core/text";
+import { cleanText, isDOI } from "../core/text";
 import type { MetaSource, RefItem, RefTag } from "../core/types";
 import { http } from "../core/http";
 import { CITED_CHIP_COLOR, REFCOUNT_CHIP_COLOR } from "../core/types";
@@ -45,15 +45,15 @@ function mapPaper(item: any): RefItem {
   }
   return {
     identifiers: { DOI: item.doiInfo?.doi },
-    title: item.title?.text,
+    title: cleanText(item.title?.text),
     authors: (item.authors || []).map((a: any) => a?.[0]?.name).filter(Boolean),
     year: item.year?.text,
     type: "journalArticle",
-    text: item.title?.text,
+    text: cleanText(item.title?.text),
     url: item.doiInfo?.doiUrl,
-    abstract: item.paperAbstract?.text,
+    abstract: cleanText(item.paperAbstract?.text),
     source: "connectedpapers",
-    primaryVenue: item.venue?.text,
+    primaryVenue: cleanText(item.venue?.text),
     tags,
   };
 }

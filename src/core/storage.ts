@@ -38,6 +38,8 @@ function sanitizeRef(r: any): RefItem | null {
     page: typeof r.page === "number" ? r.page : undefined,
     citationCount:
       typeof r.citationCount === "number" ? r.citationCount : undefined,
+    referenceCount:
+      typeof r.referenceCount === "number" ? r.referenceCount : undefined,
     source: str(r.source) as RefItem["source"],
     url: isHttpUrl(r.url) ? r.url : undefined,
     oaUrl: isHttpUrl(r.oaUrl) ? r.oaUrl : undefined,
@@ -96,6 +98,10 @@ class RefStorage {
   private ready: Promise<void>;
   private writeTimer?: number;
   private path = "";
+  /** cleared when the existing file could not be READ — a flush of the
+   *  empty in-memory cache would clobber it (a corrupt file that PARSED
+   *  wrong is different: overwriting is the fix there) */
+  private writable = true;
 
   constructor() {
     this.ready = this.load();
@@ -108,8 +114,20 @@ class RefStorage {
         `${config.addonRef}-cache.json`,
       );
       if (await IOUtils.exists(this.path)) {
-        const raw = (await Zotero.File.getContentsAsync(this.path)) as string;
-        const parsed = JSON.parse(raw);
+        let raw: string;
+        try {
+          raw = (await Zotero.File.getContentsAsync(this.path)) as string;
+        } catch (e) {
+          this.writable = false;
+          ztoolkit.log("[storage] read failed — cache writes disabled", e);
+          return;
+        }
+        let parsed: any = null;
+        try {
+          parsed = JSON.parse(raw);
+        } catch (e) {
+          ztoolkit.log("[storage] corrupt cache file — starting fresh", e);
+        }
         const items = parsed?.v === SCHEMA_VERSION ? parsed.items || {} : {};
         // never trust the file: re-validate every entry on the way in
         const clean: typeof this.cache = {};
@@ -127,7 +145,8 @@ class RefStorage {
         this.cache = clean;
       }
     } catch (e) {
-      ztoolkit.log("[storage] load failed", e);
+      this.writable = false;
+      ztoolkit.log("[storage] load failed — cache writes disabled", e);
       this.cache = {};
     }
   }
@@ -194,7 +213,7 @@ class RefStorage {
     // never write before the initial load resolved — a flush racing the
     // load would persist an empty cache over the existing file
     await this.ready;
-    if (!this.path) return;
+    if (!this.path || !this.writable) return;
     await Zotero.File.putContentsAsync(
       this.path,
       JSON.stringify({ v: SCHEMA_VERSION, items: this.cache }),

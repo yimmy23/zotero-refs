@@ -10,7 +10,7 @@ import { SOURCE_NAME } from "../core/types";
 import { getReferencesByAPI, sources } from "../sources";
 import { parsePDFReferences } from "../pdf/parser";
 import { runBatchImport } from "./batchImport";
-import { renderRefRow, filterRows, closePopup } from "./rows";
+import { renderRefRow, filterRows, keywordPredicate, closePopup } from "./rows";
 import { guard, guardAsync } from "../utils/guard";
 import type { RowContext } from "./rows";
 
@@ -346,20 +346,6 @@ function exportRefs(state: PanelState, format: "text" | "markdown" | "csv") {
     .show();
 }
 
-/** keyword AND-filter over refs (same semantics as filterRows) */
-function matchesKeyword(ref: RefItem, index: number, keyword: string): boolean {
-  const keywords = keyword
-    .split(/[ ,，]/)
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((s) => s.toLowerCase());
-  if (!keywords.length) return true;
-  const content = `[${ref.number || index + 1}] ${
-    ref.text || ref.title || ""
-  }`.toLowerCase();
-  return keywords.every((k) => content.includes(k));
-}
-
 function renderList(
   body: HTMLElement,
   item: Zotero.Item,
@@ -422,12 +408,11 @@ async function refresh(
   state.loading = true;
   try {
     const refs = await fetchReferences(item, state, options);
-    if (!refs.length && !state.refs.length) {
-      state.loadedOnce = true;
-      return;
-    }
-    state.refs = refs;
     state.loadedOnce = true;
+    // a failed (re)fetch must never wipe a list already on screen — the
+    // failure popup has been shown; keep what the user has
+    if (!refs.length) return;
+    state.refs = refs;
     renderList(body, item, state, setSectionSummary);
   } catch (e) {
     ztoolkit.log("[section] refresh failed", e);
@@ -512,9 +497,10 @@ function buildToolbar(
       body.querySelector<HTMLInputElement>(".references-search input")?.value ||
       "";
     // filter applied to the DATA, not to rendered rows (chunked rendering
-    // may not have painted everything yet)
+    // may not have painted everything yet) — same predicate as filterRows
+    const match = keywordPredicate(keyword);
     const targets = state.refs.filter((ref, i) =>
-      matchesKeyword(ref, i, keyword),
+      match(`[${ref.number || i + 1}] ${ref.text || ref.title || ""}`),
     );
     if (!targets.length) return;
     state.importing = true;
@@ -662,12 +648,6 @@ export function registerReferencesSection() {
       },
     ),
   });
-}
-
-/** current parsed references of an item (used by the reader link hover) */
-export function getRefsForItem(item: Zotero.Item): RefItem[] | undefined {
-  const state = states.get(itemCacheKey(item));
-  return state?.refs.length ? state.refs : undefined;
 }
 
 /** drop cached panel state (called on notifier item deletes) */
