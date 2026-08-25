@@ -28,8 +28,6 @@ pref-split-horizontally =
     .label = Horizontal
 pref-split-vertically =
     .label = Vertical
-pref-hoverLink =
-    .label = Show reference popup when hovering an in-text citation link
 
 pref-group-sections = Extra Sections
 pref-loadingRelated =

@@ -90,7 +90,6 @@ export type FluentMessageId =
   | 'pref-group-refresh'
   | 'pref-group-sections'
   | 'pref-help'
-  | 'pref-hoverLink'
   | 'pref-loadingCitations'
   | 'pref-loadingRelated'
   | 'pref-notAutoRefreshItemTypes'

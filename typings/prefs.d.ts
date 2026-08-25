@@ -27,7 +27,6 @@ declare namespace _ZoteroTypes {
       "TitleInfoIndex": number;
       "clickLink": boolean;
       "clickLinkCmd": string;
-      "hoverLink": boolean;
       "loadingRelated": boolean;
       "loadingCitations": boolean;
       "citationsPageSize": number;

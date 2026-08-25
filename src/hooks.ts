@@ -22,7 +22,6 @@ import {
   detachAllReaders,
   onReaderTabSelect,
   sweepReaders,
-  invalidateAnchored,
 } from "./pdf/readerHook";
 
 let notifierID: string | undefined;
@@ -155,7 +154,6 @@ async function onNotify(
     invalidateCitations();
     invalidateRelated();
     invalidateGraph();
-    invalidateAnchored();
   }
 }
 

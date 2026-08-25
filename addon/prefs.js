@@ -27,7 +27,6 @@ pref("TitleInfoIndex", 0);
 // PDF reader citation links
 pref("clickLink", true);
 pref("clickLinkCmd", "splitHorizontally");
-pref("hoverLink", true);
 
 // Related & citations sections
 pref("loadingRelated", true);

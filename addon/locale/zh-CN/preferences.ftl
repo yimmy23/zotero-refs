@@ -28,8 +28,6 @@ pref-split-horizontally =
     .label = 水平
 pref-split-vertically =
     .label = 垂直
-pref-hoverLink =
-    .label = 悬停正文引文链接时显示参考文献卡片
 
 pref-group-sections = 扩展面板
 pref-loadingRelated =
