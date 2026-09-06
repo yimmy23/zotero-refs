@@ -1,3 +1,4 @@
+import { createSearch, setListMessage } from "./controls";
 import { config } from "../../package.json";
 import { getLocaleID, getString } from "../utils/locale";
 import { getPref } from "../utils/prefs";
@@ -36,8 +37,7 @@ interface CitationsState {
    * detached one it was started from — otherwise the page it fetched is
    * committed to state but never shown.
    */
-  dom?: PanelDOM;
-  setSummary?: (s: string) => void;
+  doms: Set<PanelDOM>;
 }
 
 /** stable identity of a citing work for dedupe */
@@ -63,6 +63,7 @@ interface PanelDOM {
   count: HTMLElement;
   more: HTMLButtonElement;
   filter?: HTMLInputElement;
+  setSummary: (s: string) => void;
 }
 
 async function loadMore(item: Zotero.Item, state: CitationsState) {
@@ -70,7 +71,16 @@ async function loadMore(item: Zotero.Item, state: CitationsState) {
   const ids = idsOf(item);
   if (!ids) return;
   state.loading = true;
-  if (state.dom) state.dom.more.disabled = true;
+  for (const dom of state.doms) {
+    if (!dom.list.isConnected) {
+      state.doms.delete(dom);
+      continue;
+    }
+    dom.more.disabled = true;
+    dom.list.setAttribute("aria-busy", "true");
+    if (!state.refs.length)
+      setListMessage(dom.list, getString("panel-loading"));
+  }
   let failed = false;
   try {
     const pageSize = Number(getPref("citationsPageSize")) || 25;
@@ -93,10 +103,7 @@ async function loadMore(item: Zotero.Item, state: CitationsState) {
       // NOTE: a short page (< pageSize) is NOT proof of exhaustion — the
       // sources drop malformed entries inside a page. Only an empty page
       // or reaching the reported total ends paging.
-      if (
-        state.total !== undefined &&
-        state.refs.length + page.items.length >= state.total
-      ) {
+      if (state.total !== undefined && state.nextOffset >= state.total) {
         state.exhausted = true;
       }
       // drop entries already shown (retries / source quirks)
@@ -111,8 +118,11 @@ async function loadMore(item: Zotero.Item, state: CitationsState) {
       // paint into the FRESHEST render of this item's section (the body
       // may have been rebuilt while the request ran); every render paints
       // exactly state.refs.length rows, so `start` always lines up
-      const live = state.dom;
-      if (live?.list.isConnected) {
+      for (const live of state.doms) {
+        if (!live.list.isConnected) {
+          state.doms.delete(live);
+          continue;
+        }
         const ctx: RowContext = {
           hostItem: item,
           list: live.list,
@@ -130,8 +140,17 @@ async function loadMore(item: Zotero.Item, state: CitationsState) {
     failed = true;
   } finally {
     state.loading = false;
-    const live = state.dom;
-    if (live?.list.isConnected) {
+    for (const live of state.doms) {
+      if (!live.list.isConnected) {
+        state.doms.delete(live);
+        continue;
+      }
+      live.list.setAttribute("aria-busy", "false");
+      if (!state.refs.length)
+        setListMessage(
+          live.list,
+          getString(failed ? "panel-load-failed" : "citations-empty"),
+        );
       live.more.disabled = false;
       live.more.style.display = state.exhausted ? "none" : "";
       live.count.textContent = `${state.refs.length}${
@@ -140,7 +159,7 @@ async function loadMore(item: Zotero.Item, state: CitationsState) {
       // "+" means "there are more than this" — only true while the
       // total is unknown AND the list has not been exhausted (a source
       // that answered "0" must not read as "0+")
-      state.setSummary?.(
+      live.setSummary(
         `${state.total ?? state.refs.length}${
           state.total === undefined && !state.exhausted ? "+" : ""
         }`,
@@ -186,12 +205,10 @@ export function registerCitationsSection() {
 
         // keyword filter over loaded rows — landmark trials have thousands
         // of citing works; 25-per-page with no filter is unusable
-        const searchBox = doc.createElement("div");
-        searchBox.className = "references-search";
-        const input = doc.createElement("input");
-        input.placeholder = getString("citations-filter-placeholder");
-        searchBox.append(input);
-        body.append(searchBox);
+        const input = createSearch(
+          body as HTMLElement,
+          getString("citations-filter-placeholder"),
+        );
 
         const list = doc.createElement("div");
         list.className = "references-list";
@@ -203,7 +220,13 @@ export function registerCitationsSection() {
         more.textContent = getString("citations-load-more");
         body.append(more);
 
-        const dom: PanelDOM = { list, count, more, filter: input };
+        const dom: PanelDOM = {
+          list,
+          count,
+          more,
+          filter: input,
+          setSummary: setSectionSummary,
+        };
         more.addEventListener("click", () => loadMore(item, state!));
 
         if (!state) {
@@ -213,6 +236,7 @@ export function registerCitationsSection() {
             exhausted: false,
             loading: false,
             seen: new Set(),
+            doms: new Set(),
           };
           // bound per-session memory: drop the oldest items' states
           if (states.size >= 150) {
@@ -222,8 +246,22 @@ export function registerCitationsSection() {
           states.set(stateKey, state);
         }
         // every render (fresh or repeat) owns the panel from now on
-        state.dom = dom;
-        state.setSummary = setSectionSummary;
+        for (const old of state.doms)
+          if (!old.list.isConnected) state.doms.delete(old);
+        state.doms.add(dom);
+        more.disabled = state.loading;
+        more.hidden = state.exhausted;
+        if (!state.refs.length)
+          setListMessage(
+            list,
+            getString(
+              state.loading
+                ? "panel-loading"
+                : state.exhausted
+                  ? "citations-empty"
+                  : "panel-ready",
+            ),
+          );
         if (state.refs.length) {
           // re-render existing page(s)
           const ctx: RowContext = {
@@ -252,7 +290,7 @@ export function registerCitationsSection() {
           // so this also skips items the user merely arrow-keyed past
           setTimeout(
             guard("citations.autoFetch", () => {
-              if (state.dom !== dom || !list.isConnected) return;
+              if (!list.isConnected) return;
               void loadMore(item, state);
             }),
             350,

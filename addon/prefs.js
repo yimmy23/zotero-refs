@@ -40,6 +40,7 @@ pref("graphMaxNodes", 50);
 // Network
 pref("email", "zotero-refs@mailinator.com");
 pref("s2ApiKey", "");
+pref("openAlexApiKey", "");
 pref("cacheTTLHours", 168);
 
 // CNKI (知网研学 account, only needed for CNKI reference lists)

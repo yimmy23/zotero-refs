@@ -75,8 +75,8 @@ function mapReference(item: any, index: number): RefItem {
     identifiers,
     title: entryTitle || textInfo.title,
     authors: item.author ? [item.author] : textInfo.authors || [],
-    year: item.year || textInfo.year,
-    text,
+    year: item.year != null ? String(item.year) : textInfo.year,
+    text: cleanText(text),
     type: TYPE_MAP[item.type] || textInfo.type || "journalArticle",
     url,
     number: index + 1,
@@ -123,9 +123,9 @@ function mapWork(w: any): RefItem {
     url: w.URL,
     abstract: w.abstract ? htmlToText(w.abstract) : undefined,
     publishDate,
-    primaryVenue: Array.isArray(w["container-title"])
-      ? w["container-title"][0]
-      : undefined,
+    primaryVenue: cleanText(
+      Array.isArray(w["container-title"]) ? w["container-title"][0] : undefined,
+    ),
     source: "crossref",
     citationCount: typeof refCount === "number" ? refCount : undefined,
     tags: tags.length ? tags : undefined,

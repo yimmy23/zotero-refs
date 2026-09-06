@@ -1,7 +1,7 @@
 import { isHttpUrl } from "../core/text";
 import type { TagElementProps } from "zotero-plugin-toolkit";
 import type { RefTag } from "../core/types";
-import { getNumPref, getPref, setPref } from "../utils/prefs";
+import { getNumPref, getPref } from "../utils/prefs";
 import { getString } from "../utils/locale";
 import { clearTimeout, getDoc, getWin, setTimeout } from "../utils/window";
 
@@ -9,9 +9,8 @@ import { clearTimeout, getDoc, getWin, setTimeout } from "../utils/window";
  * Floating reference-detail card shown next to a hovered reference.
  * Ported from zotero-reference's TipUI (modules/tip.ts).
  *
- * One PopupCard shows one reference; each metadata source that answers
- * calls addTip() once, adding a switchable "page" plus a dot in the
- * option row at the top of the card.
+ * One PopupCard shows a single merged reference. Incoming metadata updates
+ * the same bounded reading area; sources remain traceable links, not pages.
  */
 
 export interface PopupRect {
@@ -21,15 +20,18 @@ export interface PopupRect {
   height: number;
 }
 
-/** Option-dot row geometry / colors (ported constants). */
-const OPTION = {
-  size: 8,
-  // the plugin accent (Zest green): active = solid, idle = a light wash
-  color: {
-    active: "#2da44e",
-    default: "#b5e6c4",
-  },
-};
+export interface PopupDetails {
+  firstAuthors?: string[];
+  firstAuthorsByOrder?: boolean;
+  correspondingAuthors?: string[];
+  lastAuthors?: string[];
+  venue?: string;
+  note?: string;
+  /** Localized label: an abstract and a raw citation must remain distinct. */
+  contentLabel?: string;
+  abstractSource?: string;
+  sources?: Array<{ name: string; url?: string }>;
+}
 
 /** Chip color used when a RefTag carries no color of its own. */
 const TAG_DEFAULT_COLOR = "#59C1BD";
@@ -57,9 +59,13 @@ export class PopupCard {
   private fadeMs: number;
   /** timestamp of the last handled zoom event (wheel/DOMMouseScroll dedupe) */
   private lastZoomStamp = -1;
+  private ownerWindow?: Window;
+  private onResize = () => {
+    if (this.container?.isConnected) this.place();
+  };
 
   constructor() {
-    this.fadeMs = Number(getPref("popupFadeMs")) || 100;
+    this.fadeMs = getNumPref("popupFadeMs", 100);
     this.removeTipAfterMillisecond = getNumPref("popupRemoveDelay", 500);
   }
 
@@ -71,18 +77,12 @@ export class PopupCard {
     this.buildContainer();
   }
 
-  /** Fade out and remove every popup card in the document. */
+  /** Dispose only this card; stale async work must not close a newer one. */
   clear() {
-    const doc = getDoc();
-    doc
-      .querySelectorAll(".references-popup-container")
-      .forEach((e: Element) => {
-        const el = e as HTMLElement;
-        el.style.opacity = "0";
-        setTimeout(() => {
-          el.remove();
-        }, this.fadeMs);
-      });
+    clearTimeout(this.tipTimer);
+    this.ownerWindow?.removeEventListener("resize", this.onResize);
+    this.ownerWindow = undefined;
+    this.container?.remove();
   }
 
   /**
@@ -96,9 +96,10 @@ export class PopupCard {
     const dark =
       getWin().matchMedia("(prefers-color-scheme: dark)")?.matches ?? false;
     if (!custom) {
-      return dark
-        ? { background: "#2d2d2d", color: "#e0e0e0" }
-        : { background: "#ffffff", color: "inherit" };
+      return {
+        background: "var(--material-background, Canvas)",
+        color: "var(--fill-primary, CanvasText)",
+      };
     }
     const lum = hexLuminance(custom);
     let color: string;
@@ -121,6 +122,7 @@ export class PopupCard {
 
   private buildContainer() {
     const doc = getDoc();
+    this.ownerWindow = doc.defaultView || undefined;
     const { background, color } = this.resolveColors();
     this.container = ztoolkit.UI.createElement(doc, "div", {
       namespace: "html",
@@ -128,19 +130,27 @@ export class PopupCard {
       styles: {
         display: "flex",
         flexDirection: "column",
-        justifyContent: "center",
+        justifyContent: "flex-start",
         position: "fixed",
         zIndex: "999",
-        padding: "1em",
         backgroundColor: background,
         color,
         opacity: "0",
         transition: `opacity ${this.fadeMs / 1000}s linear`,
         userSelect: "text",
-        boxShadow: "0 4px 24px rgb(0 0 0 / 20%)",
-        borderRadius: "8px",
+      },
+      attributes: {
+        role: "dialog",
+        "aria-label": getString("popup-detail-label"),
       },
       listeners: [
+        {
+          type: "keydown",
+          listener: (event: Event) => {
+            if ((event as KeyboardEvent).key === "Escape") this.clear();
+          },
+        },
+        { type: "focusin", listener: () => clearTimeout(this.tipTimer) },
         { type: "wheel", listener: this.handleWheel },
         { type: "DOMMouseScroll", listener: this.handleLegacyScroll },
         {
@@ -152,8 +162,9 @@ export class PopupCard {
         {
           type: "mouseleave",
           listener: () => {
+            if (this.container.contains(doc.activeElement)) return;
             this.tipTimer = setTimeout(() => {
-              this.container.remove();
+              this.clear();
             }, this.removeTipAfterMillisecond);
           },
         },
@@ -161,240 +172,399 @@ export class PopupCard {
       children: [
         {
           tag: "div",
-          id: "option-container",
-          styles: {
-            width: "100%",
-            height: `${OPTION.size}px`,
-            display: "flex",
-            flexDirection: "row",
-            alignItems: "center",
-            justifyContent: "center",
-            marginBottom: ".25em",
-            marginTop: ".25em",
-          },
-        },
-        {
-          tag: "div",
           id: "content-container",
-          styles: { width: "100%" },
+          attributes: { tabindex: "0" },
         },
       ],
     });
     doc.documentElement!.appendChild(this.container);
+    this.ownerWindow?.addEventListener("resize", this.onResize);
   }
 
-  /**
-   * Add one source's view of the reference to the card.
-   * @param title card title
-   * @param tags clickable chips (source badge, DOI, Zotero, colored tags…)
-   * @param descriptions secondary rows (authors, venue · year, …)
-   * @param content body text, usually the abstract
-   * @param according which identifier drove the lookup (DOI/arXiv/PMID/Title)
-   * @param index position of this source in the candidate list
-   * @param prefIndex the user's remembered preferred source index
-   * @param sourceName display name of the source, shown as the dot's tooltip
-   */
-  addTip(
+  /** Update the unified card while preserving its reading position. */
+  update(
     title: string,
     tags: RefTag[],
-    descriptions: string[],
     content: string,
-    according: string,
-    index: number,
-    prefIndex?: number,
-    sourceName?: string,
+    details: PopupDetails,
   ) {
-    const doc = getDoc();
-    const optionContainer = this.container.querySelector("#option-container")!;
-    const isSelect =
-      (prefIndex !== undefined && index === prefIndex) ||
-      optionContainer.childNodes.length === 0;
-    if (isSelect) this.reset();
+    if (!this.container?.isConnected) return;
+    const doc = this.container.ownerDocument!;
+    const readingArea = this.container.querySelector(
+      "#content-container",
+    ) as HTMLElement;
+    const scrollTop = readingArea.scrollTop;
+    const activeControl = this.container.contains(doc.activeElement)
+      ? (doc.activeElement as HTMLElement)?.dataset.popupControl
+      : undefined;
+    const oldBody = readingArea.querySelector(
+      ".abstract",
+    ) as HTMLElement | null;
 
     const children: TagElementProps[] = [
       {
         tag: "span",
         classList: ["title"],
         styles: {
-          display: "block",
-          fontWeight: "bold",
-          marginBottom: ".25em",
-          fontSize: "1.2em",
           color: this.resolveTitleColor(),
         },
         properties: { innerText: title },
         listeners: [{ type: "click", listener: this.translateNode }],
       },
     ];
+    if (details) {
+      const metadata: TagElementProps[] = [];
+      const firstAuthors = details.firstAuthors?.filter(Boolean) || [];
+      const correspondingAuthors =
+        details.correspondingAuthors?.filter(Boolean) || [];
+      const lastAuthors = details.lastAuthors?.filter(Boolean) || [];
+      if (firstAuthors.length)
+        metadata.push(
+          this.detailProps(
+            details.firstAuthorsByOrder
+              ? getString("popup-first-listed-author-label")
+              : firstAuthors.length > 1
+                ? getString("popup-cofirst-authors-label")
+                : getString("popup-first-authors-label"),
+            this.authorNames(firstAuthors),
+          ),
+        );
+      if (correspondingAuthors.length)
+        metadata.push(
+          this.detailProps(
+            correspondingAuthors.length > 1
+              ? getString("popup-cocorresponding-authors-label")
+              : getString("popup-corresponding-authors-label"),
+            this.authorNames(correspondingAuthors),
+          ),
+        );
+      if (lastAuthors.length)
+        metadata.push(
+          this.detailProps(
+            getString("popup-last-listed-author-label"),
+            this.authorNames(lastAuthors),
+          ),
+        );
+      if (details.venue)
+        metadata.push(
+          this.detailProps(getString("popup-publication-label"), details.venue),
+        );
+      if (details.note)
+        metadata.push(
+          this.detailProps(getString("popup-notes-label"), details.note),
+        );
+      if (metadata.length)
+        children.push({
+          tag: "div",
+          classList: ["descriptions"],
+          children: metadata,
+        });
+    }
     if (tags && tags.length > 0) {
       children.push({
         tag: "div",
         classList: ["tags"],
-        styles: { width: "100%" },
         children: tags.map((tag) => this.tagChipProps(tag)),
       });
     }
-    if (descriptions && descriptions.length > 0) {
-      children.push({
-        tag: "div",
-        classList: ["descriptions"],
-        styles: { marginBottom: "0.25em" },
-        children: descriptions.map((text) => ({
-          tag: "span",
-          styles: {
-            display: "block",
-            lineHeight: "1.5em",
-            opacity: "0.5",
-            cursor: "pointer",
-            userSelect: "none",
+    if (content.trim()) {
+      const actions: TagElementProps[] = [
+        {
+          tag: "button",
+          classList: ["references-popup-text-action"],
+          attributes: {
+            type: "button",
+            title: getString("popup-copy-tip"),
+            "data-popup-control": "copy-content",
           },
-          properties: { innerText: text },
-          listeners: [{ type: "click", listener: () => this.copyText(text) }],
-        })),
+          properties: { textContent: getString("popup-copy") },
+          listeners: [
+            {
+              type: "click",
+              listener: (event: Event) => {
+                const button = event.currentTarget as HTMLButtonElement;
+                const body = button
+                  .closest(".references-popup-body")
+                  ?.querySelector(".abstract") as HTMLElement | null;
+                this.copyText(body?.innerText || content);
+              },
+            },
+          ],
+        },
+      ];
+      const Z = Zotero as any;
+      if (
+        getPref("ctrlClickTranslate") &&
+        (Z.PDFTranslate?.api?.translate ||
+          Z.ZoteroPDFTranslate?.translate?.getTranslation)
+      ) {
+        actions.push({
+          tag: "button",
+          classList: ["references-popup-text-action"],
+          attributes: {
+            type: "button",
+            "aria-pressed": "false",
+            "data-popup-control": "translate-content",
+          },
+          properties: { textContent: getString("popup-translate") },
+          listeners: [
+            {
+              type: "click",
+              listener: async (event: Event) => {
+                const button = event.currentTarget as HTMLButtonElement;
+                const node = button
+                  .closest(".references-popup-body")!
+                  .querySelector(".abstract") as HTMLElement;
+                button.disabled = true;
+                try {
+                  await this.toggleTranslation(node);
+                  button.setAttribute(
+                    "aria-pressed",
+                    String(node.innerText === node.dataset.translatedText),
+                  );
+                  this.place();
+                } finally {
+                  button.disabled = false;
+                }
+              },
+            },
+          ],
+        });
+      }
+      children.push({
+        tag: "section",
+        classList: ["references-popup-body"],
+        children: [
+          {
+            tag: "div",
+            classList: ["references-popup-body-heading"],
+            children: [
+              {
+                tag: "span",
+                classList: ["references-popup-body-label"],
+                children: [
+                  {
+                    tag: "span",
+                    classList: ["references-popup-caption"],
+                    properties: {
+                      textContent:
+                        details.contentLabel ||
+                        getString("popup-abstract-label"),
+                    },
+                  },
+                  ...(details.abstractSource
+                    ? [
+                        {
+                          tag: "span",
+                          classList: ["references-popup-inline-source"],
+                          properties: { textContent: details.abstractSource },
+                          attributes: {
+                            title: getString("popup-abstract-source", {
+                              args: { source: details.abstractSource },
+                            }),
+                          },
+                        } satisfies TagElementProps,
+                      ]
+                    : []),
+                ],
+              },
+              {
+                tag: "div",
+                classList: ["references-popup-body-actions"],
+                children: actions,
+              },
+            ],
+          },
+          {
+            tag: "div",
+            classList: ["abstract"],
+            properties: { innerText: content },
+            listeners: [{ type: "click", listener: this.translateNode }],
+          },
+        ],
       });
     }
-    children.push({
-      tag: "span",
-      classList: ["abstract"],
-      properties: { innerText: content },
-      styles: {
-        display: "block",
-        lineHeight: "1.5em",
-        textAlign: "justify",
-        opacity: "0.8",
-        maxHeight: "300px",
-        overflowY: "auto",
-        marginTop: ".25em",
-      },
-      listeners: [{ type: "click", listener: this.translateNode }],
-    });
 
+    if (details.sources?.length) {
+      children.push({
+        tag: "div",
+        classList: ["references-popup-provenance"],
+        children: [
+          {
+            tag: "span",
+            classList: ["references-popup-caption"],
+            properties: { textContent: getString("popup-sources-label") },
+          },
+          {
+            tag: "div",
+            classList: ["references-popup-provenance-links"],
+            children: details.sources.map((source) => {
+              const url =
+                source.url && isHttpUrl(source.url) ? source.url : undefined;
+              return {
+                tag: url ? "button" : "span",
+                classList: ["references-popup-source-link"],
+                attributes: url
+                  ? {
+                      type: "button",
+                      title: url,
+                      "data-popup-control": `source-${source.name}`,
+                    }
+                  : {},
+                properties: { textContent: source.name },
+                listeners: url
+                  ? [{ type: "click", listener: () => Zotero.launchURL(url) }]
+                  : [],
+              };
+            }),
+          },
+        ],
+      });
+    }
     const contentNode = ztoolkit.UI.createElement(doc, "div", {
       namespace: "html",
       classList: ["references-popup-tip"],
-      styles: {
-        padding: "0px",
-        width: "100%",
-        display: isSelect ? "" : "none",
-      },
       children,
     });
-
-    const optionNode = ztoolkit.UI.createElement(doc, "div", {
-      namespace: "html",
-      id: `option-${index}`,
-      attributes: sourceName
-        ? { title: sourceName, "aria-label": sourceName }
-        : {},
-      styles: {
-        width: `${OPTION.size}px`,
-        height: `${OPTION.size}px`,
-        borderRadius: "50%",
-        backgroundColor: isSelect ? OPTION.color.active : OPTION.color.default,
-        marginLeft: `${OPTION.size * 0.5}px`,
-        marginRight: `${OPTION.size * 0.5}px`,
-        cursor: "pointer",
-        transition: "background-color 0.23s linear",
-      },
-      listeners: [
-        {
-          type: "click",
-          listener: () => {
-            this.reset();
-            optionNode.style.backgroundColor = OPTION.color.active;
-            contentNode.style.display = "";
-            // dynamic pref key like "DOIInfoIndex" / "TitleInfoIndex"
-            setPref(`${according}InfoIndex` as any, index as any);
-            this.place();
-          },
-        },
-      ],
-    });
-
-    // keep the dots ordered by source index even when sources resolve
-    // out of order (ported insert logic)
-    const optionNodes = [
-      ...optionContainer.querySelectorAll("[id^=option-]"),
-    ] as HTMLElement[];
-    if (optionNodes.length === 0) {
-      optionContainer.appendChild(optionNode);
-    } else {
-      const getIndex = (node: HTMLElement) => Number(node.id.split("-")[1]);
-      for (let i = 0; i < optionNodes.length; i++) {
-        if (index > getIndex(optionNodes[i])) {
-          if (i + 1 < optionNodes.length) {
-            if (index < getIndex(optionNodes[i + 1])) {
-              optionContainer.insertBefore(optionNode, optionNodes[i + 1]);
-              break;
-            }
-          } else {
-            optionContainer.appendChild(optionNode);
-            break;
-          }
-        } else {
-          optionContainer.insertBefore(optionNode, optionNodes[i]);
-          break;
-        }
+    // An unrelated source arriving should not revert an active translation.
+    if (oldBody?.dataset.sourceText === content) {
+      const newBody = contentNode.querySelector(
+        ".abstract",
+      ) as HTMLElement | null;
+      if (newBody) {
+        newBody.dataset.sourceText = content;
+        if (oldBody.dataset.translatedText)
+          newBody.dataset.translatedText = oldBody.dataset.translatedText;
+        newBody.innerText = oldBody.innerText;
+        const toggle = contentNode.querySelector(
+          '[data-popup-control="translate-content"]',
+        );
+        toggle?.setAttribute(
+          "aria-pressed",
+          String(newBody.innerText === newBody.dataset.translatedText),
+        );
       }
     }
-    this.container
-      .querySelector("#content-container")!
-      .appendChild(contentNode);
+    readingArea.replaceChildren(contentNode);
     this.place();
+    if (activeControl) {
+      const control = [
+        ...readingArea.querySelectorAll<HTMLElement>("[data-popup-control]"),
+      ].find((element) => element.dataset.popupControl === activeControl);
+      (control || readingArea).focus({ preventScroll: true });
+    }
+    readingArea.scrollTop = scrollTop;
   }
 
-  /** Element props for one clickable tag chip. */
-  private tagChipProps(tag: RefTag): TagElementProps {
+  private authorNames(names: string[]): string {
+    return names.join(
+      names.every((name) => /^[\p{Script=Han}·\s]+$/u.test(name)) ? "、" : "; ",
+    );
+  }
+
+  /** A labelled, selectable metadata value; keyboard activation copies it. */
+  private detailProps(
+    label: string,
+    text: string,
+    copyText = text,
+  ): TagElementProps {
     return {
-      tag: "span",
-      properties: { innerText: String(tag.text) },
-      attributes: tag.tip ? { title: String(tag.tip) } : {},
-      styles: {
-        backgroundColor: tag.color || TAG_DEFAULT_COLOR,
-        borderRadius: "10px",
-        margin: "0.5em 1em 0.5em 0px",
-        display: "inline-block",
-        padding: "0 8px",
-        color: "white",
-        cursor: "pointer",
-        userSelect: "none",
-      },
-      listeners: [
+      tag: "div",
+      classList: ["references-popup-detail"],
+      children: [
+        ...(label
+          ? [
+              {
+                tag: "span",
+                classList: ["references-popup-caption"],
+                properties: { textContent: label },
+              } satisfies TagElementProps,
+            ]
+          : []),
         {
-          type: "click",
-          listener: () => {
-            if (tag.onClick) {
-              tag.onClick();
-            } else if (tag.url) {
-              // remote metadata may carry arbitrary schemes — http(s) only
-              if (isHttpUrl(tag.url)) Zotero.launchURL(tag.url);
-            } else if (tag.itemID) {
-              this.clear();
-              Zotero.ProgressWindowSet.closeAll();
-              const win = getWin();
-              win.Zotero_Tabs.select("zotero-pane");
-              win.ZoteroPane.selectItem(tag.itemID);
-            } else {
-              this.copyText(String(tag.text));
-            }
+          tag: "div",
+          classList: ["references-popup-detail-value"],
+          attributes: {
+            role: "button",
+            tabindex: "0",
+            title: getString("popup-copy-tip"),
+            "data-popup-control": `metadata-${label}`,
           },
+          properties: { textContent: text },
+          listeners: [
+            { type: "click", listener: () => this.copyText(copyText) },
+            {
+              type: "keydown",
+              listener: (event: Event) => {
+                const e = event as KeyboardEvent;
+                if (e.key !== "Enter" && e.key !== " ") return;
+                e.preventDefault();
+                this.copyText(copyText);
+              },
+            },
+          ],
         },
       ],
     };
   }
 
-  /** Hide all content pages and de-highlight all dots. */
-  private reset() {
-    this.container
-      .querySelector("#content-container")!
-      .childNodes.forEach((e) => {
-        (e as HTMLElement).style.display = "none";
-      });
-    this.container
-      .querySelector("#option-container")!
-      .childNodes.forEach((e) => {
-        (e as HTMLElement).style.backgroundColor = OPTION.color.default;
-      });
+  /** Element props for one clickable tag chip. */
+  private tagChipProps(tag: RefTag): TagElementProps {
+    const actionable = Boolean(
+      tag.onClick || (tag.url && isHttpUrl(tag.url)) || tag.itemID,
+    );
+    return {
+      tag: actionable ? "button" : "span",
+      classList: [
+        "references-popup-chip",
+        actionable ? "is-action" : "is-info",
+      ],
+      properties: { innerText: String(tag.text) },
+      attributes: {
+        ...(actionable
+          ? {
+              type: "button",
+              "data-popup-control": `tag-${tag.text}-${tag.url || ""}`,
+            }
+          : {}),
+        ...(tag.tip ? { title: String(tag.tip) } : {}),
+      },
+      styles: {
+        backgroundColor: `color-mix(in srgb, ${tag.color || TAG_DEFAULT_COLOR} 12%, transparent)`,
+        border: `1px solid color-mix(in srgb, ${tag.color || TAG_DEFAULT_COLOR} 24%, transparent)`,
+        borderRadius: "5px",
+        margin: "0",
+        display: "inline-flex",
+        alignItems: "center",
+        padding: "0 8px",
+        color: "var(--fill-primary)",
+        cursor: actionable ? "pointer" : "default",
+        userSelect: actionable ? "none" : "text",
+      },
+      listeners: actionable
+        ? [
+            {
+              type: "click",
+              listener: () => {
+                if (tag.onClick) {
+                  tag.onClick();
+                } else if (tag.url) {
+                  // remote metadata may carry arbitrary schemes — http(s) only
+                  if (isHttpUrl(tag.url)) Zotero.launchURL(tag.url);
+                } else if (tag.itemID) {
+                  this.clear();
+                  Zotero.ProgressWindowSet.closeAll();
+                  const win = getWin();
+                  win.Zotero_Tabs.select("zotero-pane");
+                  win.ZoteroPane.selectItem(tag.itemID);
+                } else {
+                  this.copyText(String(tag.text));
+                }
+              },
+            },
+          ]
+        : [],
+    };
   }
 
   /**
@@ -402,7 +572,7 @@ export class PopupCard {
    * "top center" above it), then clamp so it never leaves the window.
    */
   private place() {
-    const doc = getDoc();
+    const doc = this.container.ownerDocument!;
     const setStyles = (styles: Record<string, string>) => {
       for (const k of Object.keys(styles)) {
         (this.container.style as any)[k] = styles[k];
@@ -414,40 +584,34 @@ export class PopupCard {
     const maxHeight = winRect.height;
     const refRect = this.refRect;
 
-    let styles: Record<string, string> = {};
-    if (this.position === "left") {
-      styles = {
-        right: `${maxWidth - refRect.x}px`,
-        bottom: "",
-        top: `${refRect.y}px`,
-        width: `${refRect.x * 0.7}px`,
-      };
-    } else if (this.position === "top center") {
-      const width = maxWidth * 0.7;
-      styles = {
-        width: `${width}px`,
-        left: `${refRect.x + refRect.width / 2 - width / 2}px`,
-        bottom: `${maxHeight - refRect.y}px`,
-        top: "",
-      };
-      this.container.style.flexDirection = "column-reverse";
-    }
-    const rect = setStyles(styles);
-    // overflow clamping (checked against the initially placed rect,
-    // exactly as the original did)
-    if (rect.bottom > maxHeight) {
-      setStyles({ top: "", bottom: "0px" });
-      this.container.style.flexDirection = "column-reverse";
-    }
-    if (rect.top < 0) {
-      setStyles({ bottom: "", top: "0px" });
-    }
-    if (rect.left < 30) {
-      setStyles({ right: "", left: "30px" });
-    }
-    if (maxWidth - rect.right < 30) {
-      setStyles({ left: "", right: "30px" });
-    }
+    const gap = 12;
+    const width = Math.min(
+      520,
+      Math.max(
+        240,
+        this.position === "left" ? refRect.x - gap * 2 : maxWidth * 0.7,
+      ),
+      Math.max(0, maxWidth - gap * 2),
+    );
+    setStyles({
+      width: `${width}px`,
+      left: "0px",
+      right: "",
+      top: "0px",
+      bottom: "",
+      flexDirection: "column",
+    });
+    const rect = this.container.getBoundingClientRect();
+    const left =
+      this.position === "left"
+        ? refRect.x - rect.width - gap
+        : refRect.x + refRect.width / 2 - rect.width / 2;
+    const top =
+      this.position === "left" ? refRect.y : refRect.y - rect.height - gap;
+    setStyles({
+      left: `${Math.max(gap, Math.min(left, maxWidth - rect.width - gap))}px`,
+      top: `${Math.max(gap, Math.min(top, maxHeight - rect.height - gap))}px`,
+    });
     this.container.style.opacity = "1";
   }
 
@@ -483,28 +647,11 @@ export class PopupCard {
 
   /** Ctrl+wheel zoom, scale clamped to [1, 1.7] in 0.05 steps. */
   private zoom(delta: number) {
-    const match = this.container.style.transform.match(/scale\((.+)\)/);
-    let scale = match ? parseFloat(match[1]) : 1;
-    const minScale = 1;
-    const maxScale = 1.7;
-    const step = 0.05;
-    // a bottom-clamped card must grow upward, not off-screen
-    if (this.container.style.bottom === "0px") {
-      this.container.style.transformOrigin = "center bottom";
-    } else {
-      this.container.style.transformOrigin = "center center";
-    }
-    if (delta > 0) {
-      scale -= step;
-      this.container.style.transform = `scale(${
-        scale < minScale ? minScale : scale
-      })`;
-    } else {
-      scale += step;
-      this.container.style.transform = `scale(${
-        scale > maxScale ? maxScale : scale
-      })`;
-    }
+    const old = Number(this.container.dataset.zoom) || 1;
+    const scale = Math.max(1, Math.min(1.7, old + (delta > 0 ? -0.05 : 0.05)));
+    this.container.dataset.zoom = String(scale);
+    this.container.style.fontSize = `calc(var(--zotero-font-size, 13px) * ${scale})`;
+    this.place();
   }
 
   /* --------------------------- translation --------------------------- */
@@ -527,7 +674,7 @@ export class PopupCard {
         const ok = await Z.ZoteroPDFTranslate.translate.getTranslation();
         if (!ok) {
           Z.ZoteroPDFTranslate.view.showProgressWindow(
-            "Translate Failed",
+            getString("popup-translate-failed"),
             ok,
             "fail",
           );
@@ -552,6 +699,11 @@ export class PopupCard {
     // currentTarget is nulled once dispatch ends — capture before awaiting
     const node = e.currentTarget as HTMLElement;
     if (!node) return;
+    await this.toggleTranslation(node);
+    this.place();
+  };
+
+  private async toggleTranslation(node: HTMLElement) {
     let sourceText = node.dataset.sourceText;
     let translatedText = node.dataset.translatedText;
     if (!sourceText) {
@@ -560,7 +712,7 @@ export class PopupCard {
     }
     if (!translatedText) {
       translatedText = await this.translate(sourceText);
-      if (!translatedText) return;
+      if (!translatedText || !node.isConnected) return;
       node.dataset.translatedText = translatedText;
     }
     if (node.innerText === sourceText) {
@@ -568,14 +720,17 @@ export class PopupCard {
     } else if (node.innerText === translatedText) {
       node.innerText = sourceText;
     }
-  };
+  }
 
   /* ----------------------------- helpers ----------------------------- */
 
   private copyText(text: string) {
     new ztoolkit.Clipboard().addText(text, "text/unicode").copy();
     new ztoolkit.ProgressWindow(getString("panel-copied"))
-      .createLine({ text, type: "success" })
+      .createLine({
+        text: text.length > 160 ? `${text.slice(0, 157)}…` : text,
+        type: "success",
+      })
       .show();
   }
 }

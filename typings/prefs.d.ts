@@ -34,6 +34,7 @@ declare namespace _ZoteroTypes {
       "graphMaxNodes": number;
       "email": string;
       "s2ApiKey": string;
+      "openAlexApiKey": string;
       "cacheTTLHours": number;
       "CNKI.username": string;
       "CNKI.password": string;

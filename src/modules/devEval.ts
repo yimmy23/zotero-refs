@@ -16,15 +16,32 @@ import { openalex } from "../sources/openalex";
 import { crossref } from "../sources/crossref";
 import { attachReader, readerLinkState } from "../pdf/readerHook";
 
-let TOKEN = "";
+let registration = 0;
+let endpointTarget: any;
+let endpointHandler: any;
+
+export function unregisterDevEval() {
+  registration++;
+  try {
+    if (endpointTarget?.["/refs-dev/eval"] === endpointHandler) {
+      delete endpointTarget["/refs-dev/eval"];
+    }
+  } catch {
+    // The server may already be torn down.
+  }
+  endpointTarget = undefined;
+  endpointHandler = undefined;
+}
 
 export function registerDevEval() {
   if (__env__ !== "development") return;
-  void registerWhenReady();
+  unregisterDevEval();
+  void registerWhenReady(registration);
 }
 
 /** Zotero 10 loads the server module after plugin startup — wait for it */
-async function registerWhenReady() {
+async function registerWhenReady(generation: number) {
+  const active = () => generation === registration && addon.data.alive;
   // stage log on disk — scaffold serve swallows Zotero's stdout
   let logbuf = "";
   const report = (msg: string) => {
@@ -32,10 +49,12 @@ async function registerWhenReady() {
     try {
       const iou = (globalThis as any).IOUtils;
       const pu = (globalThis as any).PathUtils;
-      void iou?.writeUTF8(
-        pu.join(Zotero.DataDirectory.dir, "dev-eval-status.log"),
-        logbuf,
-      );
+      void iou
+        ?.writeUTF8(
+          pu.join(Zotero.DataDirectory.dir, "dev-eval-status.log"),
+          logbuf,
+        )
+        ?.catch(() => {});
     } catch {
       // diagnostics only
     }
@@ -43,9 +62,11 @@ async function registerWhenReady() {
   try {
     report("start");
     await (Zotero as any).initializationPromise;
+    if (!active()) return;
     report("init done");
     let endpoints: any;
     for (let i = 0; i < 150; i++) {
+      if (!active()) return;
       try {
         endpoints = (Zotero as any).Server?.Endpoints;
       } catch (e) {
@@ -59,7 +80,8 @@ async function registerWhenReady() {
       ztoolkit.log("[devEval] Zotero.Server not available");
       return;
     }
-    TOKEN = Array.from(
+    if (!active()) return;
+    const token = Array.from(
       { length: 24 },
       () => "abcdefghijklmnopqrstuvwxyz0123456789"[(Math.random() * 36) | 0],
     ).join("");
@@ -68,7 +90,7 @@ async function registerWhenReady() {
       const pu = (globalThis as any).PathUtils;
       await iou.writeUTF8(
         pu.join(Zotero.DataDirectory.dir, "dev-eval-token.txt"),
-        TOKEN,
+        token,
       );
     } catch (e) {
       // no readable token file -> an unusable endpoint; don't register one
@@ -76,6 +98,7 @@ async function registerWhenReady() {
       ztoolkit.log("[devEval] token write failed", e);
       return;
     }
+    if (!active()) return;
     report(
       `table: keys=${Object.keys(endpoints).length} ping=${"/connector/ping" in endpoints}`,
     );
@@ -89,7 +112,7 @@ async function registerWhenReady() {
       init: async function (req: any) {
         try {
           const data = req.data || {};
-          if (data.token !== TOKEN) {
+          if (!active() || data.token !== token) {
             return [403, "text/plain", "forbidden"];
           }
           const fn = new AsyncFunction(
@@ -135,7 +158,10 @@ async function registerWhenReady() {
     // Zotero's own realm) — waive Xrays so the write hits the real table
     const Cu = (globalThis as any).Components?.utils;
     const target = Cu?.waiveXrays ? Cu.waiveXrays(endpoints) : endpoints;
+    if (!active()) return;
     target["/refs-dev/eval"] = handler;
+    endpointTarget = target;
+    endpointHandler = handler;
     report(
       `registered: waived=${!!Cu?.waiveXrays} readback=${"/refs-dev/eval" in endpoints}`,
     );

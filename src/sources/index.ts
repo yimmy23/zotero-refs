@@ -1,4 +1,4 @@
-import { hostIdentifiers, isChinese, normalizeTitle } from "../core/text";
+import { hostIdentifiers, isChinese, titlesMatch } from "../core/text";
 import { SOURCE_NAME } from "../core/types";
 import { getString } from "../utils/locale";
 import type {
@@ -55,6 +55,7 @@ export function infoCandidates(ref: RefItem): {
     return {
       according: "DOI",
       thunks: [
+        ...(ids.PMID ? [() => pubmed.getInfoByPMID(ids.PMID!)] : []),
         () => semanticscholar.getInfoByDOI!(DOI),
         () => crossref.getInfoByDOI!(DOI),
         () => openalex.getInfoByDOI!(DOI),
@@ -76,26 +77,30 @@ export function infoCandidates(ref: RefItem): {
   }
   const title = ref.title || ref.text || "";
   const refText = ref.text;
+  const exact = (lookup: () => Promise<RefItem | null>) => async () => {
+    const info = await lookup();
+    return info && titlesMatch(info.title, title) ? info : null;
+  };
   if (isChinese(refText || title)) {
     return {
       according: "Title",
       thunks: [
-        () => cnki.getInfoByTitle!(title, refText),
-        () => readpaper.getInfoByTitle!(title, refText),
+        exact(() => cnki.getInfoByTitle!(title, refText)),
+        exact(() => readpaper.getInfoByTitle!(title, refText)),
       ],
     };
   }
   return {
     according: "Title",
     thunks: [
-      () => crossref.getInfoByTitle!(title, refText),
+      exact(() => crossref.getInfoByTitle!(title, refText)),
       // PubMed by [Title]: only answers for MEDLINE-indexed papers, but
       // when it does its abstract coverage beats every other source
-      () => pubmed.getInfoByTitle(title),
-      () => openalex.getInfoByTitle!(title, refText),
-      () => semanticscholar.getInfoByTitle!(title, refText),
-      () => readpaper.getInfoByTitle!(title, refText),
-      () => connectedpapers.getInfoByTitle!(title, refText),
+      exact(() => pubmed.getInfoByTitle(title)),
+      exact(() => openalex.getInfoByTitle!(title, refText)),
+      exact(() => semanticscholar.getInfoByTitle!(title, refText)),
+      exact(() => readpaper.getInfoByTitle!(title, refText)),
+      exact(() => connectedpapers.getInfoByTitle!(title, refText)),
     ],
   };
 }
@@ -234,13 +239,7 @@ export async function getRelatedByAPI(
  * with "Array programming with NumPy").
  */
 function titleSimilar(a?: string, b?: string): boolean {
-  const na = normalizeTitle(a);
-  const nb = normalizeTitle(b);
-  if (!na || !nb) return false;
-  if (na === nb) return true;
-  // a candidate that still equals the query after removing a derivative
-  // prefix is the derivative record, not the paper — reject it
-  return false;
+  return titlesMatch(a, b);
 }
 
 /**

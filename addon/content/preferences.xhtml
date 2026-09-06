@@ -1,185 +1,440 @@
-<linkset>
-  <html:link rel="localization" href="__addonRef__-preferences.ftl" />
-</linkset>
-<vbox onload="Zotero.__addonInstance__.hooks.onPrefsEvent('load', { window })">
-  <groupbox>
-    <label><html:h2 data-l10n-id="pref-group-refresh"></html:h2></label>
-    <checkbox
-      id="zotero-prefpane-__addonRef__-autoRefresh"
+<linkset
+  ><html:link
+    rel="localization"
+    href="__addonRef__-preferences.ftl" /><html:link
+    rel="stylesheet"
+    href="chrome://__addonRef__/content/preferences.css"
+/></linkset>
+<vbox
+  id="refs-preferences"
+  onload="Zotero.__addonInstance__.hooks.onPrefsEvent('load', { window })"
+>
+  <html:header class="refs-pref-header"
+    ><html:img
+      src="chrome://__addonRef__/content/icons/refs-brand.svg"
+      alt="" />
+    <html:div
+      ><html:h1 class="refs-pref-title" data-l10n-id="pref-title"></html:h1
+      ><html:p
+        class="refs-pref-hint"
+        data-l10n-id="pref-intro"
+      ></html:p></html:div
+  ></html:header>
+  <html:div
+    class="refs-pref-tabs"
+    role="tablist"
+    data-l10n-id="pref-navigation"
+  >
+    <html:button
+      type="button"
+      role="tab"
+      id="refs-tab-list"
+      aria-controls="refs-settings-list"
+      aria-selected="true"
+      tabindex="0"
+      data-settings-tab="list"
+      data-l10n-id="pref-nav-list"
+    ></html:button>
+    <html:button
+      type="button"
+      role="tab"
+      id="refs-tab-popup"
+      aria-controls="refs-settings-popup"
+      aria-selected="false"
+      tabindex="-1"
+      data-settings-tab="popup"
+      data-l10n-id="pref-nav-popup"
+    ></html:button>
+    <html:button
+      type="button"
+      role="tab"
+      id="refs-tab-reader"
+      aria-controls="refs-settings-reader"
+      aria-selected="false"
+      tabindex="-1"
+      data-settings-tab="reader"
+      data-l10n-id="pref-nav-reader"
+    ></html:button>
+    <html:button
+      type="button"
+      role="tab"
+      id="refs-tab-discovery"
+      aria-controls="refs-settings-discovery"
+      aria-selected="false"
+      tabindex="-1"
+      data-settings-tab="discovery"
+      data-l10n-id="pref-nav-discovery"
+    ></html:button>
+    <html:button
+      type="button"
+      role="tab"
+      id="refs-tab-cache"
+      aria-controls="refs-settings-cache"
+      aria-selected="false"
+      tabindex="-1"
+      data-settings-tab="cache"
+      data-l10n-id="pref-nav-cache"
+    ></html:button>
+    <html:button
+      type="button"
+      role="tab"
+      id="refs-tab-accounts"
+      aria-controls="refs-settings-accounts"
+      aria-selected="false"
+      tabindex="-1"
+      data-settings-tab="accounts"
+      data-l10n-id="pref-nav-accounts"
+    ></html:button>
+  </html:div>
+  <html:section
+    id="refs-settings-list"
+    class="refs-pref-panel"
+    role="tabpanel"
+    aria-labelledby="refs-tab-list"
+    tabindex="0"
+  >
+    <html:h2
+      class="refs-pref-section-title"
+      data-l10n-id="pref-group-refresh"
+    ></html:h2
+    ><html:p class="refs-pref-hint" data-l10n-id="pref-list-intro"></html:p
+    ><checkbox
+      id="refs-pref-autoRefresh"
       preference="autoRefresh"
       data-l10n-id="pref-autoRefresh"
-      native="true"
-    />
-    <hbox align="center">
-      <html:label data-l10n-id="pref-notAutoRefreshItemTypes"></html:label>
-      <html:input
+      native="true" /><html:div class="refs-pref-row"
+      ><html:div class="refs-pref-copy"
+        ><html:label
+          for="refs-pref-notAutoRefreshItemTypes"
+          data-l10n-id="pref-notAutoRefreshItemTypes"
+        ></html:label
+        ><html:p
+          id="refs-pref-notAutoRefreshItemTypes-hint"
+          class="refs-pref-hint"
+          data-l10n-id="pref-types-hint"
+        ></html:p></html:div
+      ><html:input
+        id="refs-pref-notAutoRefreshItemTypes"
         type="text"
-        style="flex: 1"
         preference="notAutoRefreshItemTypes"
-      ></html:input>
-    </hbox>
-    <hbox align="center">
-      <html:label data-l10n-id="pref-preLoadingPageNum"></html:label>
-      <html:input
+        aria-describedby="refs-pref-notAutoRefreshItemTypes-hint" /></html:div
+    ><html:div class="refs-pref-row"
+      ><html:div class="refs-pref-copy"
+        ><html:label
+          for="refs-pref-preLoadingPageNum"
+          data-l10n-id="pref-preLoadingPageNum"
+        ></html:label></html:div
+      ><html:input
+        id="refs-pref-preLoadingPageNum"
         type="number"
+        preference="preLoadingPageNum"
         min="1"
         max="50"
-        preference="preLoadingPageNum"
-      ></html:input>
-    </hbox>
-    <checkbox
-      preference="savePDFReferences"
-      data-l10n-id="pref-savePDFReferences"
-      native="true"
-    />
-    <checkbox
-      preference="saveAPIReferences"
-      data-l10n-id="pref-saveAPIReferences"
-      native="true"
-    />
-    <hbox align="center">
-      <html:label data-l10n-id="pref-notInLibraryOpacity"></html:label>
-      <html:input
+        step="1" /></html:div
+    ><html:div class="refs-pref-row"
+      ><html:div class="refs-pref-copy"
+        ><html:label
+          for="refs-pref-notInLibraryOpacity"
+          data-l10n-id="pref-notInLibraryOpacity"
+        ></html:label
+        ><html:p
+          id="refs-pref-notInLibraryOpacity-hint"
+          class="refs-pref-hint"
+          data-l10n-id="pref-opacity-hint"
+        ></html:p></html:div
+      ><html:input
+        id="refs-pref-notInLibraryOpacity"
         type="number"
+        preference="notInLibraryOpacity"
         min="0.1"
         max="1"
         step="0.05"
-        preference="notInLibraryOpacity"
-      ></html:input>
-    </hbox>
-  </groupbox>
-
-  <groupbox>
-    <label><html:h2 data-l10n-id="pref-group-popup"></html:h2></label>
-    <checkbox
+        aria-describedby="refs-pref-notInLibraryOpacity-hint" /></html:div
+  ></html:section>
+  <html:section
+    id="refs-settings-popup"
+    class="refs-pref-panel"
+    role="tabpanel"
+    aria-labelledby="refs-tab-popup"
+    tabindex="0"
+    hidden="hidden"
+  >
+    <html:h2
+      class="refs-pref-section-title"
+      data-l10n-id="pref-group-popup"
+    ></html:h2
+    ><html:p class="refs-pref-hint" data-l10n-id="pref-popup-intro"></html:p
+    ><checkbox
+      id="refs-pref-showPopup"
       preference="showPopup"
       data-l10n-id="pref-showPopup"
-      native="true"
-    />
-    <hbox align="center">
-      <html:label data-l10n-id="pref-popupDelay"></html:label>
-      <html:input type="number" min="0" preference="popupDelay"></html:input>
-    </hbox>
-    <hbox align="center">
-      <html:label data-l10n-id="pref-graphPopupDelay"></html:label>
-      <html:input
+      native="true" /><html:div class="refs-pref-row"
+      ><html:div class="refs-pref-copy"
+        ><html:label
+          for="refs-pref-popupDelay"
+          data-l10n-id="pref-popupDelay"
+        ></html:label></html:div
+      ><html:input
+        id="refs-pref-popupDelay"
         type="number"
+        preference="popupDelay"
         min="0"
+        max="10000"
+        step="1" /></html:div
+    ><html:div class="refs-pref-row"
+      ><html:div class="refs-pref-copy"
+        ><html:label
+          for="refs-pref-graphPopupDelay"
+          data-l10n-id="pref-graphPopupDelay"
+        ></html:label></html:div
+      ><html:input
+        id="refs-pref-graphPopupDelay"
+        type="number"
         preference="graphPopupDelay"
-      ></html:input>
-    </hbox>
-    <hbox align="center">
-      <html:label data-l10n-id="pref-popupRemoveDelay"></html:label>
-      <html:input
-        type="number"
         min="0"
+        max="10000"
+        step="1" /></html:div
+    ><html:div class="refs-pref-row"
+      ><html:div class="refs-pref-copy"
+        ><html:label
+          for="refs-pref-popupRemoveDelay"
+          data-l10n-id="pref-popupRemoveDelay"
+        ></html:label></html:div
+      ><html:input
+        id="refs-pref-popupRemoveDelay"
+        type="number"
         preference="popupRemoveDelay"
-      ></html:input>
-    </hbox>
-    <checkbox
+        min="0"
+        max="10000"
+        step="1" /></html:div
+    ><checkbox
+      id="refs-pref-ctrlClickTranslate"
       preference="ctrlClickTranslate"
       data-l10n-id="pref-ctrlClickTranslate"
       native="true"
-    />
-  </groupbox>
-
-  <groupbox>
-    <label><html:h2 data-l10n-id="pref-group-reader"></html:h2></label>
-    <checkbox
+  /></html:section>
+  <html:section
+    id="refs-settings-reader"
+    class="refs-pref-panel"
+    role="tabpanel"
+    aria-labelledby="refs-tab-reader"
+    tabindex="0"
+    hidden="hidden"
+  >
+    <html:h2
+      class="refs-pref-section-title"
+      data-l10n-id="pref-group-reader"
+    ></html:h2
+    ><html:p class="refs-pref-hint" data-l10n-id="pref-reader-intro"></html:p
+    ><checkbox
+      id="refs-pref-clickLink"
       preference="clickLink"
       data-l10n-id="pref-clickLink"
-      native="true"
-    />
-    <hbox align="center">
-      <html:label data-l10n-id="pref-clickLinkCmd"></html:label>
-      <radiogroup orient="horizontal" preference="clickLinkCmd">
-        <radio
+      native="true" /><html:div class="refs-pref-row"
+      ><html:label
+        id="refs-pref-split-label"
+        data-l10n-id="pref-clickLinkCmd"
+      ></html:label
+      ><radiogroup
+        orient="horizontal"
+        preference="clickLinkCmd"
+        aria-labelledby="refs-pref-split-label"
+        ><radio
           value="splitHorizontally"
           data-l10n-id="pref-split-horizontally"
-          native="true"
-        />
-        <radio
+          native="true" /><radio
           value="splitVertically"
           data-l10n-id="pref-split-vertically"
-          native="true"
-        />
-      </radiogroup>
-    </hbox>
-  </groupbox>
-
-  <groupbox>
-    <label><html:h2 data-l10n-id="pref-group-sections"></html:h2></label>
-    <checkbox
-      preference="loadingRelated"
-      data-l10n-id="pref-loadingRelated"
-      native="true"
-    />
-    <checkbox
+          native="true" /></radiogroup></html:div
+  ></html:section>
+  <html:section
+    id="refs-settings-discovery"
+    class="refs-pref-panel"
+    role="tabpanel"
+    aria-labelledby="refs-tab-discovery"
+    tabindex="0"
+    hidden="hidden"
+  >
+    <html:h2
+      class="refs-pref-section-title"
+      data-l10n-id="pref-group-sections"
+    ></html:h2
+    ><html:p class="refs-pref-hint" data-l10n-id="pref-discovery-intro"></html:p
+    ><checkbox
+      id="refs-pref-loadingCitations"
       preference="loadingCitations"
       data-l10n-id="pref-loadingCitations"
-      native="true"
-    />
-    <hbox align="center">
-      <html:label data-l10n-id="pref-citationsPageSize"></html:label>
-      <html:input
+      native="true" /><html:div class="refs-pref-row"
+      ><html:div class="refs-pref-copy"
+        ><html:label
+          for="refs-pref-citationsPageSize"
+          data-l10n-id="pref-citationsPageSize"
+        ></html:label></html:div
+      ><html:input
+        id="refs-pref-citationsPageSize"
         type="number"
+        preference="citationsPageSize"
         min="5"
         max="100"
-        preference="citationsPageSize"
-      ></html:input>
-    </hbox>
-    <checkbox
+        step="1" /></html:div
+    ><checkbox
+      id="refs-pref-loadingRelated"
+      preference="loadingRelated"
+      data-l10n-id="pref-loadingRelated"
+      native="true" /><checkbox
+      id="refs-pref-graphEnable"
       preference="graphEnable"
       data-l10n-id="pref-graphEnable"
-      native="true"
-    />
-    <hbox align="center">
-      <html:label data-l10n-id="pref-graphMaxNodes"></html:label>
-      <html:input
+      native="true" /><html:div class="refs-pref-row"
+      ><html:div class="refs-pref-copy"
+        ><html:label
+          for="refs-pref-graphMaxNodes"
+          data-l10n-id="pref-graphMaxNodes"
+        ></html:label></html:div
+      ><html:input
+        id="refs-pref-graphMaxNodes"
         type="number"
+        preference="graphMaxNodes"
         min="10"
         max="200"
-        preference="graphMaxNodes"
-      ></html:input>
-    </hbox>
-  </groupbox>
-
-  <groupbox>
-    <label><html:h2 data-l10n-id="pref-group-network"></html:h2></label>
-    <hbox align="center">
-      <html:label data-l10n-id="pref-email"></html:label>
-      <html:input type="text" style="flex: 1" preference="email"></html:input>
-    </hbox>
-    <hbox align="center">
-      <html:label data-l10n-id="pref-s2ApiKey"></html:label>
-      <html:input
+        step="1" /></html:div
+  ></html:section>
+  <html:section
+    id="refs-settings-cache"
+    class="refs-pref-panel"
+    role="tabpanel"
+    aria-labelledby="refs-tab-cache"
+    tabindex="0"
+    hidden="hidden"
+  >
+    <html:h2
+      class="refs-pref-section-title"
+      data-l10n-id="pref-group-cache"
+    ></html:h2
+    ><html:p class="refs-pref-hint" data-l10n-id="pref-cache-intro"></html:p
+    ><checkbox
+      id="refs-pref-savePDFReferences"
+      preference="savePDFReferences"
+      data-l10n-id="pref-savePDFReferences"
+      native="true" /><checkbox
+      id="refs-pref-saveAPIReferences"
+      preference="saveAPIReferences"
+      data-l10n-id="pref-saveAPIReferences"
+      native="true" /><html:div class="refs-pref-row"
+      ><html:div class="refs-pref-copy"
+        ><html:label
+          for="refs-pref-cacheTTLHours"
+          data-l10n-id="pref-cacheTTLHours"
+        ></html:label
+        ><html:p
+          id="refs-pref-cacheTTLHours-hint"
+          class="refs-pref-hint"
+          data-l10n-id="pref-cache-hint"
+        ></html:p></html:div
+      ><html:input
+        id="refs-pref-cacheTTLHours"
+        type="number"
+        preference="cacheTTLHours"
+        min="0"
+        max="8760"
+        step="1"
+        aria-describedby="refs-pref-cacheTTLHours-hint" /></html:div
+  ></html:section>
+  <html:section
+    id="refs-settings-accounts"
+    class="refs-pref-panel"
+    role="tabpanel"
+    aria-labelledby="refs-tab-accounts"
+    tabindex="0"
+    hidden="hidden"
+  >
+    <html:h2
+      class="refs-pref-section-title"
+      data-l10n-id="pref-group-network"
+    ></html:h2
+    ><html:p class="refs-pref-hint" data-l10n-id="pref-network-intro"></html:p
+    ><html:div class="refs-pref-row"
+      ><html:div class="refs-pref-copy"
+        ><html:label
+          for="refs-pref-email"
+          data-l10n-id="pref-email"
+        ></html:label
+        ><html:p
+          id="refs-pref-email-hint"
+          class="refs-pref-hint"
+          data-l10n-id="pref-email-hint"
+        ></html:p></html:div
+      ><html:input
+        id="refs-pref-email"
+        type="email"
+        preference="email"
+        aria-describedby="refs-pref-email-hint" /></html:div
+    ><html:div class="refs-pref-row"
+      ><html:div class="refs-pref-copy"
+        ><html:label
+          for="refs-pref-s2ApiKey"
+          data-l10n-id="pref-s2ApiKey"
+        ></html:label
+        ><html:p
+          id="refs-pref-s2ApiKey-hint"
+          class="refs-pref-hint"
+          data-l10n-id="pref-key-hint"
+        ></html:p></html:div
+      ><html:input
+        id="refs-pref-s2ApiKey"
         type="password"
-        style="flex: 1"
         preference="s2ApiKey"
-      ></html:input>
-    </hbox>
-    <hbox align="center">
-      <html:label data-l10n-id="pref-cacheTTLHours"></html:label>
-      <html:input type="number" min="0" preference="cacheTTLHours"></html:input>
-    </hbox>
-  </groupbox>
-
-  <groupbox>
-    <label><html:h2 data-l10n-id="pref-group-cnki"></html:h2></label>
-    <hbox align="center">
-      <html:label data-l10n-id="pref-cnki-username"></html:label>
-      <html:input type="text" preference="CNKI.username"></html:input>
-    </hbox>
-    <hbox align="center">
-      <html:label data-l10n-id="pref-cnki-password"></html:label>
-      <html:input type="password" preference="CNKI.password"></html:input>
-    </hbox>
-  </groupbox>
-
-  <vbox>
-    <html:label
+        autocomplete="off"
+        aria-describedby="refs-pref-s2ApiKey-hint" /></html:div
+    ><html:div class="refs-pref-row"
+      ><html:div class="refs-pref-copy"
+        ><html:label
+          for="refs-pref-openAlexApiKey"
+          data-l10n-id="pref-openAlexApiKey"
+        ></html:label
+        ><html:p
+          id="refs-pref-openAlexApiKey-hint"
+          class="refs-pref-hint"
+          data-l10n-id="pref-openalex-hint"
+        ></html:p></html:div
+      ><html:input
+        id="refs-pref-openAlexApiKey"
+        type="password"
+        preference="openAlexApiKey"
+        autocomplete="off"
+        aria-describedby="refs-pref-openAlexApiKey-hint" /></html:div
+    ><html:h3
+      class="refs-pref-subtitle"
+      data-l10n-id="pref-group-cnki"
+    ></html:h3
+    ><html:p class="refs-pref-hint" data-l10n-id="pref-cnki-hint"></html:p
+    ><html:div class="refs-pref-row"
+      ><html:div class="refs-pref-copy"
+        ><html:label
+          for="refs-pref-CNKI-username"
+          data-l10n-id="pref-cnki-username"
+        ></html:label></html:div
+      ><html:input
+        id="refs-pref-CNKI-username"
+        type="text"
+        preference="CNKI.username"
+        autocomplete="off" /></html:div
+    ><html:div class="refs-pref-row"
+      ><html:div class="refs-pref-copy"
+        ><html:label
+          for="refs-pref-CNKI-password"
+          data-l10n-id="pref-cnki-password"
+        ></html:label></html:div
+      ><html:input
+        id="refs-pref-CNKI-password"
+        type="password"
+        preference="CNKI.password"
+        autocomplete="off" /></html:div
+  ></html:section>
+  <html:footer class="refs-pref-footer"
+    ><html:p class="refs-pref-hint" data-l10n-id="pref-autosave"></html:p
+    ><html:span
       data-l10n-id="pref-help"
-      data-l10n-args='{"time": "__buildTime__","name": "__addonName__","version":"__buildVersion__"}'
-    ></html:label>
-  </vbox>
-</vbox>
+      data-l10n-args='{"time":"__buildTime__","name":"__addonName__","version":"__buildVersion__"}'
+    ></html:span></html:footer
+></vbox>

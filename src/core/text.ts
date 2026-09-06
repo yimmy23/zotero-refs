@@ -109,14 +109,35 @@ export function extractURL(text: string): string | undefined {
 }
 
 export function identifiersToURL(identifiers: Identifiers): string | undefined {
-  if (identifiers.DOI) return `https://doi.org/${identifiers.DOI}`;
-  if (identifiers.arXiv) return `https://arxiv.org/abs/${identifiers.arXiv}`;
+  if (identifiers.DOI)
+    return `https://doi.org/${encodeURIComponent(identifiers.DOI)}`;
+  if (identifiers.arXiv)
+    return `https://arxiv.org/abs/${encodeURIComponent(identifiers.arXiv)}`;
   if (identifiers.PMID)
     return `https://pubmed.ncbi.nlm.nih.gov/${identifiers.PMID}/`;
   if (identifiers.CNKI) return identifiers.CNKI;
   if (identifiers.openAlex)
     return `https://openalex.org/${identifiers.openAlex}`;
   return undefined;
+}
+
+/** An explicit shared identifier conflict outweighs any title heuristic. */
+export function identifiersConflict(a: Identifiers, b: Identifiers): boolean {
+  for (const key of ["DOI", "arXiv", "PMID"] as const) {
+    const normalize = (value: string) => {
+      const normalized = value
+        .trim()
+        .toLowerCase()
+        .replace(/^https?:\/\/(?:dx\.)?doi\.org\//, "");
+      // arXiv versions identify revisions of the same work, not distinct
+      // papers. DOI/PMID disagreement still vetoes a metadata match.
+      return key === "arXiv" ? normalized.replace(/v\d+$/, "") : normalized;
+    };
+    if (a[key] && b[key] && normalize(a[key]) !== normalize(b[key])) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -187,9 +208,135 @@ export function normalizeTitle(s?: string): string {
   );
 }
 
-/**
- * Heuristic parse of a raw bibliography string into title / authors / year /
- * venue. Ported from zotero-reference with fixes.
+/** Only exact normalized titles may promote a search result to metadata. */
+export function titlesMatch(a?: string, b?: string): boolean {
+  const title = normalizeTitle(cleanText(a));
+  return !!title && title === normalizeTitle(cleanText(b));
+}
+
+/** A printed citation is not structured metadata. Only split at supported
+ * author/date/document-type boundaries; never rank sentences by their length.
+ */
+function citationAuthors(value: string): string[] | undefined {
+  const authorText = value
+    .replace(/\bet\s+al\s*\./gi, "et al.")
+    .replace(/(等|ほか)\s*\./g, "$1.")
+    .replace(/([A-Za-z])\s*´\s*/g, "$1\u0301")
+    .normalize("NFC")
+    .replace(/,\s*(2nd|3rd|4th)\b/g, " $1")
+    .replace(/^[\s,;.]+|[\s,;]+$/g, "")
+    .replace(/\s*\(?\b(?:1[6-9]|20)\d{2}[a-z]?\)?\s*[.,;]?$/i, "")
+    .trim();
+  if (
+    !authorText ||
+    authorText.length > 600 ||
+    /[\d:!?]/.test(authorText.replace(/\b(?:2nd|3rd|4th)\b/g, ""))
+  )
+    return undefined;
+  const abbreviated = /\bet\s+al\.?$|(?:等|ほか)\.?$/i.test(authorText);
+  const names = authorText
+    .replace(/[,;\s]*(?:\bet\s+al\.?|等|ほか)[.,\s]*$/i, "")
+    // APA's comma between a surname and its initials is part of one name.
+    .replace(
+      /([\p{L}’'\p{Pd}]),\s*((?:[A-Z]\.?[\s]*){1,5})(?=,|&|(?:2nd|3rd|4th)\b|$)/gu,
+      "$1 $2",
+    )
+    .replace(/\s+(?:and|&)\s+/gi, ",")
+    .replace(/,\s*&\s*/g, ",")
+    .split(/[,;，；]/)
+    .map((name) => name.trim().replace(/\.$/, ""))
+    .filter(Boolean);
+  const surname = "[\\p{L}’'\\p{Pd}]{2,}(?:\\s+[\\p{L}’'\\p{Pd}]{2,}){0,3}";
+  const initials = "(?:[A-Z]\\.?\\s*){1,5}";
+  const namePattern = new RegExp(
+    `^(?:${surname}\\s+${initials}|${initials}\\s+${surname}|[\\p{Script=Han}]{2,5})$`,
+    "u",
+  );
+  if (
+    !names.length ||
+    !names.every(
+      (name) =>
+        namePattern.test(
+          name.replace(/\s+(?:Jr|Sr|II|III|IV|2nd|3rd|4th)\.?$/, ""),
+        ) ||
+        (!/[.?!:]/.test(name) &&
+          /\b(?:group|team|consortium|collaboration|committee|organization|organisation|institute|association|society|network|investigators)$/i.test(
+            name,
+          )) ||
+        (abbreviated && /^[\p{L}’'\p{Pd}]+$/u.test(name)),
+    )
+  )
+    return undefined;
+  // Keep the printed truncation marker: the final named author is not
+  // necessarily the paper's last author when the bibliography says et al.
+  if (abbreviated) names[names.length - 1] += " et al.";
+  return names;
+}
+
+const CITATION_ABBREVIATION =
+  /^(?:[A-Z]|e\.g|i\.e|vs|al|Dr|Prof|Jr|Sr|St|J|Am|Br|Can|Chin|Clin|Eur|Exp|Int|Nat|Natl|Engl|Med|Mol|Oncol|Res|Rev|Sci|Soc|Transl|Acad|Ann|Biol|Chem|Epidemiol|Gen|Immunol|Invest|Pathol|Pharmacol|Phys|Proc|Psychol|Rep|Stat|Surg|Ther|Vol|No|Thorac|Respir|Radiat|Environ|Biophys|Crit|Educ|Prev|Dis|Immunother|Front|Compr|Mod|Reg|Intern|Breath|Technol|Cardiothorac|Commun|Genet|Hematol|Deliv|Assoc)$/i;
+
+/** Sentence boundaries, excluding initials and common journal abbreviations. */
+function citationBreaks(value: string): { start: number; end: number }[] {
+  const breaks: { start: number; end: number }[] = [];
+  for (const match of value.matchAll(/[.!?。](?:\s*,)?\s+/g)) {
+    const before = value.slice(0, match.index);
+    const token = before.match(/([^\s]+)$/)?.[1] || "";
+    if (match[0][0] === ".") {
+      if (/^(?:e\.g|i\.e|vs|al|Dr|Prof|Jr|Sr|St)$/i.test(token)) continue;
+      const segment = value.slice(breaks.at(-1)?.end || 0, match.index);
+      const journalStart =
+        /^(?:J|CA|Am|Br|Can|Chin|Clin|Eur|Exp|Int|Nat|Engl|Med|Mol|Oncol|Res|Rev|Sci|Transl|Ann|Biol|Chem|Epidemiol|Proc|Stat|Surg|Thorac|Respir|Radiat|Crit|Front|Curr|Cancer|Lancet|Cochrane|JNCI|Health|Dis|Mod)\b/;
+      const journalWords = segment
+        .split(/\s+/)
+        .every(
+          (word) =>
+            /^[A-Z]/.test(word) || /^(?:of|the|and|in|for|de|&)$/.test(word),
+        );
+      if (
+        (journalStart.test(segment) || /^[A-Z](?:$|\.\s)/.test(segment)) &&
+        journalWords &&
+        (CITATION_ABBREVIATION.test(token) || /^[A-Z][a-z]{1,8}$/.test(token))
+      )
+        continue;
+    }
+    breaks.push({ start: match.index!, end: match.index! + match[0].length });
+  }
+  return breaks;
+}
+
+function citationVenue(value: string): string | undefined {
+  const venue = value
+    .replace(/^[\s,;.。]+|[\s,;.。]+$/g, "")
+    .replace(/^(?:In:\s*|Preprint at\s*)/i, "")
+    .replace(/(?<=\p{Script=Han})\s+(?=\p{Script=Han})/gu, "")
+    .trim();
+  if (
+    !venue ||
+    venue.length > 140 ||
+    /[!?]|\b(?:https?|doi|PMID|ISBN)\b/i.test(venue) ||
+    /\d/.test(venue)
+  )
+    return undefined;
+  // The numeric publication suffix supplies the main evidence. This check
+  // rules out prose endings while admitting full and abbreviated venues.
+  const journalWord =
+    /\b(?:journal|j|review|reviews|proceedings|transactions|bulletin|annals|nature|science|lancet|bmj|jama|nejm|plos|elife|medicine|medical|cancer|oncology|research|res|med|oncol|math|model|press|university|arxiv|medrxiv|biorxiv)\b|杂志|学报|出版社/i;
+  const words = venue.split(/\s+/);
+  const capitalized = words.every(
+    (word) =>
+      /^[A-Z\p{Script=Han}]/u.test(word) ||
+      /^(?:of|the|and|in|for|de|&)$/.test(word),
+  );
+  return (words.length <= 9 && capitalized) ||
+    (words.length === 1 && journalWord.test(venue))
+    ? venue
+    : undefined;
+}
+
+/** Local parsing for Vancouver, author-date/APA, quoted and GB/T citations.
+ * Ambiguous citations retain their raw text instead of guessing a journal as
+ * the title. The original citation always remains available in RefItem.text.
  */
 export function parseRefText(text: string): {
   year?: string;
@@ -197,72 +344,170 @@ export function parseRefText(text: string): {
   title: string;
   publicationVenue?: string;
 } {
-  try {
-    text = text
-      .replace(/^\[\d+?\]/, "")
-      .replace(/\s+/g, " ")
-      .trim();
-    let title: string;
-    let titleMatch: string;
-    // a quoted span is the title only when it is long enough to BE one —
-    // quotes inside a title ('The evolving uses of "real-world" data')
-    // otherwise swallow it
-    const quoted = text.match(/[“"](.{15,}?)[”"]/);
-    if (quoted) {
-      titleMatch = quoted[0];
-      title = quoted[1];
-      if (title.endsWith(",")) title = title.slice(0, -1);
-    } else {
-      const segments =
-        text.indexOf(". ") !== -1 && (text.match(/\.\s/g)?.length || 0) >= 2
-          ? text.split(". ")
-          : text.split(".");
-      const candidates = segments
-        .sort((a, b) => b.length - a.length)
-        // score: fraction of abbreviation/symbol/digit chars — authors score high
-        .map((s) => {
-          let count = 0;
-          for (const regex of [/[A-Z]\./g, /[,.\-():]/g, /\d/g]) {
-            count += s.match(regex)?.length || 0;
-          }
-          return [count / Math.max(s.length, 1), s] as [number, string];
-        })
-        // a title should have at least a few words
-        .filter((entry) => (entry[1].match(/\s+/g)?.length || 0) >= 3)
-        .sort((a, b) => a[0] - b[0]);
-      if (!candidates.length) return { title: text };
-      title = titleMatch = candidates[0][1];
-      title = title.replace(/\[[A-Z]\]$/, "");
+  const raw = text
+    .replace(/^\s*(?:\[\d+\]|\(\d+\)|\d{1,3}[.)、．])\s*/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  // Identifier dates belong to identifiers, not the publication date. Do
+  // not let a DOI such as tlcr.2020.03.40 replace the printed year 2021.
+  const identifierStart = raw.search(
+    /(?:\bdoi\s*:|https?:\/\/|\b10\.\d{4,9}\/|\bPMID\s*:|\bISBN\s*:|\bEpub\b)/i,
+  );
+  const body =
+    identifierStart < 0
+      ? raw
+      : (
+          raw.slice(0, identifierStart) +
+          (raw
+            .slice(identifierStart)
+            .match(/\s+\((?:1[6-9]|20)\d{2}\)\.?$/)?.[0] || "")
+        ).trim();
+  const currentYear = new Date().getFullYear();
+  const years = [...body.matchAll(/\b(1[6-9]\d{2}|20\d{2})[a-z]?\b/g)].filter(
+    (match) => Number(match[1]) <= currentYear + 1,
+  );
+  let authors: string[] | undefined;
+  let rest = "";
+  let year: string | undefined;
+  // APA/Harvard and comma-separated author-date citations have the most
+  // explicit author/title boundary, including the year after dotted initials.
+  for (const match of years) {
+    if (match.index! > 605) break;
+    const prefix = body.slice(0, match.index).replace(/[\s(,;.]+$/, "");
+    const parsed = citationAuthors(prefix);
+    const suffix = body.slice(match.index! + match[0].length);
+    if (parsed && /^[)\s.,;:]+\S/.test(suffix)) {
+      authors = parsed;
+      year = match[1];
+      rest = suffix.replace(/^[)\s.,;:]+/, "");
+      break;
     }
-    title = title.trim();
-    const splitByTitle = text.split(titleMatch);
-    let authorInfo = (splitByTitle[0] || "").trim();
-    const publicationVenue = splitByTitle[1]
-      ?.match(/[^.\s].+[^.]/)?.[0]
-      ?.split(/[,\d]/)[0]
-      ?.trim();
-    if (authorInfo.indexOf("et al.") !== -1) {
-      authorInfo = authorInfo.split("et al.")[0] + "et al.";
-    }
-    const currentYear = new Date().getFullYear();
-    const yearCandidates = text
-      .match(/[^\d]\d{4}[^\d-]/g)
-      ?.map((s) => s.match(/\d+/)![0]);
-    const year = yearCandidates?.find(
-      (s) => Number(s) > 1600 && Number(s) <= currentYear + 1,
-    );
-    if (year) {
-      authorInfo = authorInfo.replace(`${year}.`, "").replace(year, "").trim();
-    }
-    return {
-      year,
-      title,
-      authors: authorInfo ? [authorInfo] : [],
-      publicationVenue,
-    };
-  } catch {
-    return { title: text };
   }
+  if (!authors) {
+    // Do not split A. B. Smith or an APA initials list at the first dot.
+    for (const match of body.matchAll(/[.。:]\s*/g)) {
+      if (match.index! > 600) break;
+      const end = match.index! + 1;
+      const parsed = citationAuthors(
+        body.slice(0, match[0][0] === ":" ? match.index : end),
+      );
+      const suffix = body.slice(end).trim();
+      if (
+        parsed &&
+        suffix &&
+        !/^(?:[,;&]|[A-Z]\.(?:\s|,)|(?:and|et\s+al)\b)/.test(suffix)
+      ) {
+        authors = parsed;
+        rest = suffix;
+        break;
+      }
+    }
+  }
+  if (!authors || !rest) return { title: raw };
+
+  const documentType = rest.match(
+    /\[\s*(?:J|M|C|D|R|N|EB)(?:\s*\/\s*OL)?\s*\]/i,
+  );
+  const quoted = rest.match(/^[“"]([^”"]{4,})[”"]/);
+  const quotedTitle =
+    quoted &&
+    (/[,.!?]$/.test(quoted[1]) ||
+      /^\s*[,.;]/.test(rest.slice(quoted[0].length)));
+  let title = "";
+  let venueText = "";
+  if (documentType) {
+    title = rest.slice(0, documentType.index).trim();
+    venueText = rest.slice(documentType.index! + documentType[0].length);
+  } else if (quoted && quotedTitle) {
+    title = quoted[1].replace(/,$/, "").trim();
+    venueText = rest.slice(quoted[0].length);
+  } else {
+    // Publication metadata normally follows the venue. Search from the
+    // right so years mentioned in the title cannot win over its printed date.
+    const restYears = [
+      ...rest.matchAll(/\b(1[6-9]\d{2}|20\d{2})[a-z]?\b/g),
+    ].filter((match) => Number(match[1]) <= currentYear + 1);
+    const numeric = [
+      ...rest.matchAll(
+        /\b\d{1,4}[A-Za-z]?\s*(?:\([^)]{1,20}\))?\s*[:,;]\s*(?:[A-Za-z]{0,8}\s*)?\d+[A-Za-z0-9]*\b/g,
+      ),
+    ];
+    // Try each supported publication suffix. A year inside an APA title
+    // must not prevent a later volume/page boundary from being examined.
+    const metadataStarts = [
+      ...new Set([
+        ...restYears.map((match) => match.index!),
+        ...numeric.map((match) => match.index!),
+      ]),
+    ].sort((a, b) => a - b);
+    for (const metadataStart of metadataStarts) {
+      const before = rest.slice(0, metadataStart).replace(/[\s,(.;]+$/, "");
+      const boundaries = citationBreaks(before);
+      for (const boundary of boundaries.reverse()) {
+        const venue = citationVenue(before.slice(boundary.end));
+        if (venue) {
+          title = before
+            .slice(
+              0,
+              boundary.start + (/[!?]/.test(before[boundary.start]) ? 1 : 0),
+            )
+            .trim();
+          venueText = rest.slice(boundary.end);
+          break;
+        }
+      }
+      // Author-date citations often separate title and venue with a comma.
+      // Only a journal-like suffix is accepted; commas inside titles stay.
+      if (!title && year) {
+        for (const match of [...before.matchAll(/,\s*/g)].reverse()) {
+          const venue = citationVenue(
+            before.slice(match.index! + match[0].length),
+          );
+          if (venue) {
+            title = before
+              .slice(0, match.index)
+              .replace(/[.。]+$/, "")
+              .trim();
+            venueText = rest.slice(match.index! + match[0].length);
+            break;
+          }
+        }
+      }
+      if (title) break;
+    }
+    // With a recognizable author segment but no journal boundary, a title
+    // followed only by a date is still ambiguous (book vs truncated article).
+    if (!title) return { title: raw };
+  }
+  if (!title || title.length < 3) return { title: raw };
+  const venueYears = [
+    ...venueText.matchAll(/\b(1[6-9]\d{2}|20\d{2})[a-z]?\b/g),
+  ].filter((match) => Number(match[1]) <= currentYear + 1);
+  const parentheticalYear = venueYears.find(
+    (match) =>
+      /(?:^|[^\d])\(\s*$/.test(venueText.slice(0, match.index)) &&
+      /^\s*\)/.test(venueText.slice(match.index! + match[0].length)),
+  );
+  year ??=
+    parentheticalYear?.[1] ||
+    venueYears.find((match) => {
+      const before = venueText.slice(0, match.index).trimEnd();
+      const after = venueText.slice(match.index! + match[0].length).trimStart();
+      return !/[-–‐:]$/.test(before) && !/^[-–‐]/.test(after);
+    })?.[1];
+  const venuePrefix = venueText
+    .replace(/^[\s,;.。]+/, "")
+    .split(/(?:,?\s*\(?\b(?:1[6-9]|20)\d{2}\b|[,;]\s*\d|\s+\d)/)[0];
+  return {
+    title: title
+      .replace(/[.。]+$/, "")
+      .replace(/\s+([,.;:!?])/g, "$1")
+      .replace(/(?<=\p{Script=Han})\s+(?=\p{Script=Han})/gu, "")
+      .trim(),
+    authors,
+    year,
+    publicationVenue: citationVenue(venuePrefix),
+  };
 }
 
 /** raw reference string -> minimal RefItem */

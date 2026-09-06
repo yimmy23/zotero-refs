@@ -1,4 +1,10 @@
-import { isChinese, parseCNKIURL } from "../core/text";
+import {
+  isChinese,
+  isHttpUrl,
+  parseCNKIURL,
+  refTextToInfo,
+  titlesMatch,
+} from "../core/text";
 import type { Identifiers, MetaSource, RefItem, RefTag } from "../core/types";
 import { http } from "../core/http";
 import { CITED_CHIP_COLOR } from "../core/types";
@@ -217,12 +223,11 @@ function parseSearchRows(html: string, overseaHost: boolean): CNKISearchRow[] {
       if (!link) return;
       let url = link.getAttribute("href") || "";
       if (!url) return;
-      if (!url.startsWith("http")) {
-        url =
-          (overseaHost
-            ? "https://chn.oversea.cnki.net"
-            : "https://kns.cnki.net") + url;
-      }
+      url = new URL(
+        url,
+        overseaHost ? "https://chn.oversea.cnki.net" : "https://kns.cnki.net",
+      ).href;
+      if (!isHttpUrl(url)) return;
       const text = (sel: string) =>
         (row.querySelector(sel)?.textContent || "").trim();
       const op = row.querySelector("td.operat > [data-dbname]");
@@ -288,6 +293,7 @@ export async function getCNKIURL(keywords: string): Promise<string | null> {
 
 /** fetch a URL as a translator-ready Document (location wrapped) */
 async function requestDocument(url: string): Promise<Document | null> {
+  if (!isHttpUrl(url)) return null;
   try {
     const xhr = await Zotero.HTTP.request("GET", url, {
       responseType: "document",
@@ -358,6 +364,7 @@ export async function importCNKIItem(
   libraryID: number,
   collections: number[] = [],
 ): Promise<Zotero.Item | null> {
+  if (!isHttpUrl(row.url)) return null;
   // 1. web translator on the detail page
   try {
     const doc = await requestDocument(row.url);
@@ -389,7 +396,7 @@ export async function importCNKIItem(
       });
       if (items?.length) {
         const item = items[0];
-        if (row.url && !item.getField("url")) {
+        if (isHttpUrl(row.url) && !item.getField("url")) {
           item.setField("url", row.url);
           await item.saveTx();
         }
@@ -409,7 +416,7 @@ async function getInfoByTitle(
   if (!isChinese(refText || title)) return null;
 
   const rows = await searchCNKI(title);
-  const row = rows?.[0];
+  const row = rows?.find((candidate) => titlesMatch(candidate.title, title));
   if (!row) return null;
 
   // base info straight from the result row (survives captcha-gated details)
@@ -545,10 +552,14 @@ async function fetchFileInfo(
     const bibliography: any[] = infoData.content?.paper?.bibliography || [];
     const refer: any[] = refData.content?.refer || [];
     for (const ref of bibliography) {
-      const matched = refer.find(
-        (r: any) => String(ref.title).indexOf(r.title) !== -1,
-      );
       const text = String(ref.title).replace(/^\[\d+\]/, "");
+      const parsed = refTextToInfo(text);
+      const candidates = refer.filter((r: any) =>
+        titlesMatch(parsed.title, r.title),
+      );
+      // A short title inside the citation may describe an unrelated work.
+      // Bind a reader record only when its complete title uniquely agrees.
+      const matched = candidates.length === 1 ? candidates[0] : undefined;
       if (matched) {
         const cnkiURL =
           `https://kns.cnki.net/kcms/detail/detail.aspx?FileName=${matched.fileName}` +
@@ -564,11 +575,7 @@ async function fetchFileInfo(
         });
       } else {
         refs.push({
-          identifiers: {},
-          text,
-          authors: [],
-          type: "journalArticle",
-          title: text,
+          ...parsed,
           source: "cnki",
         });
       }
@@ -615,8 +622,8 @@ async function getReferences(
   let fileName = parseCNKIURL(ids.CNKI)?.fileName;
   if (!fileName && title) {
     const rows = await searchCNKI(title);
-    const url = rows?.[0]?.url;
-    fileName = rows?.[0]?.filename || parseCNKIURL(url || undefined)?.fileName;
+    const row = rows?.find((candidate) => titlesMatch(candidate.title, title));
+    fileName = row?.filename || parseCNKIURL(row?.url)?.fileName;
   }
   if (!fileName) return null;
 

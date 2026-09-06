@@ -160,33 +160,36 @@ export function registerItemMenus() {
   // Zotero 7: no MenuManager — build the submenu directly into the item
   // context menu of each main window.
   usedFallback = true;
-  for (const win of Zotero.getMainWindows()) {
-    const doc = win.document;
-    if (!doc || doc.getElementById(`${config.addonRef}-item-menu-z7`)) {
-      continue;
-    }
-    const itemMenu = doc.getElementById("zotero-itemmenu");
-    if (!itemMenu) continue;
-    const menu = doc.createXULElement("menu") as any;
-    menu.id = `${config.addonRef}-item-menu-z7`;
-    menu.setAttribute("label", getString("menu-references", "label"));
-    const popup = doc.createXULElement("menupopup");
-    const entries: Array<[string, (items: Zotero.Item[]) => void]> = [
-      ["menu-fetch-refs", (items) => void fetchAction(items)],
-      ["menu-import-refs", (items) => void importAction(items)],
-      ["menu-copy-refs", (items) => void copyAction(items)],
-    ];
-    for (const [key, run] of entries) {
-      const mi = doc.createXULElement("menuitem") as any;
-      mi.setAttribute("label", getString(key as "menu-fetch-refs", "label"));
-      mi.addEventListener("command", () => {
-        run(win.ZoteroPane?.getSelectedItems() || []);
-      });
-      popup.append(mi);
-    }
-    menu.append(popup);
-    itemMenu.append(menu);
+  for (const win of Zotero.getMainWindows()) registerWindowMenus(win);
+}
+
+export function registerWindowMenus(win: _ZoteroTypes.MainWindow) {
+  if (!usedFallback) return;
+  const doc = win.document;
+  if (!doc || doc.getElementById(`${config.addonRef}-item-menu-z7`)) {
+    return;
   }
+  const itemMenu = doc.getElementById("zotero-itemmenu");
+  if (!itemMenu) return;
+  const menu = doc.createXULElement("menu") as any;
+  menu.id = `${config.addonRef}-item-menu-z7`;
+  menu.setAttribute("label", getString("menu-references", "label"));
+  const popup = doc.createXULElement("menupopup");
+  const entries: Array<[string, (items: Zotero.Item[]) => void]> = [
+    ["menu-fetch-refs", (items) => void fetchAction(items)],
+    ["menu-import-refs", (items) => void importAction(items)],
+    ["menu-copy-refs", (items) => void copyAction(items)],
+  ];
+  for (const [key, run] of entries) {
+    const mi = doc.createXULElement("menuitem") as any;
+    mi.setAttribute("label", getString(key as "menu-fetch-refs", "label"));
+    mi.addEventListener("command", () => {
+      run(win.ZoteroPane?.getSelectedItems() || []);
+    });
+    popup.append(mi);
+  }
+  menu.append(popup);
+  itemMenu.append(menu);
 }
 
 export function unregisterItemMenus() {

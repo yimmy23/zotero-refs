@@ -1,3 +1,4 @@
+import { actionButton } from "./controls";
 import { config } from "../../package.json";
 import { getLocaleID, getString } from "../utils/locale";
 import { getNumPref, getPref } from "../utils/prefs";
@@ -39,6 +40,8 @@ interface GraphCenter {
   label: string;
 }
 const centers = new WeakMap<HTMLElement, GraphCenter>();
+const requests = new WeakMap<HTMLElement, number>();
+let requestSequence = 0;
 
 function nodeClicked(node: GraphNode) {
   if (node.ref.libItemID) {
@@ -222,6 +225,7 @@ function makeHoverHandler(
   item: Zotero.Item,
 ): GraphHandlers["onHover"] {
   let hoverTimer: number | undefined;
+  const generation = requests.get(body);
   return (node, rect) => {
     const tip = body.querySelector<HTMLElement>(".references-graph-tip");
     // never toggle display: a layout jump under the canvas while the
@@ -250,6 +254,12 @@ function makeHoverHandler(
     hoverTimer = setTimeout(
       () => {
         hoverTimer = undefined;
+        if (
+          !body.isConnected ||
+          requests.get(body) !== generation ||
+          !addon.data.alive
+        )
+          return;
         const view = views.get(body);
         showRefPopup(node.ref, rect, "left", undefined, {
           onImport: () => void importNode(item, node, view),
@@ -272,13 +282,23 @@ async function renderGraph(
   const status = body.querySelector<HTMLElement>(".references-graph-status");
   const home = body.querySelector<HTMLElement>(".references-graph-home");
   if (!container || !status) return;
+  const generation = ++requestSequence;
+  requests.set(body, generation);
+  const current = () =>
+    container.isConnected &&
+    requests.get(body) === generation &&
+    addon.data.alive;
+  views.get(body)?.destroy();
+  views.delete(body);
+  const maxNodes = Math.min(200, Math.max(10, getNumPref("graphMaxNodes", 50)));
 
   const center = centers.get(body) ?? {
     ids: hostIdentifiers(item),
     key: "",
     label: "",
   };
-  const cacheKey = itemCacheKey(item) + (center.key ? `#${center.key}` : "");
+  const cacheKey =
+    itemCacheKey(item) + (center.key ? `#${center.key}` : "") + `/${maxNodes}`;
   if (home) {
     home.style.display = center.key ? "" : "none";
     home.textContent = center.key ? `↩ ${getString("graph-back-home")}` : "";
@@ -287,53 +307,63 @@ async function renderGraph(
       : "";
   }
 
-  let data = force ? undefined : dataCache.get(cacheKey);
-  if (!data) {
-    status.textContent = getString("graph-loading");
-    status.style.display = "";
-    const built = await buildGraph(
-      { ids: center.ids, libraryID: item.libraryID },
-      {
-        maxNodes: Number(getPref("graphMaxNodes")) || 50,
-        onStatus: (msg) => {
-          status.textContent = msg;
+  try {
+    let data = force ? undefined : dataCache.get(cacheKey);
+    if (!data) {
+      status.textContent = getString("graph-loading");
+      status.style.display = "";
+      const built = await buildGraph(
+        { ids: center.ids, libraryID: item.libraryID },
+        {
+          maxNodes,
+          onStatus: (msg) => {
+            if (current()) status.textContent = msg;
+          },
         },
-      },
-    );
-    // the user may have switched items while OpenAlex was queried
-    if (!container.isConnected) return;
-    if (!built) {
+      );
+      // the user may have switched items while OpenAlex was queried
+      if (!current()) return;
+      if (!built) {
+        status.textContent = getString("graph-unavailable");
+        setSectionSummary("—");
+        return;
+      }
+      data = built;
+      if (dataCache.size >= 100) {
+        const oldest = dataCache.keys().next().value;
+        if (oldest !== undefined) dataCache.delete(oldest);
+      }
+      dataCache.set(cacheKey, data);
+    }
+    if (!current()) return;
+    status.textContent = `${data.nodes.length} ${getString("graph-nodes")}`;
+    status.style.display = "";
+    // one live view per body: destroy the previous render's view (its
+    // simulation, ResizeObserver and theme listener) before creating a new one
+    let view = views.get(body);
+    if (view && (view as any).container !== container) {
+      view.destroy();
+      view = undefined;
+    }
+    if (!view) {
+      view = new GraphView(container, {
+        onSelect: nodeClicked,
+        onOpen: nodeOpened,
+        onHover: makeHoverHandler(body, item),
+        onContext: (node, sx, sy) =>
+          showNodeMenu(body, item, setSectionSummary, node, sx, sy),
+      });
+      views.set(body, view);
+    }
+    view.setData(data);
+    setSectionSummary(`${data.nodes.length}`);
+  } catch (error) {
+    ztoolkit.log("[graph] build failed", error);
+    if (current()) {
       status.textContent = getString("graph-unavailable");
       setSectionSummary("—");
-      return;
     }
-    data = built;
-    if (dataCache.size >= 100) {
-      const oldest = dataCache.keys().next().value;
-      if (oldest !== undefined) dataCache.delete(oldest);
-    }
-    dataCache.set(cacheKey, data);
   }
-  status.style.display = "none";
-  // one live view per body: destroy the previous render's view (its
-  // simulation, ResizeObserver and theme listener) before creating a new one
-  let view = views.get(body);
-  if (view && (view as any).container !== container) {
-    view.destroy();
-    view = undefined;
-  }
-  if (!view) {
-    view = new GraphView(container, {
-      onSelect: nodeClicked,
-      onOpen: nodeOpened,
-      onHover: makeHoverHandler(body, item),
-      onContext: (node, sx, sy) =>
-        showNodeMenu(body, item, setSectionSummary, node, sx, sy),
-    });
-    views.set(body, view);
-  }
-  view.setData(data);
-  setSectionSummary(`${data.nodes.length}`);
 }
 
 export function registerGraphSection() {
@@ -363,6 +393,9 @@ export function registerGraphSection() {
       async ({ body, item, setSectionSummary }) => {
         if (!item?.isRegularItem?.()) return;
         const doc = body.ownerDocument!;
+        views.get(body as HTMLElement)?.destroy();
+        views.delete(body as HTMLElement);
+        requests.set(body as HTMLElement, ++requestSequence);
         body.textContent = "";
         (body as HTMLElement).classList.add("references-panel");
 
@@ -384,10 +417,11 @@ export function registerGraphSection() {
           void renderGraph(body as HTMLElement, item, setSectionSummary);
         });
         toolbar.append(home);
-        const rebuild = doc.createElement("button");
-        rebuild.className =
-          "references-button references-icon-button references-icon-refresh";
-        rebuild.title = getString("graph-rebuild");
+        const rebuild = actionButton(
+          doc,
+          "references-icon-refresh",
+          getString("graph-rebuild"),
+        );
         rebuild.addEventListener("click", () =>
           renderGraph(body as HTMLElement, item, setSectionSummary, true),
         );
@@ -427,10 +461,6 @@ export function registerGraphSection() {
         tip.textContent = "\u00a0";
         body.append(tip);
 
-        if (dataCache.has(itemCacheKey(item))) {
-          await renderGraph(body as HTMLElement, item, setSectionSummary);
-          return;
-        }
         // settle debounce OUTSIDE the awaited render — the OpenAlex build is
         // the most expensive auto-fetch, so never fire it per arrow-key step
         // and never hold up Zotero's item-pane render loop for it
@@ -461,5 +491,13 @@ export function removeGraphMenus() {
 
 export function invalidateGraph(stateKeys?: string[]) {
   if (!stateKeys) dataCache.clear();
-  else for (const key of stateKeys) dataCache.delete(key);
+  else
+    for (const key of dataCache.keys())
+      if (
+        stateKeys.some(
+          (stateKey) =>
+            key.startsWith(`${stateKey}/`) || key.startsWith(`${stateKey}#`),
+        )
+      )
+        dataCache.delete(key);
 }

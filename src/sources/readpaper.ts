@@ -23,7 +23,7 @@ function mapPaper(data: any): RefItem {
   return {
     identifiers: {},
     title: htmlToText(data.title),
-    year: data.year,
+    year: data.year != null ? String(data.year) : undefined,
     publishDate: data.publishDate,
     authors: (data.authorList || []).map((a: any) => htmlToText(a.name)),
     abstract: htmlToText(data.summary),

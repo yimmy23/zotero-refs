@@ -3,16 +3,28 @@ import { getLocaleID, getString } from "../utils/locale";
 import { getPref } from "../utils/prefs";
 import { setTimeout, clearTimeout } from "../utils/window";
 import { refStorage, itemCacheKey } from "../core/storage";
-import { hostIdentifiers, isChinese } from "../core/text";
+import {
+  hostIdentifiers,
+  isChinese,
+  isHttpUrl,
+  identifiersToURL,
+} from "../core/text";
 import { fuseReferences } from "../core/fuse";
 import type { RefItem, SourceID } from "../core/types";
 import { SOURCE_NAME } from "../core/types";
 import { getReferencesByAPI, sources } from "../sources";
 import { parsePDFReferences } from "../pdf/parser";
 import { runBatchImport } from "./batchImport";
-import { renderRefRow, filterRows, keywordPredicate, closePopup } from "./rows";
+import {
+  renderRefRow,
+  filterRows,
+  keywordPredicate,
+  referenceSearchText,
+  closePopup,
+} from "./rows";
 import { guard, guardAsync } from "../utils/guard";
 import type { RowContext } from "./rows";
+import { actionButton, createSearch, setListMessage } from "./controls";
 
 /**
  * The "References" item pane section (library + reader), the heart of the
@@ -47,6 +59,7 @@ interface PanelState {
   loading: boolean;
   importing: boolean;
   loadedOnce: boolean;
+  renders: Map<HTMLElement, (s: string) => void>;
 }
 
 const states = new Map<string, PanelState>();
@@ -64,6 +77,7 @@ function getState(item: Zotero.Item): PanelState {
       loading: false,
       importing: false,
       loadedOnce: false,
+      renders: new Map(),
     };
     // bound per-session memory: drop the oldest items' states
     if (states.size >= 150) {
@@ -300,30 +314,41 @@ function copyAll(state: PanelState) {
     .show();
 }
 
-function exportRefs(state: PanelState, format: "text" | "markdown" | "csv") {
+export function formatReferences(
+  refs: RefItem[],
+  format: "text" | "markdown" | "csv",
+): string {
   let out: string;
   if (format === "text") {
-    out = state.refs
+    out = refs
       .map((r, i) => `[${r.number || i + 1}] ${r.text || r.title || ""}`)
       .join("\n");
   } else if (format === "markdown") {
-    out = state.refs
+    out = refs
       .map((r, i) => {
-        const label = r.text || r.title || "";
-        const url =
-          r.url ||
-          (r.identifiers.DOI ? `https://doi.org/${r.identifiers.DOI}` : "");
+        const label = (r.text || r.title || "")
+          .replace(/[\\[\]]/g, "\\$&")
+          .replace(/\r?\n/g, " ");
+        const candidate = isHttpUrl(r.url)
+          ? r.url
+          : identifiersToURL(r.identifiers);
+        const url = isHttpUrl(candidate)
+          ? candidate.replace(/[<>]/g, encodeURIComponent)
+          : "";
         return url
-          ? `${r.number || i + 1}. [${label}](${url})`
+          ? `${r.number || i + 1}. [${label}](<${url}>)`
           : `${r.number || i + 1}. ${label}`;
       })
       .join("\n");
   } else {
-    const esc = (s?: string | number) =>
-      `"${String(s ?? "").replace(/"/g, '""')}"`;
+    const esc = (value?: string | number) => {
+      let text = String(value ?? "");
+      if (/^[=+@\-\t\r]/.test(text)) text = "'" + text;
+      return `"${text.replace(/"/g, '""')}"`;
+    };
     out = [
       "number,title,authors,year,venue,doi,url,text",
-      ...state.refs.map((r, i) =>
+      ...refs.map((r, i) =>
         [
           r.number || i + 1,
           esc(r.title),
@@ -337,6 +362,11 @@ function exportRefs(state: PanelState, format: "text" | "markdown" | "csv") {
       ),
     ].join("\n");
   }
+  return out;
+}
+
+function exportRefs(state: PanelState, format: "text" | "markdown" | "csv") {
+  const out = formatReferences(state.refs, format);
   new ztoolkit.Clipboard().addText(out, "text/unicode").copy();
   new ztoolkit.ProgressWindow(getString("progress-refs"))
     .createLine({
@@ -406,6 +436,18 @@ async function refresh(
 ) {
   if (state.loading) return;
   state.loading = true;
+  for (const live of state.renders.keys()) {
+    if (!isCurrent(live, state)) {
+      state.renders.delete(live);
+      continue;
+    }
+    live.setAttribute("aria-busy", "true");
+    const button = live.querySelector<HTMLButtonElement>(".references-refresh");
+    if (button) button.disabled = true;
+    const list = live.querySelector<HTMLElement>(".references-list");
+    if (list && !state.refs.length)
+      setListMessage(list, getString("panel-loading"));
+  }
   try {
     const refs = await fetchReferences(item, state, options);
     state.loadedOnce = true;
@@ -413,7 +455,10 @@ async function refresh(
     // failure popup has been shown; keep what the user has
     if (!refs.length) return;
     state.refs = refs;
-    renderList(body, item, state, setSectionSummary);
+    for (const [live, summary] of state.renders) {
+      if (isCurrent(live, state)) renderList(live, item, state, summary);
+      else state.renders.delete(live);
+    }
   } catch (e) {
     ztoolkit.log("[section] refresh failed", e);
     new ztoolkit.ProgressWindow(getString("progress-refs-fail"), {
@@ -423,6 +468,20 @@ async function refresh(
       .show();
   } finally {
     state.loading = false;
+    for (const live of state.renders.keys()) {
+      if (!isCurrent(live, state)) {
+        state.renders.delete(live);
+        continue;
+      }
+      live.setAttribute("aria-busy", "false");
+      const button = live.querySelector<HTMLButtonElement>(
+        ".references-refresh",
+      );
+      if (button) button.disabled = false;
+      const list = live.querySelector<HTMLElement>(".references-list");
+      if (list && !state.refs.length)
+        setListMessage(list, getString("panel-empty"));
+    }
   }
 }
 
@@ -443,52 +502,55 @@ function buildToolbar(
   count.addEventListener("dblclick", () => copyAll(state));
   toolbar.append(count);
 
-  const spacer = doc.createElement("span");
-  spacer.className = "references-spacer";
-  toolbar.append(spacer);
-
-  const mkIconButton = (iconClass: string, tip: string) => {
-    const button = doc.createElement("button");
-    button.className = `references-button references-icon-button ${iconClass}`;
-    button.title = tip;
-    toolbar.append(button);
+  const actions = doc.createElement("div");
+  actions.className = "references-actions";
+  const mkIconButton = (iconClass: string, label: string, tip: string) => {
+    const button = actionButton(doc, iconClass, label, tip);
+    actions.append(button);
     return button;
   };
-
-  // refresh with click / long-press / ctrl semantics (ported)
   const refreshButton = mkIconButton(
     "references-icon-refresh",
+    getString("panel-refresh"),
     getString("panel-refresh-tip"),
   );
+  refreshButton.classList.add("references-refresh");
+  refreshButton.disabled = state.loading;
   let pressTimer: number | undefined;
+  let longPressed = false;
   refreshButton.addEventListener("mousedown", (event: MouseEvent) => {
-    const fromCurrentPage = event.ctrlKey || event.metaKey;
+    if (event.button !== 0) return;
+    longPressed = false;
     pressTimer = setTimeout(() => {
       pressTimer = undefined;
+      longPressed = true;
       void refresh(body, item, state, setSectionSummary, {
         useCache: false,
-        fromCurrentPage,
+        fromCurrentPage: event.ctrlKey || event.metaKey,
       });
     }, 1000);
   });
-  refreshButton.addEventListener("mouseup", (event: MouseEvent) => {
-    if (pressTimer === undefined) return;
+  const cancelPress = () => {
     clearTimeout(pressTimer);
     pressTimer = undefined;
-    // plain click refreshes the CURRENT source — switching PDF/API is the
-    // badge's job; auto-toggling here silently negated the user's choice
+  };
+  refreshButton.addEventListener("mouseup", cancelPress);
+  refreshButton.addEventListener("mouseleave", cancelPress);
+  refreshButton.addEventListener("click", (event: MouseEvent) => {
+    cancelPress();
+    if (longPressed) {
+      longPressed = false;
+      return;
+    }
     void refresh(body, item, state, setSectionSummary, {
       useCache: true,
       fromCurrentPage: event.ctrlKey || event.metaKey,
     });
   });
-  refreshButton.addEventListener("mouseleave", () => {
-    clearTimeout(pressTimer);
-    pressTimer = undefined;
-  });
 
   const importButton = mkIconButton(
     "references-icon-import",
+    getString("panel-import-all"),
     getString("panel-import-all-tip"),
   );
   importButton.addEventListener("click", async () => {
@@ -500,7 +562,7 @@ function buildToolbar(
     // may not have painted everything yet) — same predicate as filterRows
     const match = keywordPredicate(keyword);
     const targets = state.refs.filter((ref, i) =>
-      match(`[${ref.number || i + 1}] ${ref.text || ref.title || ""}`),
+      match(referenceSearchText(ref, i)),
     );
     if (!targets.length) return;
     state.importing = true;
@@ -519,29 +581,63 @@ function buildToolbar(
     renderList(body, item, state, setSectionSummary);
   });
 
-  const exportButton = mkIconButton(
-    "references-icon-copy",
-    getString("panel-export-tip"),
-  );
-  exportButton.addEventListener("click", (event: MouseEvent) => {
-    if (event.shiftKey) exportRefs(state, "csv");
-    else if (event.ctrlKey || event.metaKey) exportRefs(state, "markdown");
-    else exportRefs(state, "text");
+  const menu = doc.createElement("details");
+  menu.className = "references-menu";
+  const summary = doc.createElement("summary");
+  summary.className = "references-button references-labeled-button";
+  const copyIcon = doc.createElement("span");
+  copyIcon.className = "references-icon-button references-icon-copy";
+  copyIcon.setAttribute("aria-hidden", "true");
+  summary.append(copyIcon, getString("panel-actions"));
+  const commands = doc.createElement("div");
+  commands.className = "references-menu-content";
+  const command = (label: string, run: () => void) => {
+    const button = doc.createElement("button");
+    button.type = "button";
+    button.className = "references-menu-command";
+    button.textContent = label;
+    button.addEventListener("click", () => {
+      menu.open = false;
+      summary.focus();
+      run();
+    });
+    commands.append(button);
+  };
+  command(getString("panel-fetch-fresh"), () => {
+    void refresh(body, item, state, setSectionSummary, {
+      useCache: false,
+      fromCurrentPage: false,
+    });
   });
-
+  command(getString("panel-from-page"), () => {
+    void refresh(body, item, state, setSectionSummary, {
+      useCache: false,
+      fromCurrentPage: true,
+    });
+  });
+  for (const format of ["text", "markdown", "csv"] as const) {
+    command(getString(`panel-export-${format}`), () =>
+      exportRefs(state, format),
+    );
+  }
+  menu.append(summary, commands);
+  menu.addEventListener("keydown", (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      menu.open = false;
+      summary.focus();
+    }
+  });
+  menu.addEventListener("focusout", (event: FocusEvent) => {
+    if (!menu.contains(event.relatedTarget as Node | null)) menu.open = false;
+  });
+  actions.append(menu);
+  toolbar.append(actions);
   body.append(toolbar);
-
-  // search box
-  const searchBox = doc.createElement("div");
-  searchBox.className = "references-search";
-  const input = doc.createElement("input");
-  input.placeholder = getString("panel-search-placeholder");
+  const input = createSearch(body, getString("panel-search-placeholder"));
   input.addEventListener("input", () => {
     const list = body.querySelector<HTMLElement>(".references-list");
     if (list) filterRows(list, input.value);
   });
-  searchBox.append(input);
-  body.append(searchBox);
 }
 
 export function registerReferencesSection() {
@@ -570,10 +666,23 @@ export function registerReferencesSection() {
         body.textContent = "";
         (body as HTMLElement).dataset.itemKey = state.stateKey;
         (body as HTMLElement).classList.add("references-panel");
+        for (const live of state.renders.keys())
+          if (!isCurrent(live, state)) state.renders.delete(live);
+        state.renders.set(body as HTMLElement, setSectionSummary);
         buildToolbar(body as HTMLElement, item, state, setSectionSummary);
         const list = body.ownerDocument!.createElement("div");
         list.className = "references-list";
         body.append(list);
+        setListMessage(
+          list,
+          getString(
+            state.loading
+              ? "panel-loading"
+              : state.loadedOnce
+                ? "panel-empty"
+                : "panel-ready",
+          ),
+        );
         if (state.refs.length) {
           renderList(body as HTMLElement, item, state, setSectionSummary);
           return;

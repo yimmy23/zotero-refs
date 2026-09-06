@@ -40,32 +40,55 @@ const HOST_LIMITS: Record<string, number> = {
   "api.crossref.org": 3,
   "api.semanticscholar.org": 2,
   "api.openalex.org": 4,
-  "export.arxiv.org": 2,
+  "export.arxiv.org": 1,
   "eutils.ncbi.nlm.nih.gov": 3,
   "kns.cnki.net": 1,
   default: 4,
 };
 
+const HOST_INTERVALS: Record<string, number> = {
+  "export.arxiv.org": 3000,
+  "eutils.ncbi.nlm.nih.gov": 350,
+};
+
 class HostGate {
   private active = 0;
   private queue: Array<() => void> = [];
-  constructor(private limit: number) {}
+  private nextStart = 0;
+  private starting: Promise<void> = Promise.resolve();
+  constructor(
+    private limit: number,
+    private interval = 0,
+  ) {}
 
   async acquire() {
-    if (this.active < this.limit) {
-      this.active++;
-      return;
+    if (this.active < this.limit) this.active++;
+    else await new Promise<void>((resolve) => this.queue.push(resolve));
+    // Pace actual starts one at a time, independently of request completion.
+    // Reserving future timestamps lets expired timers all fire together
+    // after sleep; only the next request may wait on a rate timer here.
+    if (this.interval) {
+      const start = this.starting.then(async () => {
+        const wait = this.nextStart - Date.now();
+        if (wait > 0) await Zotero.Promise.delay(wait);
+        this.nextStart = Date.now() + this.interval;
+      });
+      this.starting = start.catch(() => {});
+      try {
+        await start;
+      } catch (error) {
+        this.release();
+        throw error;
+      }
     }
-    await new Promise<void>((resolve) => this.queue.push(resolve));
-    this.active++;
   }
 
   release() {
-    this.active--;
     // LIFO: wake the most recently queued waiter first, so the newest
     // user action (e.g. the currently hovered popup) jumps the queue
     const next = this.queue.pop();
     if (next) next();
+    else this.active--;
   }
 }
 
@@ -91,7 +114,10 @@ class Http {
     }
     let gate = this.gates.get(host);
     if (!gate) {
-      gate = new HostGate(HOST_LIMITS[host] ?? HOST_LIMITS.default);
+      gate = new HostGate(
+        HOST_LIMITS[host] ?? HOST_LIMITS.default,
+        HOST_INTERVALS[host] ?? 0,
+      );
       this.gates.set(host, gate);
     }
     return gate;
@@ -145,11 +171,24 @@ class Http {
     url: string,
     options: RequestOptions = {},
   ): Promise<T | null> {
-    const key = `${method} ${url} ${options.body || ""}`;
+    // A representation and its authorization context are part of the
+    // request identity. Never return a text response to a JSON caller or
+    // reuse an unauthenticated failure after the user adds an API key.
+    const key = JSON.stringify([
+      method,
+      url,
+      options.body || "",
+      options.responseType ?? "json",
+      !!options.credentials,
+      Object.entries(options.headers || {})
+        .map(([name, value]) => [name.toLowerCase(), value])
+        .sort(([a], [b]) => a.localeCompare(b)),
+    ]);
     if (options.noCache) {
       return this.doRequest(method, url, options);
     }
-    const cached = this.cacheGet(key);
+    const ttl = options.ttl ?? this.defaultTTL();
+    const cached = ttl > 0 ? this.cacheGet(key) : undefined;
     if (cached === NULL_SENTINEL) return null;
     if (cached !== undefined) return cached;
     const pending = this.inflight.get(key);
@@ -157,11 +196,11 @@ class Http {
     const promise = this.doRequest(method, url, options)
       .then((result) => {
         if (result !== null) {
-          this.cacheSet(key, result, options.ttl ?? this.defaultTTL());
-        } else if (options.ttl !== 0) {
+          this.cacheSet(key, result, ttl);
+        } else if (ttl > 0) {
           // negative cache: a 404 / failed lookup is not retried on every
           // re-hover; short TTL so a transient outage heals itself
-          this.cacheSet(key, NULL_SENTINEL, NULL_TTL);
+          this.cacheSet(key, NULL_SENTINEL, Math.min(ttl, NULL_TTL));
         }
         return result;
       })
@@ -200,8 +239,16 @@ class Http {
           return xhr.response ?? xhr.responseText;
         }
         if ((status === 429 || status >= 500) && attempt < maxRetries) {
-          const retryAfter = Number(xhr.getResponseHeader?.("Retry-After"));
-          retryWait = retryAfter > 0 ? retryAfter * 1000 : 1000 * 2 ** attempt;
+          const header = xhr.getResponseHeader?.("Retry-After");
+          const seconds = Number(header);
+          const retryAfter =
+            seconds > 0
+              ? seconds * 1000
+              : Date.parse(header || "") - Date.now();
+          retryWait =
+            Number.isFinite(retryAfter) && retryAfter > 0
+              ? retryAfter
+              : 1000 * 2 ** attempt;
           ztoolkit.log(`[http] ${status} ${url}, retry in ${retryWait}ms`);
         } else {
           ztoolkit.log(`[http] ${method} ${url} -> ${status}`);
@@ -255,7 +302,7 @@ class Http {
 
 export const http = new Http();
 
-/** polite-pool email for Crossref / OpenAlex / Unpaywall */
+/** Contact email: Crossref polite pool and Unpaywall required parameter. */
 export function politeEmail(): string {
   const email = (getPref("email") as string)?.trim();
   return email || "zotero-refs@mailinator.com";

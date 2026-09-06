@@ -13,17 +13,29 @@ import type { RefItem } from "./types";
 function sanitizeRef(r: any): RefItem | null {
   if (!r || typeof r !== "object") return null;
   const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+  const authorNames = (values: unknown): string[] =>
+    Array.isArray(values)
+      ? values
+          .filter((value): value is string => typeof value === "string")
+          .map((value) => cleanText(value))
+          .filter(Boolean)
+      : [];
   const ids: Record<string, string> = {};
   if (r.identifiers && typeof r.identifiers === "object") {
     for (const [k, v] of Object.entries(r.identifiers)) {
-      if (typeof v === "string" && v.length < 300) ids[k] = v;
+      if (
+        typeof v === "string" &&
+        v.length < 300 &&
+        (k !== "CNKI" || isHttpUrl(v))
+      )
+        ids[k] = v;
     }
   }
   const out: RefItem = {
     identifiers: ids,
-    authors: Array.isArray(r.authors)
-      ? r.authors.filter((a: unknown) => typeof a === "string").slice(0, 50)
-      : [],
+    authors: authorNames(r.authors),
+    firstAuthors: authorNames(r.firstAuthors),
+    correspondingAuthors: authorNames(r.correspondingAuthors),
     // markup left by APIs in older caches ("<i>ALK</i>") is cleaned here too
     title: cleanText(str(r.title)),
     text: cleanText(str(r.text)),
@@ -94,9 +106,10 @@ class RefStorage {
   private cache: Record<
     string,
     Record<string, { t: number; refs: RefItem[] }>
-  > = {};
+  > = Object.create(null);
   private ready: Promise<void>;
   private writeTimer?: number;
+  private writing: Promise<void> = Promise.resolve();
   private path = "";
   /** cleared when the existing file could not be READ — a flush of the
    *  empty in-memory cache would clobber it (a corrupt file that PARSED
@@ -130,7 +143,7 @@ class RefStorage {
         }
         const items = parsed?.v === SCHEMA_VERSION ? parsed.items || {} : {};
         // never trust the file: re-validate every entry on the way in
-        const clean: typeof this.cache = {};
+        const clean: typeof this.cache = Object.create(null);
         for (const [key, slots] of Object.entries<any>(items)) {
           if (!slots || typeof slots !== "object") continue;
           for (const [slot, entry] of Object.entries<any>(slots)) {
@@ -139,7 +152,10 @@ class RefStorage {
               .map(sanitizeRef)
               .filter((r: RefItem | null): r is RefItem => !!r);
             if (!refs.length) continue;
-            (clean[key] ??= {})[slot] = { t: Number(entry.t) || 0, refs };
+            (clean[key] ??= Object.create(null))[slot] = {
+              t: Number(entry.t) || 0,
+              refs,
+            };
           }
         }
         this.cache = clean;
@@ -147,13 +163,17 @@ class RefStorage {
     } catch (e) {
       this.writable = false;
       ztoolkit.log("[storage] load failed — cache writes disabled", e);
-      this.cache = {};
+      this.cache = Object.create(null);
     }
   }
 
   async get(item: Zotero.Item, slot: string): Promise<RefItem[] | undefined> {
     await this.ready;
-    return this.cache[itemCacheKey(item)]?.[slot]?.refs;
+    // Rows enrich identifiers and library bindings in memory. Never let a
+    // cache-first render mutate the persistent snapshot through this getter.
+    return this.cache[itemCacheKey(item)]?.[slot]?.refs
+      .map(sanitizeRef)
+      .filter((ref): ref is RefItem => !!ref);
   }
 
   async set(item: Zotero.Item, slot: string, refs: RefItem[]) {
@@ -164,7 +184,10 @@ class RefStorage {
     // (e.g. DOI backfill on library match) after this snapshot is taken,
     // and a shared reference would leak those mutations into the file.
     const clean = refs.map(sanitizeRef).filter((r): r is RefItem => !!r);
-    (this.cache[itemKey] ??= {})[slot] = { t: Date.now(), refs: clean };
+    (this.cache[itemKey] ??= Object.create(null))[slot] = {
+      t: Date.now(),
+      refs: clean,
+    };
     this.evictIfNeeded();
     this.scheduleWrite();
   }
@@ -182,7 +205,7 @@ class RefStorage {
 
   async clearAll() {
     await this.ready;
-    this.cache = {};
+    this.cache = Object.create(null);
     this.scheduleWrite();
   }
 
@@ -214,10 +237,18 @@ class RefStorage {
     // load would persist an empty cache over the existing file
     await this.ready;
     if (!this.path || !this.writable) return;
-    await Zotero.File.putContentsAsync(
-      this.path,
-      JSON.stringify({ v: SCHEMA_VERSION, items: this.cache }),
-    );
+    clearTimeout(this.writeTimer);
+    this.writeTimer = undefined;
+    const write = this.writing
+      .catch(() => {})
+      .then(() =>
+        Zotero.File.putContentsAsync(
+          this.path,
+          JSON.stringify({ v: SCHEMA_VERSION, items: this.cache }),
+        ),
+      );
+    this.writing = write;
+    await write;
   }
 }
 

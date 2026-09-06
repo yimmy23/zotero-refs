@@ -1,12 +1,13 @@
+import { createSearch, actionButton, setListMessage } from "./controls";
 import { config } from "../../package.json";
 import { getLocaleID, getString } from "../utils/locale";
 import { getPref } from "../utils/prefs";
 import { itemCacheKey } from "../core/storage";
 import type { Identifiers, RefItem } from "../core/types";
 import { getRelatedByAPI } from "../sources";
-import { hostIdentifiers } from "../core/text";
+import { hostIdentifiers, normalizeTitle, isHttpUrl } from "../core/text";
 import { setTimeout } from "../utils/window";
-import { renderRefRow } from "./rows";
+import { renderRefRow, filterRows } from "./rows";
 import { guard, guardAsync } from "../utils/guard";
 import type { RowContext } from "./rows";
 
@@ -26,26 +27,32 @@ function idsOf(item: Zotero.Item): Identifiers | null {
 }
 
 function zoteroRelated(item: Zotero.Item): RefItem[] {
-  return item.relatedItems
-    .map((key: string) => {
-      try {
-        return Zotero.Items.getByLibraryAndKey(item.libraryID, key);
-      } catch {
-        return undefined;
-      }
-    })
-    .filter((i): i is Zotero.Item => !!i)
-    .map((related) => ({
-      identifiers: { DOI: related.getField("DOI") as string },
-      authors: [],
-      title: related.getField("title") as string,
-      text: related.getField("title") as string,
-      url: related.getField("url") as string,
-      type: related.itemType,
-      year: related.getField("year") as string,
-      libItemID: related.id,
-      source: "zotero" as const,
-    }));
+  return item.relatedItems.flatMap((key: string): RefItem[] => {
+    try {
+      const related = Zotero.Items.getByLibraryAndKey(item.libraryID, key);
+      if (!related || related.deleted || !related.isRegularItem()) return [];
+      const url = related.getField("url") as string;
+      return [
+        {
+          identifiers: hostIdentifiers(related),
+          authors: related
+            .getCreators()
+            .map((creator: any) =>
+              [creator.firstName, creator.lastName].filter(Boolean).join(" "),
+            ),
+          title: related.getField("title") as string,
+          text: related.getField("title") as string,
+          url: isHttpUrl(url) ? url : undefined,
+          type: related.itemType,
+          year: related.getField("year") as string,
+          libItemID: related.id,
+          source: "zotero",
+        },
+      ];
+    } catch {
+      return [];
+    }
+  });
 }
 
 export function registerRelatedSection() {
@@ -78,11 +85,22 @@ export function registerRelatedSection() {
         const count = doc.createElement("span");
         count.className = "references-count";
         toolbar.append(count);
+        const reload = actionButton(
+          doc,
+          "references-icon-refresh",
+          getString("panel-refresh"),
+        );
+        toolbar.append(reload);
         body.append(toolbar);
+        const search = createSearch(
+          body as HTMLElement,
+          getString("panel-search-placeholder"),
+        );
 
         const list = doc.createElement("div");
         list.className = "references-list";
         body.append(list);
+        search.addEventListener("input", () => filterRows(list, search.value));
 
         const ctx: RowContext = {
           hostItem: item,
@@ -102,49 +120,78 @@ export function registerRelatedSection() {
         };
         update();
 
-        if (!getPref("loadingRelated")) return;
         const ids = idsOf(item);
+        reload.disabled = !ids;
+        if (!refs.length) setListMessage(list, getString("related-empty"));
         if (!ids) return;
         const cacheKey = itemCacheKey(item);
         const paint = (recommended: RefItem[]) => {
           if (!list.isConnected) return;
-          const start = refs.length;
-          // skip recommendations that duplicate existing related items
-          const seen = new Set(refs.map((r) => (r.title || "").toLowerCase()));
+          refs.splice(0, refs.length, ...zoteroRelated(item));
+          list.textContent = "";
+          const seen = new Set<string>();
+          const keys = (ref: RefItem) =>
+            [
+              ref.identifiers.DOI?.toLowerCase(),
+              ref.identifiers.PMID,
+              ref.identifiers.s2,
+              ref.identifiers.openAlex,
+              normalizeTitle(ref.title || ref.text || ""),
+            ].filter((key): key is string => !!key);
+          refs.forEach((ref) => keys(ref).forEach((key) => seen.add(key)));
+          keys({
+            identifiers: hostIdentifiers(item),
+            authors: [],
+            title: item.getField("title") as string,
+          }).forEach((key) => seen.add(key));
           for (const rec of recommended) {
-            if (seen.has((rec.title || "").toLowerCase())) continue;
+            const identity = keys(rec);
+            if (identity.some((key) => seen.has(key))) continue;
+            identity.forEach((key) => seen.add(key));
             refs.push(rec);
           }
-          for (let i = start; i < refs.length; i++) {
-            renderRefRow(ctx, refs, i);
-          }
+          refs.forEach((_, i) => renderRefRow(ctx, refs, i));
+          if (search.value) filterRows(list, search.value);
+          if (!refs.length) setListMessage(list, getString("related-empty"));
           update();
         };
-        const cached = cache.get(cacheKey);
-        if (cached) {
-          paint(cached);
-          return;
-        }
-        // settle debounce outside the awaited render (see section.ts)
-        setTimeout(
-          guard("related.autoFetch", () => {
-            if (!list.isConnected) return;
-            void (async () => {
-              // cache only real results — a transient API failure must stay
-              // retryable on the next render
-              const fetched = await getRelatedByAPI(ids, 20);
-              if (fetched) {
-                if (cache.size >= 150) {
-                  const oldest = cache.keys().next().value;
-                  if (oldest !== undefined) cache.delete(oldest);
-                }
-                cache.set(cacheKey, fetched);
+        let loading = false;
+        const load = async (useCache: boolean) => {
+          if (loading || !list.isConnected) return;
+          loading = true;
+          reload.disabled = true;
+          list.setAttribute("aria-busy", "true");
+          if (!refs.length) setListMessage(list, getString("panel-loading"));
+          try {
+            const fetched =
+              (useCache ? cache.get(cacheKey) : undefined) ??
+              (await getRelatedByAPI(ids, 20));
+            if (fetched) {
+              if (cache.size >= 150) {
+                const oldest = cache.keys().next().value;
+                if (oldest !== undefined) cache.delete(oldest);
               }
-              paint(fetched || []);
-            })().catch((e) => ztoolkit.log("[related] fetch failed", e));
-          }),
-          350,
-        );
+              cache.set(cacheKey, fetched);
+              paint(fetched);
+            } else if (!refs.length && list.isConnected)
+              setListMessage(list, getString("panel-load-failed"));
+          } catch (error) {
+            ztoolkit.log("[related] fetch failed", error);
+            if (!refs.length && list.isConnected)
+              setListMessage(list, getString("panel-load-failed"));
+          } finally {
+            loading = false;
+            reload.disabled = false;
+            list.setAttribute("aria-busy", "false");
+          }
+        };
+        reload.addEventListener("click", () => {
+          void load(false);
+        });
+        if (getPref("loadingRelated"))
+          setTimeout(() => {
+            void load(true);
+          }, 350);
       },
     ),
   });

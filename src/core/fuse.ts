@@ -1,4 +1,4 @@
-import { normalizeTitle } from "./text";
+import { identifiersConflict, normalizeTitle, refTextToInfo } from "./text";
 import type { RefItem } from "./types";
 
 /**
@@ -8,11 +8,12 @@ import type { RefItem } from "./types";
  * and the API list (Crossref / S2 / OpenAlex) enriches each entry with the
  * metadata the PDF text lacks — above all the DOI.
  *
- * Validated offline against the full library (699 papers with a DOI,
+ * Historical validation of the earlier implementation used 699 papers with a DOI,
  * `.corpus/offline-harness/fuse-exp.mjs`): 83.9 % of PDF entries found
  * their API record, DOI coverage of the list rose from 19 % to 80 %, and
  * the title rule produced zero DOI-contradicted matches in a decoy test
- * against unrelated papers' reference lists.
+ * against unrelated papers' reference lists. Those figures are not an accuracy
+ * estimate for the current stricter matching rules.
  *
  * Matching keys, strictest first, each API record usable once:
  *  1. identifier equality (DOI / PMID / arXiv);
@@ -27,9 +28,10 @@ import type { RefItem } from "./types";
  *  4. position — only for Crossref (the deposited list is the publisher's
  *     own, in print order), only when the counts agree and the PDF
  *     numbering is 1..n, and only after the order is VERIFIED: by the
- *     DOI pairs both sides know (≥ 3 and ≥ 90 % agreeing), or, when the
+ *     DOI pairs both sides know (≥ 3, all agreeing), or, when the
  *     PDF prints no DOIs at all, by resolving up to five of the API DOIs
- *     and finding their titles in the PDF entries at the same index.
+ *     and finding corroborated titles and years at the same index (at
+ *     least two successful lookups, with no contradictory spot checks).
  *
  * Enrichment only fills what the PDF entry lacks; on conflict the PDF's
  * own identifier wins and the API record is not matched positionally.
@@ -71,6 +73,24 @@ const normDOI = (d?: string) =>
 const surname = (author?: string) =>
   normalizeTitle((author || "").split(/[,\s]/)[0]);
 
+/** A parsed title must agree completely; raw-text fallback needs an author. */
+function titleEvidence(pdf: RefItem, remote: RefItem): boolean {
+  const title = normalizeTitle(remote.title);
+  if (!title) return false;
+  const raw = normalizeTitle(pdf.text);
+  const parsed = normalizeTitle(
+    pdf.title || refTextToInfo(pdf.text || "").title,
+  );
+  if (parsed && parsed !== raw) return parsed === title;
+  const author = surname(remote.authors?.[0]);
+  return (
+    title.length >= 25 &&
+    raw.includes(title) &&
+    author.length >= 2 &&
+    normalizeTitle((pdf.text || "").slice(0, 80)).includes(author)
+  );
+}
+
 /**
  * Merge one API record into a PDF entry. Identifiers printed in the PDF
  * are exact and win; everything else guessed from the raw text (title,
@@ -96,6 +116,10 @@ function enrich(p: RefItem, a: RefItem): RefItem {
     identifiers: { ...a.identifiers, ...p.identifiers },
     title: a.title || p.title,
     authors: a.authors?.length ? a.authors : p.authors,
+    firstAuthors: a.firstAuthors?.length ? a.firstAuthors : p.firstAuthors,
+    correspondingAuthors: a.correspondingAuthors?.length
+      ? a.correspondingAuthors
+      : p.correspondingAuthors,
     year: a.year || p.year,
     publishDate: a.publishDate || p.publishDate,
     primaryVenue: a.primaryVenue || p.primaryVenue,
@@ -164,7 +188,7 @@ export async function fuseReferences(
       }
     });
     if (checked > 0) {
-      posOK = agree >= 3 && agree >= 0.9 * checked;
+      posOK = agree >= 3 && agree === checked;
       stats.posMode = posOK
         ? `doi-verified ${agree}/${checked}`
         : `rejected ${agree}/${checked}`;
@@ -189,18 +213,23 @@ export async function fuseReferences(
         }
         if (!meta) continue;
         tried++;
-        const t = normalizeTitle(meta.title);
-        const inPdf = normalizeTitle(pdfRefs[i]?.text);
-        if (t.length >= 15 && inPdf.includes(t)) ok++;
-        else if (
-          t.length < 15 &&
+        const p = pdfRefs[i];
+        const author = surname(meta.authors?.[0]);
+        const supportedShortTitle =
+          normalizeTitle(meta.title).length >= 15 ||
+          (author.length >= 2 &&
+            normalizeTitle((p.text || "").slice(0, 80)).includes(author));
+        if (
+          titleEvidence(p, meta) &&
+          supportedShortTitle &&
           meta.year &&
-          (pdfRefs[i]?.text || "").includes(String(meta.year))
-        ) {
+          (p.text || "").includes(String(meta.year)) &&
+          !identifiersConflict({ DOI: doi }, meta.identifiers) &&
+          !identifiersConflict(p.identifiers, meta.identifiers)
+        )
           ok++;
-        }
       }
-      posOK = tried >= 2 && ok >= tried - 1 && ok >= 2;
+      posOK = tried >= 2 && ok === tried;
       stats.posMode = tried
         ? `${posOK ? "spot-verified" : "spot-rejected"} ${ok}/${tried}`
         : "unverified";
@@ -214,14 +243,15 @@ export async function fuseReferences(
   for (let pi = 0; pi < pdfRefs.length; pi++) {
     const p = pdfRefs[pi];
     const pText = p.text || "";
-    const pNorm = normalizeTitle(pText);
     const pDoi = normDOI(p.identifiers?.DOI);
+    const conflicts = (j: number) =>
+      identifiersConflict(p.identifiers, api[j].r.identifiers);
     let hit = -1;
     let how: "id" | "title" | "volPage" | "positional" | "" = "";
     // 1. identifier equality
     if (pDoi) {
       const i = api.findIndex(
-        (a, j) => !used.has(j) && a.doi && a.doi === pDoi,
+        (a, j) => !used.has(j) && !conflicts(j) && a.doi && a.doi === pDoi,
       );
       if (i >= 0) {
         hit = i;
@@ -230,7 +260,11 @@ export async function fuseReferences(
     }
     if (hit < 0 && p.identifiers?.PMID) {
       const i = api.findIndex(
-        (a, j) => !used.has(j) && a.pmid && a.pmid === p.identifiers.PMID,
+        (a, j) =>
+          !used.has(j) &&
+          !conflicts(j) &&
+          a.pmid &&
+          a.pmid === p.identifiers.PMID,
       );
       if (i >= 0) {
         hit = i;
@@ -239,7 +273,11 @@ export async function fuseReferences(
     }
     if (hit < 0 && p.identifiers?.arXiv) {
       const i = api.findIndex(
-        (a, j) => !used.has(j) && a.arxiv && a.arxiv === p.identifiers.arXiv,
+        (a, j) =>
+          !used.has(j) &&
+          !conflicts(j) &&
+          a.arxiv &&
+          a.arxiv === p.identifiers.arXiv,
       );
       if (i >= 0) {
         hit = i;
@@ -250,8 +288,9 @@ export async function fuseReferences(
     if (hit < 0) {
       const cands: number[] = [];
       api.forEach((a, j) => {
-        if (used.has(j) || a.title.length < 25 || !a.year) return;
-        if (!pNorm.includes(a.title)) return;
+        if (used.has(j) || conflicts(j) || a.title.length < 25 || !a.year)
+          return;
+        if (!titleEvidence(p, a.r)) return;
         if (!pText.includes(String(a.year))) return;
         if (
           a.sur &&
@@ -271,10 +310,16 @@ export async function fuseReferences(
     if (hit < 0) {
       const cands: number[] = [];
       api.forEach((a, j) => {
-        if (used.has(j) || !a.year || !a.volPage) return;
+        if (used.has(j) || conflicts(j) || !a.year || !a.volPage) return;
+        if (
+          a.sur.length < 2 ||
+          !normalizeTitle(pText.slice(0, 80)).includes(a.sur)
+        )
+          return;
+        if (a.title && !titleEvidence(p, a.r)) return;
         const [, vol, fp] = a.volPage;
         const re = new RegExp(
-          `(^|[^\\d])${vol}([^\\d]).{0,12}?(^|[^\\d])${fp}([^\\d]|$)`,
+          `(?<!\\d)${vol}(?!\\d).{0,12}?(?<!\\d)${fp}(?!\\d)`,
         );
         if (!pText.includes(String(a.year)) || !re.test(pText)) return;
         if (
@@ -298,7 +343,8 @@ export async function fuseReferences(
         a &&
         !used.has(pi) &&
         (!a.year || pText.includes(String(a.year))) &&
-        !(pDoi && a.doi && a.doi !== pDoi)
+        (!a.title || titleEvidence(p, a.r)) &&
+        !conflicts(pi)
       ) {
         hit = pi;
         how = "positional";

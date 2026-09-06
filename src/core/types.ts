@@ -52,6 +52,10 @@ export interface RefItem {
   identifiers: Identifiers;
   title?: string;
   authors: string[];
+  /** Explicitly identified first/co-first authors; never inferred from the tail. */
+  firstAuthors?: string[];
+  /** Explicitly identified corresponding authors, including co-corresponding. */
+  correspondingAuthors?: string[];
   /** zotero item type guess: journalArticle / preprint / ... */
   type?: string;
   /** raw reference string as it appears in the bibliography */

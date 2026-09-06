@@ -1,3 +1,4 @@
+import { setListMessage } from "./controls";
 import { getNumPref, getPref } from "../utils/prefs";
 import { getString } from "../utils/locale";
 import { getWin, setTimeout, clearTimeout } from "../utils/window";
@@ -9,10 +10,22 @@ import {
   isHttpUrl,
   refTextToInfo,
   extractIdentifiers,
+  hostIdentifiers,
 } from "../core/text";
 import { libraryIndex, isRelated } from "../core/libmatch";
 import { addRelation, importReference, removeRelation } from "../core/importer";
-import { SOURCE_BADGE, SOURCE_NAME } from "../core/types";
+import {
+  CITED_CHIP_COLOR,
+  REFCOUNT_CHIP_COLOR,
+  SOURCE_BADGE,
+  SOURCE_NAME,
+} from "../core/types";
+import {
+  mergePopupMetadata,
+  popupLinks,
+  samePopupPaper,
+  type PopupCandidate,
+} from "../core/popupMetadata";
 import type { RefItem, RefTag } from "../core/types";
 import { infoCandidates } from "../sources";
 import { getCNKIURL } from "../sources/cnki";
@@ -41,100 +54,112 @@ export interface RowContext {
 
 let currentPopup: PopupCard | undefined;
 
-/** per-list normalized-text -> row, for O(1) duplicate suppression */
-const seenByList = new WeakMap<HTMLElement, Map<string, HTMLElement>>();
-let pendingSeenKey: string | undefined;
-
 export function getCurrentPopup(): PopupCard | undefined {
   return currentPopup;
 }
 
-export function closePopup() {
+export function closePopup(owner?: Window) {
+  if (owner && currentPopup?.container.ownerDocument?.defaultView !== owner)
+    return;
   currentPopup?.clear();
   currentPopup = undefined;
 }
 
 function toTimeInfo(t?: string | number): string | undefined {
   if (!t) return undefined;
-  const d = new Date(String(t));
-  if (isNaN(d.getTime())) return String(t);
+  const value = String(t).trim();
+  // A year is not January of that year. Preserve partial/legacy dates rather
+  // than inventing a month, or shifting a source's date across time zones.
+  const match = value.match(/^(\d{4})-(\d{1,2})(?:-\d{1,2})?(?:T.*)?$/);
+  if (!match) return value;
+  const month = Number(match[2]);
+  if (month < 1 || month > 12) return value;
   try {
-    // month + year in the UI language ("Jan 1994" / "1994年1月")
     return new Intl.DateTimeFormat((Zotero as any).locale || "en-US", {
       year: "numeric",
       month: "short",
-    }).format(d);
+      timeZone: "UTC",
+    }).format(new Date(Date.UTC(Number(match[1]), month - 1, 1)));
   } catch {
-    const info = d.toString().split(" ");
-    return `${info[1]} ${info[3]}`;
+    return value;
   }
 }
 
-/** localized tooltip for a source badge (static English tip as fallback) */
-function sourceTip(source?: string): string | undefined {
-  if (!source) return undefined;
-  const id = `source-tip-${source.toLowerCase()}`;
-  const s = getString(id as any);
-  // getString returns the prefixed id itself when the key is missing
-  return s.endsWith(id) ? SOURCE_BADGE[source]?.tip : s;
+function popupSourceName(source?: string): string {
+  return source === "pdf" || !source
+    ? getString("popup-source-local")
+    : SOURCE_NAME[source] || source;
 }
 
-/** local metadata candidate for the popup (index 0) */
-async function localInfo(ref: RefItem, idText?: string): Promise<RefItem> {
-  const item = ref.libItemID ? Zotero.Items.get(ref.libItemID) : undefined;
-  if (item) {
-    return {
-      identifiers: ref.identifiers,
-      authors: item
-        .getCreators()
-        .map((c: any) => [c.firstName, c.lastName].filter(Boolean).join(" ")),
-      tags: item.getTags().map((t: any) => {
-        let colored: any;
-        try {
-          colored =
-            typeof (item as any).getColoredTags === "function"
-              ? (((item as any).getColoredTags() as any[]) || []).find(
-                  (ct: any) => ct.tag === t.tag,
-                )
-              : undefined;
-        } catch {
-          colored = undefined;
-        }
-        return colored
-          ? ({ text: t.tag, color: colored.color } as RefTag)
-          : t.tag;
-      }),
-      abstract: item.getField("abstractNote") as string,
-      title: item.getField("title") as string,
-      year: item.getField("year") as string,
-      primaryVenue: item.getField("publicationTitle") as string,
-      type: "",
-      source: ref.source,
+/** Stored item IDs are hints, not evidence that a library record is this work. */
+function localInfo(ref: RefItem): RefItem | undefined {
+  if (!ref.libItemID) return undefined;
+  try {
+    const item = Zotero.Items.get(ref.libItemID);
+    if (!item || item.deleted || !item.isRegularItem()) return undefined;
+    const field = (key: string): string => {
+      try {
+        return String(item.getField(key as any) || "");
+      } catch {
+        return "";
+      }
+    };
+    let identifiers = {};
+    try {
+      identifiers = hostIdentifiers(item);
+    } catch {
+      /* unloaded metadata */
+    }
+    const info: RefItem = {
+      identifiers,
+      authors: [],
+      title: field("title"),
+      year: field("year"),
+      publishDate: field("date"),
+      primaryVenue: field("publicationTitle"),
+      abstract: field("abstractNote"),
+      url: field("url"),
+      source: "zotero",
       libItemID: item.id,
     };
+    if (!samePopupPaper(ref, info)) return undefined;
+    try {
+      const authorType = Zotero.CreatorTypes.getID("author");
+      info.authors = item
+        .getCreators()
+        .filter(
+          (creator: any) =>
+            creator.creatorType === "author" ||
+            creator.creatorTypeID === authorType ||
+            (!creator.creatorType && !creator.creatorTypeID),
+        )
+        .map((creator: any) =>
+          [creator.firstName, creator.lastName].filter(Boolean).join(" "),
+        );
+    } catch {
+      /* API metadata can fill unloaded creators */
+    }
+    try {
+      const colored =
+        typeof (item as any).getColoredTags === "function"
+          ? (item as any).getColoredTags() || []
+          : [];
+      info.tags = item.getTags().map((tag: any) => {
+        const color = colored.find(
+          (entry: any) => entry.tag === tag.tag,
+        )?.color;
+        return { text: tag.tag, color };
+      });
+    } catch {
+      /* tags are optional */
+    }
+    return info;
+  } catch {
+    return undefined;
   }
-  const info: RefItem = {
-    identifiers: ref.identifiers || {},
-    authors: ref.authors || [],
-    type: "",
-    year: ref.year,
-    title: ref.title || idText || getString("popup-untitled"),
-    tags: ref.tags || [],
-    text: ref.text,
-    abstract: ref.abstract || ref.text,
-    primaryVenue: ref.primaryVenue,
-    description: ref.description,
-    source: ref.source,
-  };
-  const url = identifiersToURL(info.identifiers);
-  if (url) info.url = url;
-  return info;
 }
 
-/**
- * Show the multi-source floating card for a reference.
- * Ported from zotero-reference Views.showTipUI.
- */
+/** Show one continuously enriched card, with source provenance in its footer. */
 export function showRefPopup(
   ref: RefItem,
   rect: PopupRect,
@@ -142,152 +167,125 @@ export function showRefPopup(
   idText?: string,
   actions?: { onImport?: () => void },
 ): PopupCard {
+  closePopup();
   const popup = new PopupCard();
   popup.onInit(rect, position);
   currentPopup = popup;
 
+  const candidates: PopupCandidate[] = [];
+  const local = localInfo(ref);
+  if (local) candidates.push({ info: local, kind: "library" });
   const { according, thunks } = infoCandidates(ref);
-  const coroutines: Array<Promise<RefItem | null>> = [
-    localInfo(ref, idText),
-    ...thunks.map((t) => t()),
-  ];
-  const prefKey = `${according}InfoIndex` as "DOIInfoIndex";
-  const prefIndex = Number(getPref(prefKey)) || 0;
-
-  coroutines.forEach((promise, i) => {
-    promise
+  const render = () => {
+    if (currentPopup !== popup || !popup.container.isConnected) return;
+    const result = mergePopupMetadata(ref, candidates, according === "Title");
+    const info = result.info;
+    const colors = {
+      pdf: "#00b8a9",
+      doi: SOURCE_BADGE.DOI.color,
+      pubmed: SOURCE_BADGE.pubmed.color,
+      scholar: "#4285f4",
+      zotero: SOURCE_BADGE.Zotero.color,
+    };
+    const tags: RefTag[] = popupLinks(info).map((link) => ({
+      text: getString(`popup-link-${link.kind}` as any),
+      color: colors[link.kind],
+      tip:
+        link.kind === "pdf"
+          ? getString("popup-fulltext-tip" as any)
+          : link.kind === "scholar"
+            ? getString("tag-scholar-tip")
+            : link.url || getString("popup-link-zotero" as any),
+      url: link.url,
+      itemID: link.itemID,
+    }));
+    if (!info.libItemID && actions?.onImport) {
+      tags.push({
+        text: getString("popup-import"),
+        color: "#39bf68",
+        tip: getString("row-import-tip"),
+        onClick: () => {
+          popup.clear();
+          actions.onImport?.();
+        },
+      });
+    }
+    // Metrics are explicitly labelled, use one source's value and are not
+    // navigation controls. Their source stays visible in the tooltip.
+    if (info.citationCount !== undefined)
+      tags.push({
+        text: getString("popup-cited-count" as any, {
+          args: { count: info.citationCount },
+        }),
+        color: CITED_CHIP_COLOR,
+        tip: getString("tag-cited-tip", {
+          args: { source: popupSourceName(result.citationSource) },
+        }),
+      });
+    if (info.referenceCount !== undefined)
+      tags.push({
+        text: getString("popup-reference-count" as any, {
+          args: { count: info.referenceCount },
+        }),
+        color: REFCOUNT_CHIP_COLOR,
+        tip: getString("tag-refcount-tip", {
+          args: { source: popupSourceName(result.referenceSource) },
+        }),
+      });
+    if (info.retracted) {
+      // Import always goes through the shared retraction confirmation.
+      ref.retracted = true;
+      tags.push({
+        text: getString("retracted-badge"),
+        color: "#c8102e",
+        tip: getString("retracted-tip"),
+      });
+    }
+    tags.push(
+      ...(info.tags || []).map((tag) =>
+        typeof tag === "string" ? { text: tag } : tag,
+      ),
+    );
+    popup.update(
+      htmlToText(info.title || idText || getString("popup-untitled")),
+      tags,
+      result.content,
+      {
+        firstAuthors: result.firstAuthors,
+        firstAuthorsByOrder: result.firstAuthorsByOrder,
+        correspondingAuthors: result.correspondingAuthors,
+        lastAuthors: result.lastAuthors,
+        venue: [info.primaryVenue, toTimeInfo(info.publishDate) || info.year]
+          .filter(Boolean)
+          .join(" · "),
+        note: info.description,
+        contentLabel: getString(
+          result.contentKind === "abstract"
+            ? "popup-abstract-label"
+            : "popup-citation-label",
+        ),
+        abstractSource: result.abstractSource
+          ? popupSourceName(result.abstractSource)
+          : undefined,
+        sources: result.sources.map((source) => ({
+          name: popupSourceName(source.source),
+          url: source.url,
+        })),
+      },
+    );
+  };
+  render();
+  for (const thunk of thunks) {
+    Promise.resolve()
+      .then(thunk)
       .then((info) => {
-        if (!info || !popup.container.isConnected) return;
-        const tagDefaultColor = "#59C1BD";
-        const tags: RefTag[] = (info.tags || []).map((tag) =>
-          typeof tag === "object"
-            ? { color: tagDefaultColor, ...tag }
-            : { color: tagDefaultColor, text: tag },
-        );
-        if (info.source) {
-          tags.push({
-            text: SOURCE_NAME[info.source] || info.source,
-            color: SOURCE_BADGE[info.source]?.color || "#59C1BD",
-            tip: sourceTip(info.source),
-            source: info.source,
-          });
-        }
-        const ids = info.identifiers || {};
-        if (ids.DOI) {
-          tags.push({
-            text: "DOI",
-            color: SOURCE_BADGE.DOI.color,
-            tip: ids.DOI,
-            url: info.url || `https://doi.org/${ids.DOI}`,
-          });
-        }
-        if (ids.arXiv) {
-          tags.push({
-            text: "arXiv",
-            color: SOURCE_BADGE.arXiv.color,
-            tip: ids.arXiv,
-            url: `https://arxiv.org/abs/${ids.arXiv}`,
-          });
-        }
-        if (ids.PMID) {
-          tags.push({
-            text: "PMID",
-            color: SOURCE_BADGE.pubmed.color,
-            tip: ids.PMID,
-            url: `https://pubmed.ncbi.nlm.nih.gov/${ids.PMID}/`,
-          });
-        }
-        if (ids.CNKI) {
-          tags.push({
-            text: "URL",
-            color: SOURCE_BADGE.CNKI.color,
-            tip: ids.CNKI,
-            url: ids.CNKI,
-          });
-        }
-        if (info.oaUrl) {
-          tags.push({
-            text: "PDF",
-            color: "#00b8a9",
-            tip: getString("tag-oa-pdf-tip"),
-            url: info.oaUrl,
-          });
-        }
-        if (info.retracted) {
-          // remember on the row's ref so the row badge and import warning
-          // pick it up even when the list source didn't know
-          ref.retracted = true;
-          tags.unshift({
-            text: getString("retracted-badge"),
-            color: "#c8102e",
-            tip: getString("retracted-tip"),
-          });
-        }
-        if (ref.libItemID) {
-          tags.push({
-            text: "Zotero",
-            color: SOURCE_BADGE.Zotero.color,
-            tip: sourceTip("Zotero"),
-            itemID: ref.libItemID,
-          });
-        } else if (actions?.onImport) {
-          // hosts without a row (+) button — the graph — get the import
-          // action right on the card
-          tags.push({
-            text: getString("popup-import"),
-            color: "#39bf68",
-            tip: getString("row-import-tip"),
-            onClick: () => {
-              popup.clear();
-              actions.onImport?.();
-            },
-          });
-        }
-        // academic search-engine links, always available (title-based)
-        const searchTitle = htmlToText(info.title || ref.title || "").trim();
-        if (searchTitle) {
-          const q = encodeURIComponent(searchTitle);
-          tags.push({
-            text: "Scholar",
-            color: "#4285f4",
-            tip: getString("tag-scholar-tip"),
-            url: `https://scholar.google.com/scholar?q=${q}`,
-          });
-          if (!ids.PMID && !isChinese(searchTitle)) {
-            tags.push({
-              text: "PubMed",
-              color: SOURCE_BADGE.pubmed.color,
-              tip: getString("tag-pubmed-search-tip"),
-              url: `https://pubmed.ncbi.nlm.nih.gov/?term=${q}`,
-            });
-          }
-        }
-        // dot tooltip: which source this page came from
-        const sourceName =
-          i === 0
-            ? ref.libItemID
-              ? "Zotero"
-              : getString("popup-source-local")
-            : SOURCE_NAME[info.source || ""] || info.source || "";
-        popup.addTip(
-          htmlToText(info.title || ""),
-          tags,
-          [
-            info.authors?.slice(0, 3).join(" / "),
-            [info.primaryVenue, toTimeInfo(info.publishDate) || info.year]
-              .filter(Boolean)
-              .join(" · "),
-            ref.description,
-          ].filter((s): s is string => !!s && s !== ""),
-          htmlToText(info.abstract || ""),
-          according,
-          i,
-          prefIndex,
-          sourceName,
-        );
+        if (!info || currentPopup !== popup || !popup.container.isConnected)
+          return;
+        candidates.push({ info, kind: "remote" });
+        render();
       })
-      .catch((e) => ztoolkit.log("[rows] popup source failed", e));
-  });
+      .catch((error) => ztoolkit.log("[rows] popup source failed", error));
+  }
   return popup;
 }
 
@@ -308,11 +306,8 @@ function setActionState(action: HTMLElement, state: "+" | "-" | "") {
 /** ctrl+click: locate in library, else open in browser */
 async function locateReference(ref: RefItem, libraryID: number) {
   const win = getWin();
-  if (ref.libItemID) {
-    win.Zotero_Tabs.select("zotero-pane");
-    win.ZoteroPane.selectItem(ref.libItemID);
-    return;
-  }
+  // Revalidate the binding in the current library; an item may have been
+  // edited/deleted since the row or its cache was first populated.
   const local = await libraryIndex.match(ref, libraryID);
   if (local) {
     win.Zotero_Tabs.select("zotero-pane");
@@ -411,7 +406,7 @@ async function addReference(
     });
     popupWin.startCloseTimer(3000);
     setActionState(action, "-");
-    row.style.opacity = "1";
+    row.style.setProperty("--refs-row-opacity", "1");
   } catch (e) {
     ztoolkit.log("[rows] import failed", e);
     popupWin.changeHeadline(getString("progress-import-fail"));
@@ -509,44 +504,24 @@ export function renderRefRow(
   const doc = ctx.list.ownerDocument!;
   let ref = refs[refIndex];
   const prefixed = ctx.numbered !== false;
-  let refText = prefixed
+  const refText = prefixed
     ? `[${ref.number || refIndex + 1}] ${ref.text || ref.title || ""}`
     : ref.text || ref.title || "";
-  const idText =
-    (ref.identifiers &&
-      Object.keys(ref.identifiers).length > 0 &&
-      `${Object.keys(ref.identifiers)[0]}: ${Object.values(ref.identifiers)[0]}`) ||
-    undefined;
-
-  // skip rows whose normalized text is already rendered (the original
-  // plugin suppressed duplicates the same way)
-  const normalize = (t: string) => t.replace(/[^一-龥a-zA-Z0-9]/g, "");
-  const dupOf = normalize(refText);
-  if (dupOf) {
-    // O(1) membership on a per-list set (reset whenever the list is
-    // emptied) instead of re-normalizing every rendered label per row
-    let seenSet = seenByList.get(ctx.list);
-    if (!seenSet || !ctx.list.childElementCount) {
-      seenSet = new Map();
-      seenByList.set(ctx.list, seenSet);
-    }
-    const dup = seenSet.get(dupOf);
-    if (dup?.isConnected) return dup;
-    // registered below once the row exists
-    pendingSeenKey = dupOf;
-  }
+  const idText = () => {
+    const entry = Object.entries(ref.identifiers || {}).find(
+      ([, value]) => !!value,
+    );
+    return entry ? `${entry[0]}: ${entry[1]}` : undefined;
+  };
 
   let opacity = Number(getPref("notInLibraryOpacity"));
   if (!(opacity > 0 && opacity <= 1)) opacity = 1;
 
   const row = doc.createElement("div");
   row.className = "references-row zotero-clicky";
-  if (pendingSeenKey) {
-    seenByList.get(ctx.list)?.set(pendingSeenKey, row);
-    pendingSeenKey = undefined;
-  }
   if (ctx.compact) row.classList.add("compact");
-  row.style.opacity = String(opacity);
+  row.style.setProperty("--refs-row-opacity", String(opacity));
+  row.dataset.searchText = referenceSearchText(ref, refIndex);
 
   const icon = doc.createElement("span");
   icon.className = "icon icon-css icon-item-type cell-icon";
@@ -556,6 +531,8 @@ export function renderRefRow(
   const label = doc.createElement("div");
   label.className = "references-row-label";
   label.textContent = refText;
+  label.tabIndex = 0;
+  label.setAttribute("role", "button");
   label.title = getString(ctx.editable ? "row-tip" : "row-tip-readonly");
   row.append(label);
   const markRetracted = () => {
@@ -580,16 +557,18 @@ export function renderRefRow(
     label.prepend(flag, " ");
   }
 
-  const action = doc.createElement("span");
+  const action = doc.createElement("button");
+  action.type = "button";
   action.className = "references-row-action zotero-clicky";
   setActionState(action, "+");
   row.append(action);
 
   // resolve in-library state asynchronously (index lookup is cheap)
   void (async () => {
+    const originalRef = ref;
     const item = await libraryIndex.match(ref, ctx.hostItem.libraryID);
-    if (item && row.isConnected) {
-      row.style.opacity = "1";
+    if (item && row.isConnected && originalRef === ref) {
+      row.style.setProperty("--refs-row-opacity", "1");
       icon.setAttribute("data-item-type", item.itemType);
       if (isRelated(ctx.hostItem, item)) setActionState(action, "-");
     }
@@ -600,7 +579,7 @@ export function renderRefRow(
   let editing = false;
 
   const enterEdit = () => {
-    if (!ctx.editable || editing) return;
+    if (!ctx.editable || editing || !row.isConnected) return;
     editing = true;
     label.style.display = "none";
     const textarea = doc.createElement("textarea");
@@ -616,18 +595,28 @@ export function renderRefRow(
       textarea.remove();
       label.style.display = "";
       if (!commit || !inputText || inputText === ref.text) return;
-      label.textContent = `[${ref.number || refIndex + 1}] ${inputText}`;
+      // An edit describes a new citation. Retain only its printed position,
+      // never the previous paper's remote metadata, links or relation state.
+      const parsed = refTextToInfo(inputText);
       refs[refIndex] = {
-        ...ref,
-        ...refTextToInfo(inputText),
+        ...parsed,
+        authors: parsed.authors || [],
         identifiers: extractIdentifiers(inputText),
         text: inputText,
-        libItemID: undefined,
+        number: ref.number,
+        page: ref.page,
+        x: ref.x,
+        y: ref.y,
       };
-      // re-bind the closure so hover/locate/import use the edited data
       ref = refs[refIndex];
-      refText = label.textContent || inputText;
       ctx.onEdited?.(ref, refIndex);
+      const replacement = renderRefRow(ctx, refs, refIndex);
+      row.replaceWith(replacement);
+      replacement.querySelector<HTMLElement>(".references-row-label")?.focus();
+      const input = ctx.list.parentElement?.querySelector<HTMLInputElement>(
+        ".references-search input",
+      );
+      if (input) filterRows(ctx.list, input.value);
     };
     textarea.addEventListener("blur", () => exitEdit());
     textarea.addEventListener("keydown", (e: KeyboardEvent) => {
@@ -636,20 +625,52 @@ export function renderRefRow(
     });
   };
 
-  label.addEventListener("mousedown", () => {
-    if (!ctx.editable) return;
+  label.addEventListener("mousedown", (event: MouseEvent) => {
+    if (!ctx.editable || event.button !== 0) return;
     editTimer = setTimeout(() => {
       editTimer = undefined;
       enterEdit();
     }, 500);
   });
 
+  label.addEventListener("mouseleave", () => {
+    clearTimeout(editTimer);
+    editTimer = undefined;
+  });
+  label.addEventListener("keydown", (event: KeyboardEvent) => {
+    if (event.key === "F2" && ctx.editable) {
+      event.preventDefault();
+      enterEdit();
+      return;
+    }
+    if (event.key === "Escape") {
+      closePopup();
+      return;
+    }
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    if (event.ctrlKey || event.metaKey) {
+      void locateReference(ref, ctx.hostItem.libraryID);
+      return;
+    }
+    const clean = (ref.text || ref.title || "").replace(
+      /^\s*(?:\[\d+\]|\d{1,3}[.)])\s+/,
+      "",
+    );
+    const ids = idText();
+    copyText((ids ? ids + "\n" : "") + clean);
+  });
   row.addEventListener("click", (e) => {
     e.preventDefault();
     e.stopPropagation();
   });
   row.addEventListener("mouseup", (event: MouseEvent) => {
-    if ((event.target as HTMLElement) === action) return;
+    if (
+      event.button !== 0 ||
+      editing ||
+      (event.target as HTMLElement) === action
+    )
+      return;
     event.preventDefault();
     event.stopPropagation();
     if (event.ctrlKey || event.metaKey) {
@@ -669,7 +690,8 @@ export function renderRefRow(
         /^\s*(?:\[\d+\]|\d{1,3}[.)])\s+/,
         "",
       );
-      copyText((idText ? idText + "\n" : "") + clean);
+      const ids = idText();
+      copyText((ids ? ids + "\n" : "") + clean);
     }
   });
 
@@ -679,16 +701,6 @@ export function renderRefRow(
     event.stopPropagation();
     const state = action.textContent;
     if (state === "+") {
-      if (
-        ref.retracted &&
-        !Services.prompt.confirm(
-          getWin() as any,
-          getString("retracted-badge"),
-          getString("retracted-import-confirm"),
-        )
-      ) {
-        return;
-      }
       if (event.ctrlKey || event.metaKey) {
         pickCollectionAndAdd(ctx, ref, action, row);
       } else {
@@ -721,7 +733,7 @@ export function renderRefRow(
           height: rect.height,
         },
         position,
-        idText,
+        idText(),
       );
       if (!row.classList.contains("active")) {
         popup.container.style.display = "none";
@@ -740,13 +752,15 @@ export function renderRefRow(
       // reference row anywhere is being hovered
       if (
         currentPopup === popup &&
-        !doc.querySelector(".references-row.active")
+        !doc.querySelector(".references-row.active") &&
+        !popup.container.contains(doc.activeElement)
       ) {
         popup.clear();
       }
     }, timeout);
   });
 
+  setListMessage(ctx.list, "");
   ctx.list.append(row);
   return row;
 }
@@ -771,14 +785,42 @@ export function keywordPredicate(
   };
 }
 
-/** AND-match keyword filter over rendered rows */
+/** Identical search data for row filtering and batch-import selection. */
+export function referenceSearchText(ref: RefItem, index: number): string {
+  return [
+    ref.number || index + 1,
+    ref.text,
+    ref.title,
+    ...(ref.authors || []),
+    ref.year,
+    ref.primaryVenue,
+    ...Object.values(ref.identifiers || {}),
+    ...(ref.tags || []).map((tag) =>
+      typeof tag === "string" ? tag : tag.text,
+    ),
+    ref.retracted ? getString("retracted-badge") : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+/** AND-match keyword filter over rendered rows. */
 export function filterRows(list: HTMLElement, keyword: string) {
   const match = keywordPredicate(keyword);
   const rows = Array.from(
     list.querySelectorAll(".references-row"),
   ) as HTMLElement[];
+  let visible = 0;
   for (const row of rows) {
-    const label = row.querySelector(".references-row-label");
-    row.style.display = match(label?.textContent || "") ? "" : "none";
+    const matches = match(row.dataset.searchText || "");
+    row.hidden = !matches;
+    if (matches) visible++;
   }
+  const counter = list.parentElement?.querySelector<HTMLElement>(
+    ".references-filter-count",
+  );
+  if (counter)
+    counter.textContent = keyword ? `${visible} / ${rows.length}` : "";
+  if (rows.length)
+    setListMessage(list, visible ? "" : getString("panel-no-matches"));
 }

@@ -59,7 +59,7 @@ export const unpaywall: MetaSource & {
       title: cleanText(data.title),
       year: data.year != null ? String(data.year) : undefined,
       type: TYPE_MAP[data.genre] || "journalArticle",
-      primaryVenue: data.journal_name,
+      primaryVenue: cleanText(data.journal_name),
       source: "unpaywall",
       publishDate: data.published_date,
       oaUrl,

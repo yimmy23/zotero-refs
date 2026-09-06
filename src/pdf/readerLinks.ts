@@ -33,7 +33,9 @@ interface ReaderState {
   /** pdf.js iframe window */
   win: any;
   origNavigate?: any;
+  wrappedNavigate?: any;
   pointerListener?: (event: any) => void;
+  unloadListener?: () => void;
 }
 
 /** overlay destination position: {pageIndex, rects: [[x1,y1,x2,y2],...]} */
@@ -63,7 +65,7 @@ export class ReaderLinks {
           existing.view &&
           existing.view === cur &&
           typeof cur?.navigate === "function" &&
-          String(cur.navigate).includes("clickLink")
+          cur.navigate === existing.wrappedNavigate
         ) {
           return; // already live on the current view
         }
@@ -108,7 +110,13 @@ export class ReaderLinks {
     state.cancelled = true;
     const view = state.view;
     try {
-      if (view && state.origNavigate) view.navigate = state.origNavigate;
+      if (
+        view &&
+        state.origNavigate &&
+        view.navigate === state.wrappedNavigate
+      ) {
+        view.navigate = state.origNavigate;
+      }
     } catch {
       // dead object
     }
@@ -116,13 +124,18 @@ export class ReaderLinks {
       if (state.win && state.pointerListener) {
         state.win.removeEventListener("pointerup", state.pointerListener, true);
       }
+      if (state.win && state.unloadListener) {
+        state.win.removeEventListener("unload", state.unloadListener);
+      }
     } catch {
       // dead object
     }
     state.view = null;
     state.win = null;
     state.origNavigate = undefined;
+    state.wrappedNavigate = undefined;
     state.pointerListener = undefined;
+    state.unloadListener = undefined;
   }
 
   /** wait for the primary PDFView and its iframe window (~10s) */
@@ -165,7 +178,10 @@ export class ReaderLinks {
     // standalone reader windows never fire a tab-close sweep — release
     // this reader's state (and the patched view) when its window dies
     try {
-      win.addEventListener("unload", () => this.detach(reader), {
+      state.unloadListener = () => {
+        if (this.states.get(reader) === state) this.detach(reader);
+      };
+      win.addEventListener("unload", state.unloadListener, {
         once: true,
       });
     } catch {
@@ -177,6 +193,10 @@ export class ReaderLinks {
       let pendingNav: { position: any; at: number } | null = null;
       const pointerListener = (event: any) => {
         try {
+          if (event.button !== undefined && event.button !== 0) {
+            pendingNav = null;
+            return;
+          }
           const pos = view.pointerEventToPosition?.(event);
           const overlay = pos && view._getSelectableOverlay?.(pos);
           const destPos = overlayDestPosition(overlay);
@@ -193,7 +213,7 @@ export class ReaderLinks {
       }
       const origNavigate = view.navigate.bind(view);
       state.origNavigate = view.navigate;
-      view.navigate = (location: any, options?: any) => {
+      state.wrappedNavigate = (location: any, options?: any) => {
         try {
           if (
             !state.cancelled &&
@@ -206,7 +226,21 @@ export class ReaderLinks {
           ) {
             const position = location.position;
             pendingNav = null;
-            void this.jumpInSecondView(reader, position, state);
+            void this.jumpInSecondView(reader, position, state)
+              .then((jumped) => {
+                if (
+                  !jumped &&
+                  !state.cancelled &&
+                  this.states.get(reader) === state &&
+                  reader._internalReader?._primaryView === view
+                ) {
+                  // A split that cannot open must not swallow the click.
+                  return origNavigate(location, options);
+                }
+              })
+              .catch((e) =>
+                ztoolkit.log("[readerLinks] fallback navigation failed", e),
+              );
             return; // keep the primary view where it is
           }
         } catch (e) {
@@ -215,6 +249,7 @@ export class ReaderLinks {
         pendingNav = null;
         return origNavigate(location, options);
       };
+      view.navigate = state.wrappedNavigate;
     }
   }
 
@@ -226,29 +261,38 @@ export class ReaderLinks {
     reader: any,
     position: any,
     state: ReaderState,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       const internal = (reader as any)._internalReader;
-      if (!internal) return;
+      if (!internal) return false;
       if (!internal._secondaryView) {
         const cmd = getPref("clickLinkCmd") as string;
         if (cmd === "splitVertically") {
-          internal.toggleVerticalSplit?.(true);
+          if (typeof internal.toggleVerticalSplit !== "function") return false;
+          await internal.toggleVerticalSplit(true);
         } else {
-          internal.toggleHorizontalSplit?.(true);
+          if (typeof internal.toggleHorizontalSplit !== "function")
+            return false;
+          await internal.toggleHorizontalSplit(true);
         }
         const deadline = Date.now() + READY_TIMEOUT;
         while (!internal._secondaryView?._iframeWindow) {
-          if (state.cancelled || Date.now() > deadline) return;
+          if (state.cancelled || Date.now() > deadline) return false;
           await Zotero.Promise.delay(100);
         }
         // let the fresh view settle before navigating
         await Zotero.Promise.delay(300);
       }
-      if (state.cancelled) return;
-      internal._secondaryView?.navigate?.({ position });
+      if (
+        state.cancelled ||
+        typeof internal._secondaryView?.navigate !== "function"
+      )
+        return false;
+      await internal._secondaryView.navigate({ position });
+      return true;
     } catch (e) {
       ztoolkit.log("[readerLinks] second-view jump failed", e);
+      return false;
     }
   }
 }

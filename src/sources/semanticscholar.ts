@@ -30,6 +30,8 @@ const FIELDS =
 
 /** the fields used for the references/citations "cited/citing paper" sub-object */
 const REFERENCE_FIELDS = FIELDS.replace("referenceCount,", "");
+const REFERENCE_PAGE_SIZE = 1000;
+const MAX_REFERENCE_PAGES = 20;
 
 function authHeaders(): Record<string, string> {
   const key = ((getPref("s2ApiKey") as string) || "").trim();
@@ -83,7 +85,7 @@ function mapPaper(data: any): RefItem {
     year: data.year != null ? String(data.year) : undefined,
     publishDate: data.publicationDate,
     authors: (data.authors || []).map((a: any) => a.name),
-    primaryVenue: data.venue,
+    primaryVenue: cleanText(data.venue),
     citationCount: data.citationCount,
     referenceCount: data.referenceCount,
     oaUrl: data.openAccessPdf?.url,
@@ -100,7 +102,7 @@ function mapPaper(data: any): RefItem {
 
 async function fetchByPid(pid: string): Promise<RefItem | null> {
   const data = await http.getJSON<any>(
-    `${GRAPH_API}/paper/${pid}?fields=${FIELDS}`,
+    `${GRAPH_API}/paper/${encodeURIComponent(pid)}?fields=${FIELDS}`,
     { headers: authHeaders() },
   );
   if (!data) return null;
@@ -145,22 +147,60 @@ async function getReferences(
   const pid = pidFromIdentifiers(ids);
   if (!pid) return null;
   const fields = `${REFERENCE_FIELDS},contexts,intents`;
-  const url = `${GRAPH_API}/paper/${pid}/references?fields=${fields}&limit=1000`;
-  const res = await http.getJSON<any>(url, { headers: authHeaders() });
-  const data: any[] = res?.data || [];
+  const url = `${GRAPH_API}/paper/${encodeURIComponent(pid)}/references?fields=${fields}&limit=${REFERENCE_PAGE_SIZE}`;
   const refs: RefItem[] = [];
-  let idx = 0;
-  for (const entry of data) {
-    if (!entry?.citedPaper) continue;
-    idx++;
-    const item = mapPaper(entry.citedPaper);
-    item.number = idx;
-    const contexts: string[] = entry.contexts || [];
-    const intents: string[] = entry.intents || [];
-    if (contexts.length) {
-      item.description = `${intents[0] || "unknown"}: ${contexts[0]}`;
+  const seen = new Set<string>();
+  let offset = 0;
+  for (let page = 0; page < MAX_REFERENCE_PAGES; page++) {
+    // Each page uses the shared cache, in-flight deduplication and host gate.
+    const res = await http.getJSON<any>(`${url}&offset=${offset}`, {
+      headers: authHeaders(),
+    });
+    if (!Array.isArray(res?.data) || !res.data.length) break;
+    const before = refs.length;
+    for (const entry of res.data) {
+      if (!entry?.citedPaper) continue;
+      const item = mapPaper(entry.citedPaper);
+      const keys = Object.entries(item.identifiers).flatMap(([name, value]) =>
+        typeof value === "string" && value.trim()
+          ? [`${name}:${value.trim().toLowerCase()}`]
+          : [],
+      );
+      // Identifier-free entries need a stable fallback without collapsing
+      // distinct, identified papers that happen to share a title.
+      if (!keys.length && item.title) {
+        keys.push(
+          `title:${JSON.stringify([item.title.normalize("NFKC").toLowerCase(), item.year || "", item.authors || []])}`,
+        );
+      }
+      if (!keys.length) continue;
+      const duplicate = keys.some((key) => seen.has(key));
+      for (const key of keys) seen.add(key);
+      if (duplicate) continue;
+      item.number = refs.length + 1;
+      const contexts: string[] = entry.contexts || [];
+      const intents: string[] = entry.intents || [];
+      if (contexts.length) {
+        item.description = `${intents[0] || "unknown"}: ${contexts[0]}`;
+      }
+      refs.push(item);
     }
-    refs.push(item);
+    const next = res.next;
+    if (next == null) break;
+    // Reject looping/invalid cursors and repeated pages, even when a broken
+    // endpoint keeps claiming that more data is available.
+    if (
+      !Number.isSafeInteger(next) ||
+      next <= offset ||
+      refs.length === before
+    ) {
+      ztoolkit.log("[s2] stopped reference pagination without progress");
+      break;
+    }
+    if (page === MAX_REFERENCE_PAGES - 1) {
+      ztoolkit.log("[s2] reached reference pagination limit", refs.length);
+    }
+    offset = next;
   }
   return refs.length ? refs : null;
 }
@@ -172,7 +212,7 @@ async function getCitations(
 ): Promise<PagedRefs | null> {
   const pid = pidFromIdentifiers(ids);
   if (!pid) return null;
-  const url = `${GRAPH_API}/paper/${pid}/citations?offset=${offset}&limit=${limit}&fields=${FIELDS}`;
+  const url = `${GRAPH_API}/paper/${encodeURIComponent(pid)}/citations?offset=${offset}&limit=${limit}&fields=${FIELDS}`;
   const res = await http.getJSON<any>(url, { headers: authHeaders() });
   if (!res?.data) return null;
   const items: RefItem[] = res.data
@@ -188,7 +228,7 @@ async function getRelated(
   const pid = pidFromIdentifiers(ids);
   if (!pid) return null;
   const fields = "title,year,authors,abstract,externalIds,venue,citationCount";
-  const url = `${RECOMMENDATIONS_API}/papers/forpaper/${pid}?fields=${fields}&limit=${limit}`;
+  const url = `${RECOMMENDATIONS_API}/papers/forpaper/${encodeURIComponent(pid)}?fields=${fields}&limit=${limit}`;
   const res = await http.getJSON<any>(url, { headers: authHeaders() });
   const list: any[] = res?.recommendedPapers || [];
   if (!list.length) return null;

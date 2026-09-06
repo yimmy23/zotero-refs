@@ -11,7 +11,7 @@ import { getWorkFull, getWorksBatch, openalex } from "../sources/openalex";
 /**
  * Citation-graph builder. Assembles a GraphData around one library item
  * from OpenAlex: the item's references (hydrated with their own reference
- * lists so we can compute co-citation links), a page of citing works, and
+ * lists so we can compute bibliographic-coupling links), a page of citing works, and
  * a few related works. Pure data — rendering lives in ./view.
  */
 
@@ -19,9 +19,9 @@ import { getWorkFull, getWorksBatch, openalex } from "../sources/openalex";
 const CITATION_LIMIT = 15;
 /** Related works considered for the graph. */
 const RELATED_LIMIT = 10;
-/** Minimum shared references for a co-citation edge. */
+/** Minimum shared references for a bibliographic-coupling edge. */
 const COCITE_MIN_SHARED = 3;
-/** Hard cap on co-citation edges (kept by weight desc). */
+/** Hard cap on bibliographic-coupling edges (kept by weight desc). */
 const COCITE_MAX_EDGES = 200;
 
 export async function buildGraph(
@@ -60,7 +60,7 @@ export async function buildGraph(
       inLibrary: false,
     });
 
-    // Reference lists of reference-kind nodes, for co-citation edges.
+    // Reference lists of reference-kind nodes, for bibliographic-coupling edges.
     const refWorksOf = new Map<string, Set<string>>();
 
     onStatus?.(
@@ -145,7 +145,7 @@ export async function buildGraph(
       });
     }
 
-    // Co-citation among kept reference nodes: two references sharing
+    // Bibliographic coupling among kept reference nodes: two references sharing
     // enough entries of their own reference lists get linked.
     const refNodes = kept.filter(
       (n) => n.kind === "reference" && refWorksOf.has(n.id),

@@ -11,15 +11,51 @@ import type { Identifiers, MetaSource, RefItem } from "../core/types";
 const BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils";
 
 /**
- * efetch's plaintext "abstract" rettype returns the citation block, title,
- * abstract body, then an affiliation/PMID footer. We just trim the trailing
- * "PMID: ..." style footer lines — good enough for display purposes.
+ * Only the primary article's AbstractText elements are abstract content.
+ * The plaintext efetch format also contains titles, authors and affiliations.
  */
-function extractAbstractText(raw: string): string | undefined {
-  const text = raw.trim();
-  if (!text) return undefined;
-  const footerIdx = text.search(/\n\s*(PMID|DOI|PMCID)\s*:/i);
-  return (footerIdx > -1 ? text.slice(0, footerIdx) : text).trim();
+function directElements(parent: Node, name: string): Element[] {
+  return Array.from(parent.childNodes).filter(
+    (node): node is Element =>
+      !!node && node.nodeType === 1 && node.nodeName === name,
+  );
+}
+
+function extractAbstractText(raw: string, pmid: string): string | undefined {
+  try {
+    const doc = ztoolkit.getDOMParser().parseFromString(raw, "text/xml");
+    if (
+      doc.getElementsByTagName("parsererror").length ||
+      doc.documentElement?.nodeName !== "PubmedArticleSet"
+    )
+      return undefined;
+    // Direct-child traversal also works in XML DOMs without CSS selectors.
+    // Never accept a cited/related PMID nested elsewhere in the response.
+    const citation = directElements(doc.documentElement, "PubmedArticle")
+      .flatMap((article) => directElements(article, "MedlineCitation"))
+      .find(
+        (node) => directElements(node, "PMID")[0]?.textContent?.trim() === pmid,
+      );
+    if (!citation) return undefined;
+    const parts = directElements(citation, "Article")
+      .flatMap((article) => directElements(article, "Abstract"))
+      .flatMap((abstract) => directElements(abstract, "AbstractText"))
+      .map((node) => {
+        // XML textContent already removes inline elements and decodes
+        // entities. Re-parsing it as HTML would erase literal <comparisons>.
+        const text = (node.textContent || "").replace(/\s+/g, " ").trim();
+        if (!text) return "";
+        const label = (node.getAttribute("Label") || "")
+          .replace(/\s+/g, " ")
+          .trim();
+        return label ? `${label}: ${text}` : text;
+      })
+      .filter(Boolean);
+    return parts.join("\n\n") || undefined;
+  } catch (error) {
+    ztoolkit.log("[pubmed] abstract XML parse failed", error);
+    return undefined;
+  }
 }
 
 export const pubmed: MetaSource & {
@@ -51,9 +87,9 @@ export const pubmed: MetaSource & {
 
     const abstractUrl =
       `${BASE}/efetch.fcgi?db=pubmed&id=${encodeURIComponent(pmid)}` +
-      `&rettype=abstract&retmode=text`;
+      `&retmode=xml`;
     const raw = await http.getText(abstractUrl);
-    const abstract = raw ? extractAbstractText(raw) : undefined;
+    const abstract = raw ? extractAbstractText(raw, pmid) : undefined;
 
     const pubtypes: string[] = Array.isArray(result.pubtype)
       ? result.pubtype
@@ -63,7 +99,7 @@ export const pubmed: MetaSource & {
       title: cleanText(result.title),
       authors,
       year,
-      primaryVenue: result.fulljournalname,
+      primaryVenue: cleanText(result.fulljournalname),
       abstract,
       source: "pubmed",
       type: "journalArticle",

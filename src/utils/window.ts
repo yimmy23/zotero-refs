@@ -35,7 +35,10 @@ function getDoc(): Document {
  * Handles are plain numbers from our own sequence.
  */
 let timerSeq = 1;
-const timers = new Map<number, { win: Window; id: number }>();
+const timers = new Map<
+  number,
+  { win: Window; id: number; repeating: boolean }
+>();
 
 function schedule(fn: () => void, ms: number, repeating: boolean): number {
   const win = getWin() as unknown as Window;
@@ -45,7 +48,7 @@ function schedule(fn: () => void, ms: number, repeating: boolean): number {
     fn();
   };
   const id = repeating ? win.setInterval(cb, ms) : win.setTimeout(cb, ms);
-  timers.set(handle, { win, id });
+  timers.set(handle, { win, id, repeating });
   return handle;
 }
 
@@ -69,4 +72,8 @@ function setInterval(fn: () => void, ms: number): number {
 }
 function clearInterval(id?: number) {
   cancel(id, true);
+}
+
+export function cancelAllTimers() {
+  for (const [handle, entry] of timers) cancel(handle, entry.repeating);
 }

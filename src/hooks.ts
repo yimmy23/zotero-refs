@@ -1,3 +1,4 @@
+import { cancelAllTimers } from "./utils/window";
 import { initLocale } from "./utils/locale";
 import { registerPrefsScripts } from "./modules/preferenceScript";
 import { createZToolkit } from "./utils/ztoolkit";
@@ -15,8 +16,12 @@ import {
 import { destroyAllGraphViews } from "./graph/view";
 import { registerStyles, unregisterStyles } from "./ui/styles";
 import { closePopup } from "./ui/rows";
-import { registerItemMenus, unregisterItemMenus } from "./modules/menus";
-import { registerDevEval } from "./modules/devEval";
+import {
+  registerItemMenus,
+  registerWindowMenus,
+  unregisterItemMenus,
+} from "./modules/menus";
+import { registerDevEval, unregisterDevEval } from "./modules/devEval";
 import {
   attachAllReaders,
   detachAllReaders,
@@ -25,7 +30,6 @@ import {
 } from "./pdf/readerHook";
 
 let notifierID: string | undefined;
-let pluginsObserverAdded = false;
 
 async function onStartup() {
   await Promise.all([
@@ -74,22 +78,13 @@ async function onStartup() {
     {
       notify: (event: string, type: string, ids: any[], extraData: any) => {
         if (!addon?.data.alive) return;
-        addon.hooks.onNotify(event, type, ids, extraData);
+        void addon.hooks
+          .onNotify(event, type, ids, extraData)
+          .catch((error: unknown) => ztoolkit.log("[notify] failed", error));
       },
     },
     ["tab", "item"],
   );
-  if (!pluginsObserverAdded) {
-    pluginsObserverAdded = true;
-    Zotero.Plugins.addObserver({
-      shutdown: ({ id }: { id: string }) => {
-        if (id === config.addonID && notifierID) {
-          Zotero.Notifier.unregisterObserver(notifierID);
-          notifierID = undefined;
-        }
-      },
-    });
-  }
 
   await Promise.all(
     Zotero.getMainWindows().map((win) => onMainWindowLoad(win)),
@@ -104,23 +99,33 @@ async function onStartup() {
 async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
   win.MozXULElement.insertFTLIfNeeded(`${config.addonRef}-addon.ftl`);
   registerStyles(win as unknown as Window);
+  registerWindowMenus(win);
 }
 
 async function onMainWindowUnload(win: Window): Promise<void> {
-  closePopup();
-  destroyAllGraphViews();
+  closePopup(win);
+  destroyAllGraphViews(win);
   unregisterStyles(win);
   addon.data.dialog?.window?.close();
 }
 
-function onShutdown(): void {
+async function onShutdown(): Promise<void> {
+  addon.data.alive = false;
+  unregisterDevEval();
+  if (notifierID) {
+    Zotero.Notifier.unregisterObserver(notifierID);
+    notifierID = undefined;
+  }
   closePopup();
   destroyAllGraphViews();
   removeGraphMenus();
   unregisterItemMenus();
   detachAllReaders();
   libraryIndex.unregister();
-  void refStorage.flush();
+  cancelAllTimers();
+  await refStorage
+    .flush()
+    .catch((error) => ztoolkit.log("[shutdown] cache flush failed", error));
   for (const win of Zotero.getMainWindows()) {
     unregisterStyles(win as unknown as Window);
   }

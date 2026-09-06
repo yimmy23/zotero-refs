@@ -180,16 +180,30 @@ function mergeSameLine(items: PDFItem[]): PDFLine[] {
       Math.min(line.y + line.height, lastLine.y + lastLine.height) -
         Math.max(line.y, lastLine.y) >
         Math.min(line.height, lastLine.height) * 0.5;
+    // A shared baseline is not enough: row-major text streams place the
+    // two columns next to each other. Keep a real gutter between them,
+    // while preserving the narrow margin-number exception above.
+    const horizontalGap = Math.max(
+      line.x - (lastLine.x + lastLine.width),
+      lastLine.x - (line.x + line.width),
+    );
+    const nearby =
+      horizontalGap <= 3 * Math.max(line.height, lastLine.height, 6);
+    const verticalOverlap =
+      Math.min(line.y + line.height, lastLine.y + lastLine.height) -
+      Math.max(line.y, lastLine.y);
     // same line, with sub/superscript tolerance
     if (
-      line.y == lastLine.y ||
-      (line.y >= lastLine.y && line.y < lastLine.y + lastLine.height) ||
-      (line.y + line.height > lastLine.y &&
-        line.y + line.height <= lastLine.y + lastLine.height) ||
+      (nearby &&
+        (line.y == lastLine.y ||
+          verticalOverlap >= 0.5 * Math.min(line.height, lastLine.height))) ||
       gutterNumber
     ) {
       lastLine.text += " " + line.text;
-      lastLine.width += line.width;
+      const left = Math.min(lastLine.x, line.x);
+      lastLine.width =
+        Math.max(lastLine.x + lastLine.width, line.x + line.width) - left;
+      lastLine.x = left;
       lastLine.url = lastLine.url || line.url;
       lastLine._height.push(line.height);
       if (gutterNumber) {
@@ -212,7 +226,7 @@ function mergeSameLine(items: PDFItem[]): PDFLine[] {
       lines.push(line);
     }
   }
-  return lines;
+  return restoreNumberedColumnOrder(lines);
 }
 
 /* ------------------------------------------------------------------ */
@@ -267,6 +281,59 @@ function compactLeadingDigits(t: string): string {
 }
 
 /**
+ * Restore two-column reading order only when the numbering independently
+ * proves it. Some PDFs emit 1, 4, 2, 5, 3, 6 down both columns together.
+ * Never sort an arbitrary page by x/y: that would pull captions into its
+ * bibliography. Ambiguous bands, reset numbers and large block gaps keep
+ * their original order.
+ */
+function restoreNumberedColumnOrder(lines: PDFLine[]): PDFLine[] {
+  const starts = lines.filter((line) => numAtStart(line.text) > 0);
+  if (starts.length < 4) return lines;
+  const numbers = starts.map((line) => numAtStart(line.text));
+  if (!numbers.some((n, i) => i > 0 && n < numbers[i - 1])) return lines;
+  if (new Set(numbers).size !== numbers.length) return lines;
+  const unit = Math.max(6, ...starts.map((line) => line.height));
+  const bands: PDFLine[][] = [];
+  for (const line of starts) {
+    const band = bands.find((group) => Math.abs(group[0].x - line.x) <= unit);
+    if (band) band.push(line);
+    else bands.push([line]);
+  }
+  if (bands.length !== 2 || bands.some((band) => band.length < 2)) return lines;
+  bands.sort((a, b) => a[0].x - b[0].x);
+  const leftEdge = Math.max(...bands[0].map((line) => line.x + line.width));
+  const rightEdge = Math.min(...bands[1].map((line) => line.x));
+  if (rightEdge - leftEdge < 2 * unit) return lines;
+  const ordered = bands.flat().map((line) => numAtStart(line.text));
+  if (ordered.some((n, i) => i > 0 && n !== ordered[i - 1] + 1)) return lines;
+
+  const boundary = (leftEdge + rightEdge) / 2;
+  const first = lines.indexOf(starts[0]);
+  const last = lines.indexOf(starts[starts.length - 1]);
+  const grouped: PDFLine[][] = [[], []];
+  let end = first;
+  for (; end < lines.length; end++) {
+    const line = lines[end];
+    const band =
+      line.x + line.width <= boundary ? 0 : line.x >= boundary ? 1 : -1;
+    if (band < 0) break;
+    const prev = grouped[band][grouped[band].length - 1];
+    const top = bands[band][0];
+    if (line.x < top.x - unit || line.y > top.y + unit) break;
+    if (prev && (line.y > prev.y + unit || prev.y - line.y > 4.5 * unit)) break;
+    grouped[band].push(line);
+  }
+  if (end <= last) return lines;
+  return [
+    ...lines.slice(0, first),
+    ...grouped[0],
+    ...grouped[1],
+    ...lines.slice(end),
+  ];
+}
+
+/**
  * Typical trailing matter that follows a bibliography: back-matter headings
  * (acknowledgements, contributions, disclosures…), licence / copyright
  * boilerplate, figure legends and tables. Anchored at the line start;
@@ -313,12 +380,30 @@ function tailNoiseKind(text: string): TailKind {
 
 /**
  * A reference line that ends the way complete entries end: page range,
- * volume:pages, a DOI / URL / PMID / e-locator, or a closing bracket
- * ("[PubMed: …]"). Deliberately NOT a bare year or number — titles end in
+ * volume:pages, a DOI / URL / PMID / e-locator, or a bracketed lookup link
+ * ("[PubMed: …]"). Citation-type marks such as [J], [M] and [EB/OL] are
+ * followed by publication metadata, so their bracket is not an ending.
+ * Deliberately NOT a bare year or number — titles end in
  * those ("Cancer statistics, 2019", "RECIST 1.1", "COVID-19").
  */
 const ENTRY_END =
-  /(\d[-–‒]\d+\.?|;\s*\d+(?:\s*\(\d+\))?\s*:\s*\d+\.?|\]\.?|\bdoi[:\s]*\S+|https?:\/\/\S+|\bPMID:?\s*\d+\.?|\bPMC\d+\.?|\be\d{4,}\.?|print\]\.?)\s*$/i;
+  /(\d[-–‒]\d+\.?|;\s*\d+(?:\s*\(\d+\))?\s*:\s*\d+\.?|\[\s*(?:PubMed\b|PMC\d*\b|Crossref\b|Web of Science\b|Google Scholar\b)[^\]]*\]\.?|\bdoi[:\s]*\S+|https?:\/\/\S+|\bPMID:?\s*\d+\.?|\bPMC\d+\.?|\be\d{4,}\.?|print\]\.?)\s*$/i;
+
+/** A year or range alone also occurs in tables; require citation syntax. */
+function hasCitationEvidence(text: string): boolean {
+  return (
+    /\b10\.\s?\d{4,9}\s?\/\S+/i.test(text) ||
+    /\bPMID\s*:?\s*\d{6,9}\b/i.test(text) ||
+    // Require a year immediately followed by bibliographic volume/pages.
+    // Ratios ("allocation ratio 1:1") are common in dated clinical tables.
+    /\b(?:19|20)\d{2}\s*[).,;]\s*\d{1,4}\s*(?:\(\d[^)]{0,20}\))?\s*:\s*(?:\d{1,7}[-–‒]\d+|\d{2,7}|e\d{3,})\b/i.test(
+      text,
+    )
+  );
+}
+
+const STANDALONE_TAIL_HEADING =
+  /^(?:acknowledg(?:e?ments?)?|funding|author[s’']*\s+(?:contributions?|disclosures?)|contributors|disclosures?|conflicts? of interest|competing interests?|supplement(?:ary|al)(?:\s+(?:information|materials?|data|methods|references))?|correspondence|abbreviations|appendi(?:x|ces))\s*[:：.]?$/i;
 
 /**
  * A line that starts like a new block rather than the wrapped tail of an
@@ -387,6 +472,18 @@ function continuationVerdict(
     ctx.isLast && ENTRY_END.test(prev.text) && startsNewBlock(line.text);
   if (lp !== pp) {
     if (lp < pp) return "stray";
+    // Once the final citation is complete, the top of another page is
+    // usually running matter. Its page number/lowercase text must not
+    // bypass the capital-letter new-block guard. Explicit citation
+    // addenda (DOI, PMID, availability/access dates) may still continue.
+    if (
+      ctx.isLast &&
+      ENTRY_END.test(prev.text) &&
+      !/^(?:doi[:\s]|PMID[:\s]|PMCID[:\s]|URL[:\s]|(?:Available|Accessed|Retrieved|Epub|Published|Updated|Cited)\b|https?:\/\/|10\.\d{4,9}\/)/i.test(
+        line.text.trim(),
+      )
+    )
+      return "end";
     return closes ? "end" : "accept";
   }
   // floor the unit so PDFs that report tiny text heights (some OCR text
@@ -542,7 +639,36 @@ function mergeNumberedRefs(input: PDFLine[]): PDFLine[] | null {
     // entry, or on a later page once the entry reads as complete; a lone
     // boilerplate line — a footer or watermark the stream placed between
     // the two halves of an entry — is only dropped.
-    const noise = out.length > 1 ? tailNoiseKind(text) : null;
+    let noise = out.length > 1 ? tailNoiseKind(text) : null;
+    // Heading words also open real titles ("Supplementary oxygen…",
+    // "Funding mechanisms…"). Preserve a wrapped title while its citation
+    // is incomplete and the line remains in the same typographic flow.
+    if (
+      noise === "heading" &&
+      !STANDALONE_TAIL_HEADING.test(text.trim()) &&
+      !ENTRY_END.test(joinLines(entryLines)) &&
+      line.pageNum === last.pageNum &&
+      line.y < last.y &&
+      last.y - line.y <= 3 * Math.max(last.height, line.height, 6) &&
+      Math.abs(absX(line) - absX(last)) < 5 * Math.max(last.height, 6) &&
+      line.height <= 1.25 * Math.max(last.height, 6)
+    ) {
+      const continuation: PDFLine[] = [];
+      for (
+        let j = i;
+        j < input.length && continuation.length <= MAX_TAIL_LINES;
+        j++
+      ) {
+        if (j > i && nums[j] > 0) break;
+        if (
+          j > i &&
+          continuationVerdict(input[j - 1], input[j], ctx) !== "accept"
+        )
+          break;
+        continuation.push(input[j]);
+      }
+      if (hasCitationEvidence(joinLines(continuation))) noise = null;
+    }
     if (noise) {
       const lp = line.pageNum ?? 0;
       const pp = last.pageNum ?? 0;
@@ -604,6 +730,7 @@ function mergeNumberedRefs(input: PDFLine[]): PDFLine[] | null {
 }
 
 function mergeSameRef(input: PDFLine[]): PDFLine[] {
+  if (!input.length) return [];
   const numbered = mergeNumberedRefs(input);
   if (numbered) {
     ztoolkit.log(`[pdfparser] numbered merge -> ${numbered.length}`);
@@ -624,10 +751,25 @@ function mergeSameRef(input: PDFLine[]): PDFLine[] {
   ztoolkit.log("[pdfparser] mergeSameRef indent", indent);
   const refType = getRefType(firstLine.text);
   let ref: PDFLine | undefined;
+  let entryCount = 0;
   for (let i = 0; i < refLines.length; i++) {
     const line = refLines[i] as PDFLine;
     const text = line.text;
     const lineRefType = getRefType(text);
+    // Unnumbered bibliographies need the same explicit end markers as
+    // numbered ones. The old indent fallback classified "APPENDIX" and
+    // its paragraphs as author names. Publication-history dates are a
+    // separate, narrow pattern so "Received doses..." can remain a title.
+    if (
+      entryCount >= 2 &&
+      (STANDALONE_TAIL_HEADING.test(text.trim()) ||
+        /^received(?:(?:january|february|march|april|may|june|july|august|september|october|november|december)\d{4}|\d{1,2}[a-z]+\d{4})(?=[;,.]|revised|accepted|$)/i.test(
+          text.replace(/\s+/g, ""),
+        ))
+    ) {
+      refLines = refLines.slice(0, i);
+      break;
+    }
     if (
       // numbered types are reliable — skip other checks, carefully
       (lineRefType == refType && refType <= 2) ||
@@ -646,6 +788,7 @@ function mergeSameRef(input: PDFLine[]): PDFLine[] {
         ) !== undefined)
     ) {
       ref = line;
+      entryCount++;
     } else if (ref) {
       // cut off tail noise that followed the bibliography into refLines,
       // usually the last few lines
@@ -1224,6 +1367,12 @@ async function getRefLines(
         part = [];
       }
     }
+    // An unbroken block on page zero has no following page/gap to commit
+    // it. Preserve it for the existing no-heading/year-gated fallback.
+    if (pageNum === 0 && part.length && !_refPart.done) {
+      donePart(part);
+      part = [];
+    }
     if (_refPart.done) {
       let lines: PDFLine[] = [];
       _refPart.parts.reverse().forEach((p) => {
@@ -1292,6 +1441,18 @@ async function getRefLines(
     );
     const refScore = (p: PDFLine[]) =>
       p.filter((l) => getRefType(l.text) != -1).length / p.length;
+    const unnumberedContinuation = (lines: PDFLine[]) => {
+      if (refScore(lines) < 0.5) return false;
+      const entries = mergeSameRef(lines.map((line) => ({ ...line })));
+      // An uppercase word opens both an author name and an ordinary
+      // paragraph. Demand the publication years of a bibliography too.
+      return (
+        entries.length > 0 &&
+        entries.filter((entry) => /\b(1[89]|20)\d{2}\b/.test(entry.text))
+          .length >=
+          entries.length * 0.5
+      );
+    };
     // numbered bibliographies: the continuation must pick up at the next
     // number ("11." on page N → a line starting "12." / "[12]" on N+1)
     // strict form (a real entry start, not a stray "839." page fragment)
@@ -1303,6 +1464,23 @@ async function getRefLines(
       lastNum > 0 &&
       numberedCount(p) >= 2 &&
       p.some((l) => numOf(l.text) === lastNum + 1);
+    // The final page may contain just one entry. Require the exact next
+    // number, a publication year and a complete citation ending before
+    // accepting this weaker continuation signal.
+    const singleContinuation = (p: PDFLine[]) => {
+      if (lastNum < 3 || numberedCount(p) !== 1) return false;
+      const start = p.findIndex((line) => numOf(line.text) === lastNum + 1);
+      if (start < 0) return false;
+      const text = p
+        .slice(start)
+        .map((line) => line.text.trim())
+        .join(" ");
+      return (
+        /\b(1[89]|20)\d{2}\b/.test(text) &&
+        ENTRY_END.test(text) &&
+        hasCitationEvidence(text)
+      );
+    };
     // Heading page: the walk (bottom-up, breaking parts on big gaps) may
     // have committed the entries between the heading and the page bottom
     // as ordinary parts before it reached the heading — double-spaced
@@ -1424,8 +1602,9 @@ async function getRefLines(
         .get(pg)!
         .sort((a, b) => (a.column ?? 0) - (b.column ?? 0) || b.y - a.y);
       if (
-        lines.length >= 3 &&
-        (lastNum > 0 ? picksUp(lines) : refScore(lines) >= 0.5)
+        (lines.length >= 3 &&
+          (lastNum > 0 ? picksUp(lines) : unnumberedContinuation(lines))) ||
+        singleContinuation(lines)
       ) {
         continuation.push(lines);
         // the next page must pick up where THIS page ends, not where the
@@ -1499,9 +1678,14 @@ async function getRefLines(
     const dated = probe.filter((e) =>
       /\b(1[89]|20)\d{2}\b/.test(e.text),
     ).length;
-    if (!probe.length || dated / probe.length < 0.5) {
+    const supported = probe.filter((e) => hasCitationEvidence(e.text)).length;
+    if (
+      !probe.length ||
+      dated / probe.length < 0.5 ||
+      supported / probe.length < 0.5
+    ) {
       ztoolkit.log(
-        `[pdfparser] fallback block carries no publication years (${dated}/${probe.length}) — not a bibliography`,
+        `[pdfparser] fallback block lacks citation evidence (dated=${dated}/${probe.length}, supported=${supported}/${probe.length}) — not a bibliography`,
       );
       return [];
     }

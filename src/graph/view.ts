@@ -86,15 +86,16 @@ function nodeLabel(n: GraphNode): string {
  */
 const liveViews = new Set<GraphView>();
 
-export function destroyAllGraphViews(): void {
+export function destroyAllGraphViews(owner?: Window): void {
   for (const view of [...liveViews]) {
+    if (owner && !view.belongsToWindow(owner)) continue;
     try {
       view.destroy();
     } catch {
       // already-dead window — nothing to release
     }
   }
-  liveViews.clear();
+  if (!owner) liveViews.clear();
 }
 
 export class GraphView {
@@ -189,6 +190,17 @@ export class GraphView {
 
   setData(data: GraphData): void {
     this.clearScene();
+    // d3 mutates node positions and replaces edge IDs with node objects.
+    // Keep each window's simulation separate from the shared data cache.
+    data = {
+      ...data,
+      nodes: data.nodes.map((node) => ({ ...node })),
+      edges: data.edges.map((edge) => ({
+        ...edge,
+        source: typeof edge.source === "object" ? edge.source.id : edge.source,
+        target: typeof edge.target === "object" ? edge.target.id : edge.target,
+      })),
+    };
     this.data = data;
 
     // origin pinned at the simulation center
@@ -295,7 +307,12 @@ export class GraphView {
     }
   }
 
+  belongsToWindow(win: Window): boolean {
+    return this.win === win;
+  }
+
   destroy(): void {
+    this.handlers.onHover?.(null);
     this.stopSim();
     this.resizeObs?.disconnect();
     this.resizeObs = null;
@@ -378,6 +395,12 @@ export class GraphView {
    * the simulation cools below alphaMin.
    */
   private runTicks(budget: number) {
+    if (this.win.matchMedia("(prefers-reduced-motion: reduce)")?.matches) {
+      this.sim?.tick(budget);
+      this.clampToCanvas();
+      this.updatePositions();
+      return;
+    }
     this.tickBudget = Math.max(this.tickBudget, budget);
     if (this.rafId) return; // loop already running
     const step = () => {
@@ -581,6 +604,27 @@ export class GraphView {
   };
 
   private attachNodeEvents(circle: SVGCircleElement, node: GraphNode) {
+    circle.setAttribute("tabindex", "0");
+    circle.setAttribute("role", "button");
+    circle.setAttribute("aria-label", node.ref.title || nodeLabel(node));
+    circle.addEventListener("keydown", (event: KeyboardEvent) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        if (event.ctrlKey || event.metaKey) this.handlers.onOpen?.(node);
+        else this.handlers.onSelect?.(node);
+      } else if (
+        event.key === "ContextMenu" ||
+        (event.shiftKey && event.key === "F10")
+      ) {
+        event.preventDefault();
+        const rect = circle.getBoundingClientRect();
+        this.handlers.onContext?.(
+          node,
+          this.win.screenX + rect.x,
+          this.win.screenY + rect.bottom,
+        );
+      }
+    });
     // true when the last press turned into a drag; suppresses the click
     let dragOccurred = false;
 

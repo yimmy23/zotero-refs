@@ -1,4 +1,4 @@
-import { isChinese, isHttpUrl } from "./text";
+import { isChinese, isHttpUrl, titlesMatch } from "./text";
 import { libraryIndex, isRelated } from "./libmatch";
 import type { RefItem } from "./types";
 import { getString } from "../utils/locale";
@@ -102,8 +102,8 @@ export async function createItemFromInfo(
 
 /**
  * Full import pipeline for one reference:
- * local match -> identifier translate -> DOI resolution by title ->
- * CNKI metadata (Chinese) -> direct metadata creation.
+ * local match -> CNKI (Chinese) -> identifier translate ->
+ * DOI resolution by title / direct metadata creation (non-Chinese).
  */
 export async function importReference(
   hostItem: Zotero.Item,
@@ -111,6 +111,16 @@ export async function importReference(
   collections?: number[],
   onStatus?: (msg: string) => void,
 ): Promise<Zotero.Item | null> {
+  if (
+    ref.retracted &&
+    !Services.prompt.confirm(
+      Zotero.getMainWindow() as any,
+      getString("retracted-badge"),
+      getString("retracted-import-confirm"),
+    )
+  ) {
+    return null;
+  }
   const libraryID = hostItem.libraryID;
   const cols = collections ?? hostItem.getCollections();
 
@@ -122,13 +132,17 @@ export async function importReference(
   if (refItem) return refItem;
 
   const text = ref.text || ref.title || "";
+  const chinese = isChinese(text);
   // 2. Chinese reference -> CNKI: search, then import through Zotero's own
   //    CNKI web translator (full metadata); scraped-metadata fallback.
-  if (isChinese(text)) {
+  if (chinese) {
     onStatus?.(`CNKI: ${ref.title || text}`);
     const rows = await searchCNKI(ref.title || text);
-    if (rows?.[0]) {
-      refItem = await importCNKIItem(rows[0], libraryID, cols);
+    const row = rows?.find((candidate) =>
+      titlesMatch(candidate.title, ref.title || text),
+    );
+    if (row) {
+      refItem = await importCNKIItem(row, libraryID, cols);
       if (refItem) return refItem;
     }
     const info = await sources.cnki.getInfoByTitle?.(ref.title || text, text);
@@ -144,7 +158,16 @@ export async function importReference(
       );
       return refItem;
     }
-    return null;
+    // A CNKI miss does not invalidate identifiers printed in the citation.
+    // Keep the existing no-identifier path conservative: an unverified
+    // Chinese citation should not become a metadata-only library item.
+    if (
+      !ref.identifiers.DOI &&
+      !ref.identifiers.arXiv &&
+      !ref.identifiers.PMID
+    ) {
+      return null;
+    }
   }
 
   // 3. identifiers -> Zotero translators
@@ -170,6 +193,8 @@ export async function importReference(
     }
     if (refItem) return refItem;
   }
+
+  if (chinese) return null;
 
   // 4. last resort: create from whatever metadata we have
   if (ref.title && (ref.authors?.length || ref.year)) {

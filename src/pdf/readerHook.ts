@@ -1,5 +1,5 @@
 import { ReaderLinks } from "./readerLinks";
-import { setTimeout } from "../utils/window";
+import { clearTimeout, setTimeout } from "../utils/window";
 
 /**
  * Attaches the in-PDF citation-link click enhancement (split-view jump)
@@ -11,22 +11,29 @@ import { setTimeout } from "../utils/window";
  */
 
 const links = new ReaderLinks();
+let active = true;
+let generation = 0;
+const sweepTimers = new Set<number>();
 
 export function attachReader(reader: any) {
-  if (!reader) return;
+  if (!reader || !active || !addon.data.alive) return;
   links.attach(reader);
 }
 
 export async function attachAllReaders() {
+  if (!addon.data.alive) return;
+  active = true;
+  const current = generation;
   const pass = async () => {
     // a late sweep must never re-wrap after plugin shutdown
-    if (!addon.data.alive) return;
+    if (!active || !addon.data.alive || current !== generation) return;
     for (const reader of (Zotero.Reader as any)._readers || []) {
       try {
         await reader._initPromise;
       } catch {
         // reader init failed — attach will retry on next select
       }
+      if (!active || !addon.data.alive || current !== generation) return;
       attachReader(reader);
     }
   };
@@ -36,11 +43,19 @@ export async function attachAllReaders() {
   // an already-selected tab fires nothing either. attach() is idempotent
   // (the already-live guard verifies view identity + wrap), so late
   // sweeps are free — they only catch readers the first pass missed.
-  setTimeout(() => void pass(), 3000);
-  setTimeout(() => void pass(), 10000);
+  if (!active || !addon.data.alive || current !== generation) return;
+  for (const delay of [3000, 10000]) {
+    const timer = setTimeout(() => {
+      sweepTimers.delete(timer);
+      void pass();
+    }, delay);
+    sweepTimers.add(timer);
+  }
 }
 
 export function onReaderTabSelect(tabID: string) {
+  if (!active || !addon.data.alive) return;
+  const current = generation;
   const reader = Zotero.Reader.getByTabID(tabID);
   if (reader) {
     void (async () => {
@@ -49,12 +64,17 @@ export function onReaderTabSelect(tabID: string) {
       } catch {
         // reader init failed — attach will retry on next select
       }
+      if (!active || !addon.data.alive || current !== generation) return;
       attachReader(reader);
     })();
   }
 }
 
 export function detachAllReaders() {
+  active = false;
+  generation++;
+  for (const timer of sweepTimers) clearTimeout(timer);
+  sweepTimers.clear();
   links.detachAll();
 }
 

@@ -1,5 +1,6 @@
+import { getPref } from "../utils/prefs";
 import { cleanText } from "../core/text";
-import { http, politeEmail } from "../core/http";
+import { http } from "../core/http";
 import { CITED_CHIP_COLOR } from "../core/types";
 import { getString } from "../utils/locale";
 import type {
@@ -11,8 +12,8 @@ import type {
 } from "../core/types";
 
 /**
- * OpenAlex (api.openalex.org) — fully open scholarly catalog. Free, no key
- * required; a `mailto` param buys access to the "polite pool".
+ * OpenAlex (api.openalex.org) — fully open scholarly catalog. Basic queries work without a key; an optional API key raises
+ * the account budget. The historical mailto polite pool is no longer used.
  *
  * Work ids are stored bare (e.g. "W2741809807", no URL prefix) in
  * `identifiers.openAlex`.
@@ -42,9 +43,13 @@ const TYPE_MAP: Record<string, string> = {
   dissertation: "thesis",
 };
 
-function withMailto(url: string): string {
-  const sep = url.includes("?") ? "&" : "?";
-  return `${url}${sep}mailto=${encodeURIComponent(politeEmail())}`;
+/** Keep API keys in a header, out of URLs and URL-based debug messages. */
+function getJSON(url: string) {
+  const key = String(getPref("openAlexApiKey") || "").trim();
+  return http.getJSON<any>(
+    url,
+    key ? { headers: { Authorization: `Bearer ${key}` } } : {},
+  );
 }
 
 /** "https://openalex.org/W123..." -> "W123..." (also passes bare ids through) */
@@ -94,7 +99,17 @@ function mapWork(w: any): RefItem {
   if (pmid) identifiers.PMID = pmid;
 
   const authors: string[] = Array.isArray(w.authorships)
-    ? w.authorships.map((a: any) => a.author?.display_name).filter(Boolean)
+    ? w.authorships
+        .map((a: any) => cleanText(a.author?.display_name))
+        .filter(Boolean)
+    : [];
+  // Only an explicit flag establishes correspondence. author_position=last
+  // is a byline position and must never become a corresponding-author claim.
+  const correspondingAuthors: string[] = Array.isArray(w.authorships)
+    ? w.authorships
+        .filter((a: any) => a.is_corresponding === true)
+        .map((a: any) => cleanText(a.author?.display_name))
+        .filter(Boolean)
     : [];
 
   const citationCount =
@@ -115,8 +130,11 @@ function mapWork(w: any): RefItem {
 
   return {
     identifiers,
-    title: cleanText(w.display_name),
+    title: cleanText(w.title || w.display_name),
     authors,
+    correspondingAuthors: correspondingAuthors.length
+      ? correspondingAuthors
+      : undefined,
     year: w.publication_year != null ? String(w.publication_year) : undefined,
     publishDate: w.publication_date,
     primaryVenue: cleanText(w.primary_location?.source?.display_name),
@@ -133,9 +151,10 @@ function mapWork(w: any): RefItem {
 
 /** work.id -> full REST path used for /works/{id} single-work lookups */
 function workPathFromIds(ids: Identifiers): string | undefined {
-  if (ids.openAlex) return `${BASE}/works/${ids.openAlex}`;
-  if (ids.DOI) return `${BASE}/works/https://doi.org/${ids.DOI}`;
-  if (ids.PMID) return `${BASE}/works/pmid:${ids.PMID}`;
+  if (ids.openAlex) return `${BASE}/works/${encodeURIComponent(ids.openAlex)}`;
+  if (ids.DOI)
+    return `${BASE}/works/https://doi.org/${encodeURIComponent(ids.DOI)}`;
+  if (ids.PMID) return `${BASE}/works/pmid:${encodeURIComponent(ids.PMID)}`;
   return undefined;
 }
 
@@ -150,8 +169,8 @@ export interface OAWork {
 export async function getWorkFull(ids: Identifiers): Promise<OAWork | null> {
   const path = workPathFromIds(ids);
   if (!path) return null;
-  const url = withMailto(`${path}?select=${FULL_SELECT}`);
-  const w = await http.getJSON(url);
+  const url = `${path}?select=${FULL_SELECT}`;
+  const w = await getJSON(url);
   if (!w || !w.id) return null;
   return {
     ref: mapWork(w),
@@ -185,15 +204,13 @@ export async function getWorksBatch(
     const batch = wids.slice(i, i + 50).filter(Boolean);
     if (!batch.length) continue;
     urls.push(
-      withMailto(
-        `${BASE}/works?filter=openalex_id:${batch.join(
-          "|",
-        )}&per-page=50&select=${select}`,
-      ),
+      `${BASE}/works?filter=openalex_id:${batch.join(
+        "|",
+      )}&per-page=50&select=${select}`,
     );
   }
   // pages in parallel — the per-host gate already bounds concurrency
-  const pages = await Promise.all(urls.map((u) => http.getJSON(u)));
+  const pages = await Promise.all(urls.map((u) => getJSON(u)));
   for (const res of pages) {
     const results: any[] = res?.results;
     if (!Array.isArray(results)) continue;
@@ -229,29 +246,25 @@ export const openalex: MetaSource & {
   id: "openalex",
 
   async getInfoByDOI(doi: string): Promise<RefItem | null> {
-    const url = withMailto(
-      `${BASE}/works/https://doi.org/${doi}?select=${SELECT}`,
-    );
-    const w = await http.getJSON(url);
+    const url = `${BASE}/works/https://doi.org/${encodeURIComponent(doi)}?select=${SELECT}`;
+    const w = await getJSON(url);
     if (!w || !w.id) return null;
     return mapWork(w);
   },
 
   async getInfoByPMID(pmid: string): Promise<RefItem | null> {
-    const url = withMailto(`${BASE}/works/pmid:${pmid}?select=${SELECT}`);
-    const w = await http.getJSON(url);
+    const url = `${BASE}/works/pmid:${encodeURIComponent(pmid)}?select=${SELECT}`;
+    const w = await getJSON(url);
     if (!w || !w.id) return null;
     return mapWork(w);
   },
 
   async getInfoByTitle(title: string): Promise<RefItem | null> {
     const cleaned = title.replace(/,/g, "");
-    const url = withMailto(
-      `${BASE}/works?filter=title.search:${encodeURIComponent(
-        cleaned,
-      )}&per-page=3&select=${SELECT}`,
-    );
-    const res = await http.getJSON(url);
+    const url = `${BASE}/works?filter=title.search:${encodeURIComponent(
+      cleaned,
+    )}&per-page=3&select=${SELECT}`;
+    const res = await getJSON(url);
     const results: any[] = res?.results;
     if (!Array.isArray(results) || !results.length) return null;
     return mapWork(results[0]);
@@ -288,11 +301,10 @@ export const openalex: MetaSource & {
     }
     if (!wid) return null;
     const page = Math.floor(offset / limit) + 1;
-    const url = withMailto(
+    const url =
       `${BASE}/works?filter=cites:${wid}&per-page=${limit}&page=${page}` +
-        `&sort=cited_by_count:desc&select=${SELECT}`,
-    );
-    const res = await http.getJSON(url);
+      `&sort=cited_by_count:desc&select=${SELECT}`;
+    const res = await getJSON(url);
     const results: any[] = res?.results;
     if (!Array.isArray(results)) return null;
     const items = results.map((w) => mapWork(w));
