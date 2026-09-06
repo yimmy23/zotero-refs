@@ -1,7 +1,7 @@
 {
   "name": "zotero-refs",
   "type": "module",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Refs — references, citations, related papers and a citation graph for every Zotero item",
   "config": {
     "addonName": "Refs",
@@ -28,7 +28,7 @@
     "release": "zotero-plugin release",
     "test": "zotero-plugin test",
     "update-deps": "npm update --save",
-    "test:offline": "node scripts/core-regression.mjs && node scripts/text-regression.mjs && node scripts/parser-regression.mjs && node scripts/reader-regression.mjs && node scripts/ui-regression.mjs && node scripts/popup-regression.mjs && node scripts/view-regression.mjs && node scripts/pubmed-regression.mjs && node scripts/source-regression.mjs",
+    "test:offline": "node scripts/core-regression.mjs && node scripts/text-regression.mjs && node scripts/abstract-regression.mjs && node scripts/parser-regression.mjs && node scripts/reader-regression.mjs && node scripts/ui-regression.mjs && node scripts/popup-regression.mjs && node scripts/view-regression.mjs && node scripts/pubmed-regression.mjs && node scripts/source-regression.mjs",
     "check": "npm run build && npm run test:offline"
   },
   "dependencies": {

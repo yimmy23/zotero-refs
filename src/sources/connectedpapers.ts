@@ -1,4 +1,5 @@
 import { cleanText, isDOI } from "../core/text";
+import { normalizeAbstractText } from "../core/abstractText";
 import type { MetaSource, RefItem, RefTag } from "../core/types";
 import { http } from "../core/http";
 import { CITED_CHIP_COLOR, REFCOUNT_CHIP_COLOR } from "../core/types";
@@ -51,7 +52,10 @@ function mapPaper(item: any): RefItem {
     type: "journalArticle",
     text: cleanText(item.title?.text),
     url: item.doiInfo?.doiUrl,
-    abstract: cleanText(item.paperAbstract?.text),
+    abstract:
+      typeof item.paperAbstract?.text === "string"
+        ? normalizeAbstractText(item.paperAbstract.text) || undefined
+        : undefined,
     source: "connectedpapers",
     primaryVenue: cleanText(item.venue?.text),
     tags,

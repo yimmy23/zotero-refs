@@ -1,4 +1,5 @@
 import { cleanText, identifiersConflict, isHttpUrl, titlesMatch } from "./text";
+import { normalizeAbstractText } from "./abstractText";
 import {
   CITED_CHIP_COLOR,
   REFCOUNT_CHIP_COLOR,
@@ -251,9 +252,9 @@ export function mergePopupMetadata(
     all.map((c) => names(c.info.authors, false)).find((a) => a.length) || [];
   const date = all.find((c) => c.info.publishDate || c.info.year)?.info;
   const abstractText = (candidate: PopupCandidate) =>
-    candidate.info.source === "pubmed"
-      ? candidate.info.abstract?.trim()
-      : cleanText(candidate.info.abstract);
+    candidate.kind === "library"
+      ? normalizeAbstractText(candidate.info.abstract || "")
+      : candidate.info.abstract?.trim();
   const abstract = all
     .filter((c) => abstractText(c))
     .sort((a, b) => {

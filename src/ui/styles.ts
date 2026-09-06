@@ -299,7 +299,10 @@ export function registerStyles(win: Window) {
     .references-popup-text-action { appearance: none; font: inherit; font-size: .78em; line-height: 1.4; padding: 3px 6px; margin: 0; border: 1px solid var(--fill-quinary); border-radius: 5px; background-color: transparent; color: inherit; cursor: pointer; }
     .references-popup-text-action:hover, .references-popup-text-action[aria-pressed="true"] { background-color: var(--fill-quinary); }
     .references-popup-text-action:disabled { opacity: .55; cursor: progress; }
-    .references-popup-container .abstract { display: block; font-size: .95em; line-height: 1.7; text-align: start; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .references-popup-container .abstract { display: block; font-size: 1em; line-height: 1.75; text-align: start; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .references-popup-container .abstract p { margin: 0; }
+    .references-popup-container .abstract p + p { margin-top: .9em; }
+    .references-abstract-heading { display: block; margin-bottom: .2em; font-size: .9em; font-weight: 600; line-height: 1.5; color: inherit; }
     .references-popup-provenance { display: flex; flex-direction: column; gap: 5px; border-top: 1px solid var(--fill-quinary); padding-top: 10px; }
     .references-popup-provenance-links { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
     .references-popup-source-link { appearance: none; font: inherit; font-size: .78em; line-height: 1.6; border: 0; padding: 0; margin: 0; background-color: transparent; color: color-mix(in srgb, currentColor 72%, transparent); overflow-wrap: anywhere; }

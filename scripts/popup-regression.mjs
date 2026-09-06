@@ -92,6 +92,7 @@ function environment() {
   const types = load("src/core/types.ts");
   const metadata = load("src/core/popupMetadata.ts", {
     "./text": text,
+    "./abstractText": load("src/core/abstractText.ts"),
     "./types": types,
   });
   const windowTools = {

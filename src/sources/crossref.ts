@@ -1,8 +1,8 @@
 import { http, politeEmail } from "../core/http";
 import { CITED_CHIP_COLOR } from "../core/types";
 import { getString } from "../utils/locale";
+import { normalizeAbstractText } from "../core/abstractText";
 import {
-  htmlToText,
   identifiersToURL,
   normalizeTitle,
   refTextToInfo,
@@ -121,7 +121,10 @@ function mapWork(w: any): RefItem {
     year,
     type: TYPE_MAP[w.type] || "journalArticle",
     url: w.URL,
-    abstract: w.abstract ? htmlToText(w.abstract) : undefined,
+    abstract:
+      typeof w.abstract === "string"
+        ? normalizeAbstractText(w.abstract) || undefined
+        : undefined,
     publishDate,
     primaryVenue: cleanText(
       Array.isArray(w["container-title"]) ? w["container-title"][0] : undefined,

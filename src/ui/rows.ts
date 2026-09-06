@@ -259,6 +259,7 @@ export function showRefPopup(
           .filter(Boolean)
           .join(" · "),
         note: info.description,
+        contentKind: result.contentKind,
         contentLabel: getString(
           result.contentKind === "abstract"
             ? "popup-abstract-label"

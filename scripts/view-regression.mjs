@@ -4,6 +4,7 @@ import console from "node:console";
 import process from "node:process";
 import { Buffer } from "node:buffer";
 import { build } from "esbuild";
+import { DOMImplementation } from "@xmldom/xmldom";
 Error.stackTraceLimit = 0;
 
 const bundle = await build({
@@ -143,4 +144,144 @@ assert.equal(
 console.log(
   "PASS popup follows resized owner viewport and releases resize listener",
 );
-console.log("2 view regressions passed");
+
+// Real text-only DOM construction. Supply only the modern DOM conveniences
+// absent from the XML DOM; the production renderer and translation methods run.
+const abstractDoc = new DOMImplementation().createDocument(null, "root", null);
+const createElement = abstractDoc.createElementNS.bind(abstractDoc);
+abstractDoc.createElementNS = (namespace, name) => {
+  const element = createElement(namespace, name);
+  element.append = (...children) =>
+    children.forEach((child) => element.appendChild(child));
+  return element;
+};
+const body = abstractDoc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+body.dataset = { contentKind: "abstract" };
+body.closest = () => null;
+body.replaceChildren = function (...children) {
+  while (this.firstChild) this.removeChild(this.firstChild);
+  children.forEach((child) => this.appendChild(child));
+};
+abstractDoc.documentElement.appendChild(body);
+Object.defineProperty(body, "classList", {
+  value: { contains: (name) => name === "abstract" },
+});
+const abstractCard = new PopupCard();
+const source =
+  "Background: Need. Methods: Trial. Results: P<0.001; literal <script> stays text. Conclusions: Follow-up.";
+body.dataset.sourceText = source;
+abstractCard.renderText(body, source);
+assert.equal(body.getElementsByTagName("p").length, 4);
+assert.deepEqual(
+  [...body.getElementsByTagName("strong")].map((n) => n.textContent),
+  ["Background", "Methods", "Results", "Conclusions"],
+);
+assert.equal(body.getElementsByTagName("script").length, 0);
+assert.equal(
+  body.getElementsByTagName("span")[2].textContent,
+  "P<0.001; literal <script> stays text.",
+);
+const copied = abstractCard.readableText(body);
+assert.equal(
+  copied,
+  "Background:\nNeed.\n\nMethods:\nTrial.\n\nResults:\nP<0.001; literal <script> stays text.\n\nConclusions:\nFollow-up.",
+);
+console.log(
+  "PASS abstract DOM and copy preserve four labelled sections and literal comparisons",
+);
+
+let translateCalls = 0;
+abstractCard.translate = async (text) => {
+  translateCalls++;
+  assert.equal(text, copied);
+  return "背景：需要。方法：试验。结果：P<0.001。结论：随访。";
+};
+await abstractCard.toggleTranslation(body);
+assert.equal(body.dataset.showTranslation, "true");
+assert.equal(body.getElementsByTagName("p").length, 4);
+assert.deepEqual(
+  [...body.getElementsByTagName("strong")].map((n) => n.textContent),
+  ["背景", "方法", "结果", "结论"],
+);
+await abstractCard.toggleTranslation(body);
+assert.equal(body.dataset.showTranslation, "false");
+assert.equal(abstractCard.readableText(body), copied);
+assert.equal(translateCalls, 1);
+console.log(
+  "PASS translation receives paragraph breaks and toggles back with structure intact",
+);
+
+delete body.dataset.translatedText;
+let resolveTranslation;
+let pendingCalls = 0;
+abstractCard.translate = () => {
+  pendingCalls++;
+  return new Promise((resolve) => {
+    resolveTranslation = resolve;
+  });
+};
+const pending = abstractCard.toggleTranslation(body);
+assert.equal(body.dataset.translating, "true");
+const replacement = abstractDoc.createElementNS(
+  "http://www.w3.org/1999/xhtml",
+  "div",
+);
+replacement.dataset = { ...body.dataset };
+replacement.closest = body.closest;
+replacement.replaceChildren = body.replaceChildren;
+abstractDoc.documentElement.replaceChild(replacement, body);
+abstractCard.container = { querySelector: () => replacement };
+abstractCard.renderText(replacement, source);
+await abstractCard.toggleTranslation(replacement);
+assert.equal(
+  pendingCalls,
+  1,
+  "a refreshed node must not send the same pending translation again",
+);
+resolveTranslation("背景：需要。方法：试验。结果：完整。结论：随访。");
+await pending;
+assert.equal(replacement.dataset.translating, "false");
+assert.equal(replacement.dataset.showTranslation, "true");
+assert.equal(replacement.getElementsByTagName("p").length, 4);
+console.log(
+  "PASS pending translation follows a metadata refresh of the same abstract without a duplicate request",
+);
+
+replacement.dataset.showTranslation = "false";
+delete replacement.dataset.translatedText;
+abstractCard.renderText(replacement, source);
+Object.defineProperty(replacement, "classList", {
+  value: { contains: (name) => name === "abstract" },
+});
+const stale = abstractCard.toggleTranslation(replacement);
+const changed = abstractDoc.createElementNS(
+  "http://www.w3.org/1999/xhtml",
+  "div",
+);
+changed.dataset = {
+  contentKind: "abstract",
+  sourceText: "Different source abstract.",
+};
+changed.closest = body.closest;
+changed.replaceChildren = body.replaceChildren;
+abstractDoc.documentElement.replaceChild(changed, replacement);
+abstractCard.container.querySelector = () => changed;
+abstractCard.renderText(changed, changed.dataset.sourceText);
+resolveTranslation("Old translation must not replace a different abstract.");
+await stale;
+assert.equal(changed.textContent, "Different source abstract.");
+assert.equal(changed.dataset.translatedText, undefined);
+console.log(
+  "PASS an old pending translation cannot overwrite changed abstract text",
+);
+
+body.dataset.contentKind = "citation";
+const citation = "Methods: Author. Results: Title. Synthetic Journal 2024;1:2.";
+abstractCard.renderText(body, citation);
+assert.equal(body.getElementsByTagName("p").length, 0);
+assert.equal(body.textContent, citation);
+assert.equal(abstractCard.readableText(body), citation);
+console.log(
+  "PASS citation fallback keeps original text without abstract section formatting",
+);
+console.log("7 view regressions passed");

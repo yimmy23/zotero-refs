@@ -267,6 +267,7 @@ function environment() {
   const types = load("src/core/types.ts");
   const popupMetadata = load("src/core/popupMetadata.ts", {
     "./text": text,
+    "./abstractText": load("src/core/abstractText.ts"),
     "./types": types,
   });
   const shared = {

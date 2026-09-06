@@ -231,6 +231,102 @@ test("S2 missing identifiers and empty first pages return null", async () => {
   assert.equal(fixture.requests.length, 1);
 });
 
+async function mappedAbstract(source, abstract) {
+  const title = "A study of structured abstracts";
+  const data = {
+    crossref: {
+      message: {
+        DOI: "10.9999/abstract-fixture",
+        title: [title],
+        abstract,
+        published: { "date-parts": [[2024, 1, 2]] },
+      },
+    },
+    readpaper: { data: { list: [{ title, summary: abstract, year: 2024 }] } },
+    connectedpapers: {
+      results: [
+        {
+          title: { text: title },
+          paperAbstract: { text: abstract },
+          year: { text: "2024" },
+        },
+      ],
+    },
+  };
+  const requests = [];
+  const module = await load(`src/sources/${source}.ts`, {
+    HTTP: {
+      request: async (method, url) => {
+        requests.push({ method, url });
+        return { status: 200, response: data[source] };
+      },
+    },
+  });
+  const result =
+    source === "crossref"
+      ? await module.crossref.getInfoByDOI("10.9999/abstract-fixture")
+      : await module[source].getInfoByTitle(title);
+  assert.equal(requests.length, 1);
+  assert.equal(result.title, title);
+  assert.equal(result.year, "2024");
+  return result.abstract;
+}
+
+test("Crossref JATS abstracts preserve section titles and complete paragraphs", async () => {
+  const abstract = `<jats:abstract xmlns:jats="http://www.ncbi.nlm.nih.gov/JATS1">
+    <jats:sec><jats:title>Background</jats:title><jats:p>First background paragraph.</jats:p>
+    <jats:p>A second paragraph with <jats:italic>emphasis</jats:italic>.</jats:p></jats:sec>
+    <jats:sec><jats:title>Methods</jats:title><jats:p>We enrolled 120 participants.</jats:p></jats:sec>
+    <jats:sec><jats:title>Results</jats:title><jats:p>The response rate was 75%.</jats:p></jats:sec>
+    <jats:sec><jats:title>Conclusions</jats:title><jats:p>Further validation is needed.</jats:p></jats:sec>
+    </jats:abstract>`;
+  assert.equal(
+    await mappedAbstract("crossref", abstract),
+    "Background\n\nFirst background paragraph.\n\nA second paragraph with emphasis.\n\nMethods\n\nWe enrolled 120 participants.\n\nResults\n\nThe response rate was 75%.\n\nConclusions\n\nFurther validation is needed.",
+  );
+});
+
+test("ReadPaper HTML abstracts preserve headings and paragraph boundaries", async () => {
+  assert.equal(
+    await mappedAbstract(
+      "readpaper",
+      '<div><h3>Background</h3><p class="summary">An <b>important</b> question.</p><h3>Methods</h3><p>A prospective study.</p><h3>Results</h3><p>Response improved.</p><h3>Conclusions</h3><p>Follow-up is ongoing.</p></div>',
+    ),
+    "Background\n\nAn important question.\n\nMethods\n\nA prospective study.\n\nResults\n\nResponse improved.\n\nConclusions\n\nFollow-up is ongoing.",
+  );
+});
+
+test("Connected Papers abstracts retain HTML and existing plain-text paragraph boundaries", async () => {
+  const expected =
+    "Background: The clinical question.\n\nMethods: A cohort study.\n\nResults: Response improved.\n\nConclusions: Longer follow-up is needed.";
+  for (const input of [
+    "<p>Background: The clinical question.</p><p>Methods: A cohort study.</p><p>Results: Response improved.</p><p>Conclusions: Longer follow-up is needed.</p>",
+    expected,
+  ]) {
+    assert.equal(await mappedAbstract("connectedpapers", input), expected);
+  }
+});
+
+test("Abstract source mappers preserve comparisons and decode encoded text only once", async () => {
+  const input =
+    "<p>Results: P&lt;0.001 and response &gt;90%; A&lt;B and C&gt;D.</p><p>&lt;em&gt;Literal&lt;/em&gt; and &amp;lt;0.05.</p>";
+  for (const source of ["crossref", "readpaper", "connectedpapers"]) {
+    assert.equal(
+      await mappedAbstract(source, input),
+      "Results: P<0.001 and response >90%; A<B and C>D.\n\n<em>Literal</em> and &lt;0.05.",
+      source,
+    );
+  }
+});
+
+test("Abstract source mappers leave missing, empty and non-text abstracts undefined", async () => {
+  for (const source of ["crossref", "readpaper", "connectedpapers"]) {
+    for (const input of [undefined, null, "", "  \n\t", "<p> </p>", {}]) {
+      assert.equal(await mappedAbstract(source, input), undefined, source);
+    }
+  }
+});
+
 const chineseTitle = "非小细胞肺癌患者围术期免疫治疗临床研究进展";
 const chineseRef = (identifiers = {}) => ({
   title: chineseTitle,

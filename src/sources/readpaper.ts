@@ -1,4 +1,5 @@
 import { htmlToText } from "../core/text";
+import { normalizeAbstractText } from "../core/abstractText";
 import type { MetaSource, RefItem, RefTag } from "../core/types";
 import { http } from "../core/http";
 import { CITED_CHIP_COLOR } from "../core/types";
@@ -26,7 +27,10 @@ function mapPaper(data: any): RefItem {
     year: data.year != null ? String(data.year) : undefined,
     publishDate: data.publishDate,
     authors: (data.authorList || []).map((a: any) => htmlToText(a.name)),
-    abstract: htmlToText(data.summary),
+    abstract:
+      typeof data.summary === "string"
+        ? normalizeAbstractText(data.summary) || undefined
+        : undefined,
     primaryVenue: htmlToText(data.primaryVenue),
     tags,
     source: "readpaper",
