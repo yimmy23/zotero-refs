@@ -281,6 +281,7 @@ function environment() {
     "./controls": controls,
     "../core/storage": {
       itemCacheKey: (item) => `${item.libraryID}/${item.key}`,
+      itemStateKey: (item) => `${item.libraryID}/${item.key}`,
     },
   };
   return { load, shared, globals, errors, timers, copied, preferences, prefs };
@@ -301,6 +302,7 @@ function rowsModule(env, match = async () => undefined) {
     "../core/importer": {},
     "../sources": {},
     "../sources/cnki": {},
+    "../sources/abstract": {},
     "./popup": {},
   });
 }

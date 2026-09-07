@@ -1,5 +1,11 @@
 import { isHttpUrl } from "../core/text";
 import { abstractParagraphs } from "../core/abstractText";
+import {
+  openTranslation,
+  requestTranslation,
+  translationAvailable,
+  type TranslationEntry,
+} from "../core/popupTranslation";
 import type { TagElementProps } from "zotero-plugin-toolkit";
 import type { RefTag } from "../core/types";
 import { getNumPref, getPref } from "../utils/prefs";
@@ -31,6 +37,7 @@ export interface PopupDetails {
   /** Localized label: an abstract and a raw citation must remain distinct. */
   contentLabel?: string;
   contentKind?: "abstract" | "citation";
+  translationScope?: string;
   abstractSource?: string;
   sources?: Array<{ name: string; url?: string }>;
 }
@@ -62,7 +69,8 @@ export class PopupCard {
   /** timestamp of the last handled zoom event (wheel/DOMMouseScroll dedupe) */
   private lastZoomStamp = -1;
   private ownerWindow?: Window;
-  private pendingTranslations = new Map<string, Promise<string | undefined>>();
+  private translationScope = "";
+  private translationEntries = new WeakMap<HTMLElement, TranslationEntry>();
   private onResize = () => {
     if (this.container?.isConnected) this.place();
   };
@@ -200,9 +208,7 @@ export class PopupCard {
     const activeControl = this.container.contains(doc.activeElement)
       ? (doc.activeElement as HTMLElement)?.dataset.popupControl
       : undefined;
-    const oldBody = readingArea.querySelector(
-      ".abstract",
-    ) as HTMLElement | null;
+    this.translationScope = details.translationScope || title;
 
     const children: TagElementProps[] = [
       {
@@ -295,12 +301,7 @@ export class PopupCard {
           ],
         },
       ];
-      const Z = Zotero as any;
-      if (
-        getPref("ctrlClickTranslate") &&
-        (Z.PDFTranslate?.api?.translate ||
-          Z.ZoteroPDFTranslate?.translate?.getTranslation)
-      ) {
+      if (getPref("ctrlClickTranslate") && translationAvailable()) {
         actions.push({
           tag: "button",
           classList: ["references-popup-text-action"],
@@ -318,17 +319,7 @@ export class PopupCard {
                 const node = button
                   .closest(".references-popup-body")!
                   .querySelector(".abstract") as HTMLElement;
-                button.disabled = true;
-                try {
-                  await this.toggleTranslation(node);
-                  button.setAttribute(
-                    "aria-pressed",
-                    String(node.dataset.showTranslation === "true"),
-                  );
-                  this.place();
-                } finally {
-                  button.disabled = false;
-                }
+                await this.toggleTranslation(node);
               },
             },
           ],
@@ -436,29 +427,13 @@ export class PopupCard {
     ) as HTMLElement | null;
     if (newBody) {
       newBody.dataset.sourceText = content;
-      // An unrelated source arriving should not revert an active translation.
-      if (oldBody?.dataset.sourceText === content) {
-        if (oldBody.dataset.translatedText)
-          newBody.dataset.translatedText = oldBody.dataset.translatedText;
-        newBody.dataset.showTranslation =
-          oldBody.dataset.showTranslation || "false";
-        newBody.dataset.translating = oldBody.dataset.translating || "false";
-      }
-      this.renderText(
-        newBody,
-        newBody.dataset.showTranslation === "true"
-          ? newBody.dataset.translatedText || content
-          : content,
-      );
-      contentNode
-        .querySelector('[data-popup-control="translate-content"]')
-        ?.setAttribute(
-          "aria-pressed",
-          String(newBody.dataset.showTranslation === "true"),
-        );
-      this.setTranslationBusy(newBody, newBody.dataset.translating === "true");
+      this.renderText(newBody, content);
     }
+    const titleNode = contentNode.querySelector(".title") as HTMLElement | null;
+    if (titleNode) titleNode.dataset.sourceText = title;
     readingArea.replaceChildren(contentNode);
+    if (newBody) this.restoreTranslation(newBody);
+    if (titleNode) this.restoreTranslation(titleNode);
     this.place();
     if (activeControl) {
       const control = [
@@ -710,42 +685,7 @@ export class PopupCard {
       .join("\n\n");
   }
 
-  /**
-   * Translate via the PDF Translate plugin if present: new API
-   * (Zotero.PDFTranslate.api.translate) first, legacy ZoteroPDFTranslate
-   * flow as fallback. Resolves undefined when unavailable or failed.
-   */
-  private async translate(text: string): Promise<string | undefined> {
-    const Z = Zotero as any;
-    try {
-      if (Z.PDFTranslate?.api?.translate) {
-        const res = await Z.PDFTranslate.api.translate(text);
-        if (typeof res === "string") return res;
-        return res?.result as string | undefined;
-      }
-      if (Z.ZoteroPDFTranslate) {
-        Z.ZoteroPDFTranslate._sourceText = text;
-        const ok = await Z.ZoteroPDFTranslate.translate.getTranslation();
-        if (!ok) {
-          Z.ZoteroPDFTranslate.view.showProgressWindow(
-            getString("popup-translate-failed"),
-            ok,
-            "fail",
-          );
-          return undefined;
-        }
-        return Z.ZoteroPDFTranslate._translatedText as string;
-      }
-    } catch (e) {
-      ztoolkit.log("[popup] translate failed", e);
-    }
-    return undefined;
-  }
-
-  /**
-   * ctrl (cmd on mac) + click toggles a node between its original and
-   * translated text; both are cached in dataset attributes.
-   */
+  /** Modified click keeps the existing title/body translation shortcut. */
   private translateNode = async (event: Event) => {
     const e = event as MouseEvent;
     const modified = Zotero.isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey;
@@ -754,68 +694,101 @@ export class PopupCard {
     const node = e.currentTarget as HTMLElement;
     if (!node) return;
     await this.toggleTranslation(node);
-    this.place();
   };
 
-  private async toggleTranslation(node: HTMLElement) {
-    if (node.dataset.translating === "true") return;
-    let sourceText = node.dataset.sourceText;
-    let translatedText = node.dataset.translatedText;
-    if (!sourceText) {
-      sourceText = node.innerText;
-      node.dataset.sourceText = sourceText;
-    }
-    if (!translatedText) {
-      const source = sourceText;
-      const original = node;
-      const currentNode = () => {
-        if (original.isConnected) return original;
-        const current = this.container?.querySelector<HTMLElement>(
-          original.classList.contains("abstract") ? ".abstract" : ".title",
-        );
-        return current?.isConnected &&
-          (current.dataset.sourceText ?? current.innerText) === source
-          ? current
-          : undefined;
-      };
-      const request = this.readableText(node);
-      let pending = this.pendingTranslations.get(request);
-      if (!pending) {
-        pending = this.translate(request);
-        this.pendingTranslations.set(request, pending);
-      }
-      this.setTranslationBusy(node, true);
-      try {
-        translatedText = await pending;
-      } finally {
-        if (this.pendingTranslations.get(request) === pending)
-          this.pendingTranslations.delete(request);
-        const current = currentNode();
-        if (current) this.setTranslationBusy(current, false);
-      }
-      const current = currentNode();
-      if (!translatedText || !current) return;
-      node = current;
-      node.dataset.sourceText = source;
-      node.dataset.translatedText = translatedText;
-    }
-    const showTranslation = node.dataset.showTranslation !== "true";
-    node.dataset.showTranslation = String(showTranslation);
-    this.renderText(node, showTranslation ? translatedText : sourceText);
-    node
-      .closest(".references-popup-body")
-      ?.querySelector('[data-popup-control="translate-content"]')
-      ?.setAttribute("aria-pressed", String(showTranslation));
+  private translationEntry(node: HTMLElement): TranslationEntry | undefined {
+    const source = node.dataset.sourceText ?? node.innerText;
+    node.dataset.sourceText = source;
+    const kind = node.dataset.contentKind || "title";
+    const text =
+      kind === "abstract"
+        ? abstractParagraphs(source, { plainText: true })
+            .map(({ heading, text }) =>
+              heading ? `${heading}:\n${text}` : text,
+            )
+            .join("\n\n")
+        : source;
+    return openTranslation(text, `${this.translationScope}\u0000${kind}`);
   }
 
-  private setTranslationBusy(node: HTMLElement, busy: boolean) {
-    node.dataset.translating = String(busy);
+  /** Restore only translations the user already requested, including in flight. */
+  private restoreTranslation(node: HTMLElement) {
+    if (!getPref("ctrlClickTranslate")) return;
+    const entry = this.translationEntry(node);
+    if (!entry) {
+      this.translationEntries.delete(node);
+      this.paintTranslation(node, { visible: false });
+      return;
+    }
+    this.translationEntries.set(node, entry);
+    this.paintTranslation(node, entry);
+    if (entry.pending) void this.followTranslation(node, entry, entry.pending);
+  }
+
+  private paintTranslation(node: HTMLElement, entry: TranslationEntry) {
+    const visible = entry.visible && !!entry.text;
+    node.dataset.showTranslation = String(visible);
+    if (entry.text) node.dataset.translatedText = entry.text;
+    else delete node.dataset.translatedText;
+    const text = visible ? entry.text! : node.dataset.sourceText || "";
+    if (node.dataset.displayText !== text) this.renderText(node, text);
+    node.dataset.translating = String(!!entry.pending);
     const button = node
       .closest(".references-popup-body")
       ?.querySelector<HTMLButtonElement>(
         '[data-popup-control="translate-content"]',
       );
-    if (button) button.disabled = busy;
+    if (button) {
+      button.disabled = !!entry.pending;
+      button.setAttribute("aria-busy", String(!!entry.pending));
+      button.setAttribute("aria-pressed", String(visible));
+      button.textContent = getString(
+        entry.pending
+          ? "popup-translating"
+          : visible
+            ? "popup-original"
+            : "popup-translate",
+      );
+    }
+  }
+
+  private async followTranslation(
+    node: HTMLElement,
+    entry: TranslationEntry,
+    pending: Promise<string | undefined>,
+  ) {
+    await pending;
+    // The old card can disappear, change abstract, or switch translation engine.
+    // Its result remains cached; only an unchanged live consumer may paint it.
+    if (!node.isConnected || this.translationEntries.get(node) !== entry)
+      return;
+    if (this.translationEntry(node) !== entry) {
+      this.restoreTranslation(node);
+      return;
+    }
+    this.paintTranslation(node, entry);
+    if (this.container?.isConnected) this.place();
+    if (!entry.text) {
+      const button = node
+        .closest(".references-popup-body")
+        ?.querySelector('[data-popup-control="translate-content"]');
+      button?.setAttribute("title", getString("popup-translate-failed"));
+    }
+  }
+
+  private async toggleTranslation(node: HTMLElement) {
+    const entry = this.translationEntry(node);
+    if (!entry || entry.pending) return;
+    this.translationEntries.set(node, entry);
+    if (entry.text) {
+      entry.visible = !entry.visible;
+      this.paintTranslation(node, entry);
+      if (this.container?.isConnected) this.place();
+      return;
+    }
+    const pending = requestTranslation(entry);
+    this.paintTranslation(node, entry);
+    await this.followTranslation(node, entry, pending);
   }
 
   /* ----------------------------- helpers ----------------------------- */

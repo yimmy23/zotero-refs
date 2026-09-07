@@ -14,6 +14,7 @@ import {
 } from "../core/text";
 import { libraryIndex, isRelated } from "../core/libmatch";
 import { addRelation, importReference, removeRelation } from "../core/importer";
+import { itemStateKey } from "../core/storage";
 import {
   CITED_CHIP_COLOR,
   REFCOUNT_CHIP_COLOR,
@@ -22,12 +23,14 @@ import {
 } from "../core/types";
 import {
   mergePopupMetadata,
+  mergePopupSource,
   popupLinks,
   samePopupPaper,
   type PopupCandidate,
 } from "../core/popupMetadata";
 import type { RefItem, RefTag } from "../core/types";
 import { infoCandidates } from "../sources";
+import { cachedAbstract, fetchAbstract } from "../sources/abstract";
 import { getCNKIURL } from "../sources/cnki";
 import { resolveDOIByTitle } from "../sources";
 import { PopupCard } from "./popup";
@@ -53,6 +56,14 @@ export interface RowContext {
 }
 
 let currentPopup: PopupCard | undefined;
+
+// Rows survive a hover card. Retain their already verified remote metadata so
+// revisiting does not flash a raw citation or rebuild once for every cache hit.
+// Weak keys let the whole snapshot go when its list is removed.
+const popupMetadata = new WeakMap<
+  RefItem,
+  { signature: string; at: number; candidates: PopupCandidate[] }
+>();
 
 export function getCurrentPopup(): PopupCard | undefined {
   return currentPopup;
@@ -176,10 +187,84 @@ export function showRefPopup(
   const local = localInfo(ref);
   if (local) candidates.push({ info: local, kind: "library" });
   const { according, thunks } = infoCandidates(ref);
+  const signature = JSON.stringify([
+    ref.identifiers,
+    ref.title,
+    ref.text,
+    ref.year,
+  ]);
+  const previous = popupMetadata.get(ref);
+  const snapshot =
+    previous?.signature === signature && Date.now() - previous.at < 600_000
+      ? previous
+      : { signature, at: Date.now(), candidates: [] as PopupCandidate[] };
+  popupMetadata.set(ref, snapshot);
+  candidates.push(...snapshot.candidates);
+  const cached = cachedAbstract(ref);
+  if (cached && !candidates.some((c) => c.info.source === cached.source))
+    candidates.push({ info: cached, kind: "remote" });
+  const translationScope = JSON.stringify([
+    ref.identifiers.DOI?.toLowerCase() ||
+      ref.identifiers.PMID ||
+      ref.identifiers.arXiv ||
+      ref.title ||
+      ref.text,
+    ref.year || "",
+  ]);
+  let renderTimer: number | undefined;
+  const scheduleRender = () => {
+    if (renderTimer !== undefined || currentPopup !== popup) return;
+    // Coalesce independently arriving sources into one frame-sized update.
+    renderTimer = setTimeout(() => {
+      renderTimer = undefined;
+      render();
+    }, 16);
+  };
+  const accept = (info: RefItem | null) => {
+    if (!info || !samePopupPaper(ref, info, according === "Title")) return;
+    const candidate: PopupCandidate = { info, kind: "remote" };
+    const replace = (list: PopupCandidate[]) => {
+      const index = list.findIndex(
+        (c) => c.kind === "remote" && c.info.source === info.source,
+      );
+      if (index < 0) list.push(candidate);
+      else {
+        const old = list[index].info;
+        // An abstract-only EFetch and a rich PubMed summary may finish in
+        // either order. Preserve populated fields from the same verified work.
+        if (samePopupPaper(old, info)) {
+          list[index] = {
+            kind: "remote",
+            info: mergePopupSource(old, info),
+          };
+        } else list[index] = candidate;
+      }
+    };
+    replace(candidates);
+    replace(snapshot.candidates);
+    scheduleRender();
+  };
+  const abstractRequests = new Set<string>();
   const render = () => {
     if (currentPopup !== popup || !popup.container.isConnected) return;
     const result = mergePopupMetadata(ref, candidates, according === "Title");
     const info = result.info;
+    if (result.contentKind !== "abstract") {
+      const key = JSON.stringify([
+        info.identifiers.DOI,
+        info.identifiers.PMID,
+        info.title,
+        info.year,
+        info.authors[0],
+      ]);
+      if (!abstractRequests.has(key)) {
+        abstractRequests.add(key);
+        // Identifier-only fallback starts without waiting for slower providers.
+        void fetchAbstract(info)
+          .then(accept)
+          .catch(() => {});
+      }
+    }
     const colors = {
       pdf: "#00b8a9",
       doi: SOURCE_BADGE.DOI.color,
@@ -259,6 +344,7 @@ export function showRefPopup(
           .filter(Boolean)
           .join(" · "),
         note: info.description,
+        translationScope,
         contentKind: result.contentKind,
         contentLabel: getString(
           result.contentKind === "abstract"
@@ -279,12 +365,7 @@ export function showRefPopup(
   for (const thunk of thunks) {
     Promise.resolve()
       .then(thunk)
-      .then((info) => {
-        if (!info || currentPopup !== popup || !popup.container.isConnected)
-          return;
-        candidates.push({ info, kind: "remote" });
-        render();
-      })
+      .then(accept)
       .catch((error) => ztoolkit.log("[rows] popup source failed", error));
   }
   return popup;
@@ -369,6 +450,11 @@ async function addReference(
   row: HTMLElement,
   collections?: number[],
 ) {
+  const identity = itemStateKey(ctx.hostItem);
+  const current = () =>
+    addon.data.alive &&
+    !ctx.hostItem.deleted &&
+    itemStateKey(ctx.hostItem) === identity;
   const popupWin = new ztoolkit.ProgressWindow(
     getString("progress-importing"),
     {
@@ -387,8 +473,14 @@ async function addReference(
       ctx.hostItem,
       ref,
       collections,
-      (msg) => popupWin.changeLine({ text: collapseText(msg, 45) }),
+      (msg) => {
+        if (current()) popupWin.changeLine({ text: collapseText(msg, 45) });
+      },
     );
+    if (!current()) {
+      popupWin.close();
+      return;
+    }
     if (!refItem) {
       popupWin.changeHeadline(getString("progress-import-fail"));
       popupWin.changeLine({ type: "fail" });
@@ -396,10 +488,14 @@ async function addReference(
       setActionState(action, "+");
       return;
     }
-    ref.libItemID = refItem.id;
     if (!isRelated(ctx.hostItem, refItem)) {
       await addRelation(ctx.hostItem, refItem);
     }
+    if (!current()) {
+      popupWin.close();
+      return;
+    }
+    ref.libItemID = refItem.id;
     popupWin.changeHeadline(getString("progress-import-done"));
     popupWin.changeLine({
       text: collapseText(refItem.getField("title") as string),
@@ -409,6 +505,10 @@ async function addReference(
     setActionState(action, "-");
     row.style.setProperty("--refs-row-opacity", "1");
   } catch (e) {
+    if (!current()) {
+      popupWin.close();
+      return;
+    }
     ztoolkit.log("[rows] import failed", e);
     popupWin.changeHeadline(getString("progress-import-fail"));
     popupWin.changeLine({ type: "fail" });

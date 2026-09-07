@@ -1,7 +1,7 @@
 import { config } from "../../package.json";
 import { getLocaleID, getString } from "../utils/locale";
 import { getPref } from "../utils/prefs";
-import { refStorage } from "../core/storage";
+import { refStorage, itemStateKey } from "../core/storage";
 import { runBatchImport } from "../ui/batchImport";
 import { getReferencesByAPI } from "../sources";
 import type { RefItem } from "../core/types";
@@ -16,19 +16,22 @@ let registeredID: string | undefined;
 let usedFallback = false;
 
 async function refsFor(item: Zotero.Item): Promise<RefItem[] | null> {
+  const identity = itemStateKey(item);
   // cached first (the fused list the panel shows, then either raw layer),
   // then API
   for (const slot of ["FUSED", "API", "PDF"]) {
-    const cached = await refStorage.get(item, slot);
+    const cached = await refStorage.get(item, slot, identity);
+    if (itemStateKey(item) !== identity) return null;
     if (cached?.length) return cached;
   }
   const result = await getReferencesByAPI(item);
+  if (itemStateKey(item) !== identity) return null;
   if (result?.refs.length) {
     for (const r of result.refs) {
       r.source = (r.source ?? result.source) as RefItem["source"];
     }
     if (getPref("saveAPIReferences")) {
-      void refStorage.set(item, "API", result.refs);
+      void refStorage.set(item, "API", result.refs, identity);
     }
     return result.refs;
   }

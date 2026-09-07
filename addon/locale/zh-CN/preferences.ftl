@@ -22,7 +22,7 @@ pref-ctrlClickTranslate =
 
 pref-group-reader = PDF 阅读器链接
 pref-clickLink =
-    .label = 正文跳转链接（图、公式）在分栏视图中打开
+    .label = 按住 Alt / Option 点击引文或内部链接，在分栏视图中打开
 pref-clickLinkCmd = 分栏方向
 pref-split-horizontally =
     .label = 水平
@@ -63,7 +63,7 @@ pref-list-intro = 调整自动加载方式与列表可读性。
 pref-types-hint = 填写 Zotero 英文条目类型，例如：book, letter, note, thesis。
 pref-opacity-hint = 数值越低，未入库文献越淡；设为 1 可保持完整对比度。
 pref-popup-intro = 从文献行或图谱节点预览题录。以下延迟均以毫秒计。
-pref-reader-intro = 点击链接时保留阅读位置。引文悬停预览继续使用 Zotero 原生界面。
+pref-reader-intro = 普通点击按 Zotero 原生方式在 PDF 内跳转。按住 Alt / Option 点击时，保留当前阅读位置并在分栏中打开目标。引文悬停预览继续使用 Zotero 原生界面。
 pref-discovery-intro = 设置发现面板的自动加载与显示规模。
 pref-group-cache = 本地缓存
 pref-cache-intro = 复用已保存的结果，加快加载并减少重复请求。

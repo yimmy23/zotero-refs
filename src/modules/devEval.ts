@@ -15,6 +15,8 @@ import { parsePDFReferences } from "../pdf/parser";
 import { openalex } from "../sources/openalex";
 import { crossref } from "../sources/crossref";
 import { attachReader, readerLinkState } from "../pdf/readerHook";
+import { showRefPopup, closePopup } from "../ui/rows";
+import { fetchAbstract } from "../sources/abstract";
 
 let registration = 0;
 let endpointTarget: any;
@@ -129,6 +131,9 @@ async function registerWhenReady(generation: number) {
             crossref,
             attachReader,
             readerLinkState,
+            showRefPopup,
+            closePopup,
+            fetchAbstract,
           });
           if (typeof result !== "string") {
             try {

@@ -35,11 +35,11 @@ The list loads automatically (configurable) and is a single **fused** view: the 
 
 ### Hover card
 
-Hover any row for one integrated card: title, publication details, selected authors, abstract and source links. Verified fields from several sources fill gaps in a fixed order; one abstract is shown with its provenance, and citation counts are never added together. Explicit first/co-first and corresponding/co-corresponding authors have separate labels. When roles are unavailable, the first and last listed authors are shown; a truncated author list never implies a last author. Links follow **Full text → Paper page → PubMed → Google Scholar → Zotero**, when available. Missing abstracts are labelled **Original citation**. Text is selectable and copyable; `Ctrl+wheel` zooms; translation is available when Translate for Zotero is installed. Late source responses preserve reading position and keyboard focus.
+Hover any row for one integrated card: title, publication details, selected authors, abstract and source links. Verified fields from several sources fill gaps in a fixed order; one abstract is shown with its provenance, and citation counts are never added together. Explicit first/co-first and corresponding/co-corresponding authors have separate labels. When roles are unavailable, the first and last listed authors are shown; a truncated author list never implies a last author. Links follow **Full text → Paper page → PubMed → Google Scholar → Zotero**, when available. Missing abstracts are looked up through Europe PMC and PubMed using verified article identities; **Original citation** is shown when no abstract is available. Full author names are preferred when compatible source records supply them. Text is selectable and copyable; `Ctrl+wheel` zooms; translation is available when Translate for Zotero is installed. Requested translations and the original/translated view are retained when reopening the card during the current plugin session; pending requests are reused. Late source responses preserve reading position and keyboard focus.
 
 ### In-PDF citation links
 
-In the reader, hovering an in-text citation keeps Zotero’s native preview; clicking an in-text link (citation / figure / equation) jumps in a **split view**, so your reading position never moves. Split direction is configurable; outline and back-button navigation are untouched.
+In the reader, hovering an in-text citation keeps Zotero’s native preview; a normal click on a citation or internal link uses Zotero’s native jump in the current view. **Alt / Option+click** opens the destination in a split view when enabled, preserving your reading position. Split direction is configurable; outline and back-button navigation are untouched.
 
 Items are looked up by DOI, or — when there is none — by PMID / arXiv id from the Extra field or URL, so PubMed-imported items work throughout.
 
@@ -51,7 +51,7 @@ Items are looked up by DOI, or — when there is none — by PMID / arXiv id fro
 
 ### Settings overview
 
-`Settings → Refs` groups settings into References, Hover cards, PDF reader, Discovery, Cache and Accounts. It follows Zest’s neutral material cards and native light/dark colors. Options include auto-refresh, item types excluded from auto-refresh, PDF pre-parse page count, per-item caching of PDF/API results and cache TTL, hover-card delay/behavior/translation, reader link behavior (click-to-jump, split direction), Cited By page size, graph max nodes, dimming opacity for not-in-library rows, network identity (email / S2 key / OpenAlex key), CNKI account.
+`Settings → Refs` groups settings into References, Hover cards, PDF reader, Discovery, Cache and Accounts. It follows Zest’s neutral material cards and native light/dark colors. Options include auto-refresh, item types excluded from auto-refresh, PDF pre-parse page count, per-item caching of PDF/API results and cache TTL, hover-card delay/behavior/translation, reader link behavior (Alt / Option+click to split, split direction), Cited By page size, graph max nodes, dimming opacity for not-in-library rows, network identity (email / S2 key / OpenAlex key), CNKI account.
 
 ## Build & develop
 
@@ -102,9 +102,9 @@ Architecture, invariants, and verified gotchas (Fluent l10n rules, hook guarding
 
 **参考文献**：自动加载，单一**融合**列表——PDF 文本层提供骨架（论文实际印出的条目、顺序、编号、页内位置），Crossref → Semantic Scholar → OpenAlex → 知网 逐条补全元数据（尤其是 DOI；历史 699 篇语料的 DOI 覆盖率约 19% → 80%，并非本版准确率）。任一侧不可用（未打开 PDF / 无标识符 / 离线）另一侧独立成表；计数旁标注参与的来源，仅在线找到的条目带 `API` 标签追加在表尾。刷新按钮：单击刷新（优先缓存），**长按**跳过缓存重新获取，学位论文中 `Ctrl+单击` 从当前页向前解析。行内操作：实心行=已入库、半透明=未入库；单击**复制干净引文**（自动去掉序号）；长按**编辑**原文（`Esc` 取消）；`Ctrl+单击` 在文库定位或浏览器打开；`+` **导入并双向关联**（`Ctrl+单击 +` 选择目标分类）；`−` 取消关联；所有控件悬停均有提示。被 OpenAlex / PubMed 标记**撤稿**的文献显示红色「已撤稿」标签，导入前会再次确认。工具栏保留原图标并显示操作名称；“更多”菜单提供跳过缓存重新获取、从 PDF 当前页解析及纯文本／Markdown／CSV 导出。筛选支持题录、作者、标识符和徽章，并显示结果数量；批量导入遵循同一筛选条件，执行前确认，中途点击进度窗口即可停止。Enter 复制、Ctrl/Cmd+Enter 定位、F2 编辑；双击计数复制全部。条目按 DOI 查询，无 DOI 时用 Extra/URL 中的 PMID 或 arXiv 号，PubMed 导入的条目同样可用。
 
-**悬浮卡片**：多源信息整合成一张卡片，统一展示题名、发表信息、作者、摘要及来源链接。字段按固定优先顺序补缺，只采用一份摘要并标明出处，被引次数不跨来源相加。明确的第一／共同第一作者、通讯／共同通讯作者分别展示；缺少角色标注时显示首位和末位作者，截断的名单不冒充完整名单。跳转按钮按 **阅读全文 → 论文页面 → PubMed → 谷歌学术 → Zotero** 排列，仅显示可用入口；全文链接也可能打开HTML页面。没有摘要时明确显示“原始引文”。文字可选中、复制，`Ctrl+滚轮` 缩放；装有 Translate for Zotero 时提供翻译。异步更新保留滚动位置与键盘焦点。
+**悬浮卡片**：多源信息整合成一张卡片，统一展示题名、发表信息、作者、摘要及来源链接。字段按固定优先顺序补缺，只采用一份摘要并标明出处，被引次数不跨来源相加。明确的第一／共同第一作者、通讯／共同通讯作者分别展示；缺少角色标注时显示首位和末位作者，截断的名单不冒充完整名单。跳转按钮按 **阅读全文 → 论文页面 → PubMed → 谷歌学术 → Zotero** 排列，仅显示可用入口；全文链接也可能打开HTML页面。摘要缺失时通过 Europe PMC 和 PubMed 核验文献身份后补抓；仍未获得摘要时显示“原始引文”。兼容的来源提供全名时，优先展示作者全名。文字可选中、复制，`Ctrl+滚轮` 缩放；装有 Translate for Zotero 时提供翻译；当前插件会话内重新打开卡片会保留已请求的译文及原文／译文选择，并复用进行中的请求。异步更新保留滚动位置与键盘焦点。
 
-**阅读器引文链接**：悬停正文引文保留 Zotero 原生预览；点击正文跳转链接（引文/图/公式）在**分栏**中打开，主视图阅读位置不动，分栏方向可设置。
+**阅读器引文链接**：悬停正文引文保留 Zotero 原生预览；普通点击引文或内部链接按 Zotero 原生方式在当前视图跳转；启用相关设置后，**Alt / Option＋点击**在分栏中打开目标，保留当前阅读位置，分栏方向可设置。
 
 **被引用**（分页加载，锁源去重，可关键词筛选）·**相关文献**（S2 推荐 + OpenAlex 兜底，合并 Zotero 关联条目）·**引文图谱**（OpenAlex 数据 + 基于共同参考文献的文献耦合边的力导向图：节点大小=被引量，实心=已入库）。**悬停**节点显示与参考文献行相同的多源卡片（未入库时带「+ 导入」）；**右键**菜单：导入并关联 / 在文库中显示 / 打开 DOI / PubMed / Google Scholar / 复制引文 / **以此文献为中心重建图谱**（出现「回到本文」按钮）；单击在文库中选中，双击在线打开；`Ctrl+滚轮` 缩放、拖动平移。
 

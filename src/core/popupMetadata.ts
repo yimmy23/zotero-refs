@@ -66,6 +66,7 @@ export function popupLinks(info: RefItem): Array<{
 // records win descriptive fields; citation counts have their own stable order.
 const ORDER: SourceID[] = [
   "pubmed",
+  "europepmc",
   "crossref",
   "arxiv",
   "cnki",
@@ -130,6 +131,302 @@ function names(values?: string[], unique = true): string[] {
   return unique ? [...new Set(cleaned)] : cleaned;
 }
 
+const ABBREVIATED_BYLINE =
+  /\bet\s+al\b|\band\s+others\b|等(?:人)?[。.]?$|…|\.\.\./i;
+
+interface AuthorName {
+  family: string;
+  given: string[];
+}
+
+const familyParticles = new Set([
+  "al",
+  "bin",
+  "da",
+  "de",
+  "del",
+  "den",
+  "der",
+  "di",
+  "dos",
+  "la",
+  "le",
+  "van",
+  "von",
+]);
+const nameWord = (value: string) =>
+  value.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+const nameTokens = (value: string) =>
+  value.match(/[\p{L}\p{M}]+(?:[-'’][\p{L}\p{M}]+)*/gu) || [];
+
+/** Parse common given-family, family-initials and family-comma-given forms. */
+function authorName(value: string): AuthorName | undefined {
+  if (!value || ABBREVIATED_BYLINE.test(value)) return undefined;
+  const pieces = value.split(",");
+  const tokens = nameTokens(value);
+  if (!tokens.length) return undefined;
+  const suffixAfterComma = /,\s*(?:Jr|Sr|jr|sr|II|III|IV)\.?\s*$/.test(value);
+  // PubMed's surname-first "Molina JR" contains initials, not "Junior".
+  // Keep uppercase JR/SR as given-name evidence; recognize suffixes only in
+  // a full byline name or an explicit comma-suffix form.
+  if (
+    (tokens.length > 2 || suffixAfterComma) &&
+    /^(?:Jr|Sr|jr|sr|II|III|IV)$/.test(tokens.at(-1) || "")
+  )
+    tokens.pop();
+  if (!tokens.length) return undefined;
+  let family: string[], given: string[];
+  const initial = (token: string) =>
+    /^\p{L}$/u.test(token) || /^[A-Z]{2,3}$/.test(token);
+  if (
+    pieces.length === 2 &&
+    nameTokens(pieces[1]).length &&
+    !/^(?:jr|sr|ii|iii|iv)\.?$/i.test(pieces[1].trim())
+  ) {
+    family = nameTokens(pieces[0]);
+    given = nameTokens(pieces[1]);
+  } else if (
+    tokens.length > 1 &&
+    tokens.slice(1).every(initial) &&
+    !initial(tokens[0]!)
+  ) {
+    family = tokens.slice(0, 1);
+    given = tokens.slice(1);
+  } else {
+    let start = tokens.length - 1;
+    while (start > 0 && familyParticles.has(nameWord(tokens[start - 1])))
+      start--;
+    family = tokens.slice(start);
+    given = tokens.slice(0, start);
+  }
+  if (!family.length) return undefined;
+  return {
+    family: family.map(nameWord).join(" "),
+    given: given.flatMap((token) =>
+      /^[A-Z]{2,3}$/.test(token) ? [...token].map(nameWord) : [nameWord(token)],
+    ),
+  };
+}
+
+function authorMatching() {
+  // One merge can compare several long consortium bylines. Parse each name
+  // once, index by surname and reuse alignment checks instead of rescanning
+  // every author for each displayed endpoint or explicit-role member.
+  const parsed = new Map<string, AuthorName | undefined>();
+  const families = new Map<string[], Map<string, string[]>>();
+  const alignments = new Map<string[], Map<string[], boolean>>();
+  const parse = (name: string) => {
+    if (!parsed.has(name)) parsed.set(name, authorName(name));
+    return parsed.get(name);
+  };
+  const compatible = (a: string, b: string): boolean => {
+    const left = parse(a),
+      right = parse(b);
+    if (!left || !right || left.family !== right.family) return false;
+    return left.given.slice(0, right.given.length).every((part, index) => {
+      const other = right.given[index];
+      return (
+        part === other ||
+        (part.length === 1 && other.startsWith(part)) ||
+        (other.length === 1 && part.startsWith(other))
+      );
+    });
+  };
+  const uniqueMatch = (name: string, byline: string[]) => {
+    let index = families.get(byline);
+    if (!index) {
+      index = new Map();
+      for (const member of byline) {
+        const family = parse(member)?.family;
+        if (!family) continue;
+        const group = index.get(family) || [];
+        group.push(member);
+        index.set(family, group);
+      }
+      families.set(byline, index);
+    }
+    let matches = 0;
+    for (const member of index.get(parse(name)?.family || "") || []) {
+      if (compatible(name, member) && ++matches > 1) return false;
+    }
+    return matches === 1;
+  };
+  const pair = (a: string, b: string, lineA: string[], lineB: string[]) => {
+    if (!compatible(a, b)) return false;
+    if (nameWord(a) === nameWord(b)) return true;
+    // Position alone cannot resolve multiple Wang/Smith authors when a source
+    // omitted given names, or two authors share the same initials.
+    return uniqueMatch(a, lineB) && uniqueMatch(b, lineA);
+  };
+  const aligned = (a: string[], b: string[]): boolean => {
+    let comparisons = alignments.get(a);
+    if (!comparisons) {
+      comparisons = new Map();
+      alignments.set(a, comparisons);
+    }
+    if (!comparisons.has(b))
+      comparisons.set(
+        b,
+        !!a.length &&
+          !!b.length &&
+          !a.some((name) => ABBREVIATED_BYLINE.test(name)) &&
+          !b.some((name) => ABBREVIATED_BYLINE.test(name)) &&
+          a
+            .slice(0, b.length)
+            .every((name, index) => pair(name, b[index], a, b)),
+      );
+    return comparisons.get(b)!;
+  };
+  const detail = (name: string) => {
+    // Spelled-out given names beat initials. Character length alone must
+    // never choose between different full names (Paul versus Peter).
+    return (parse(name)?.given || []).reduce(
+      (score, part) => score + (part.length > 1 ? 10 : 1),
+      0,
+    );
+  };
+  return { compatible, aligned, detail };
+}
+
+/** Coalesce successive results from one verified source without losing names
+ * when its summary (initials) arrives after its full article record. */
+export function mergePopupSource(old: RefItem, incoming: RefItem): RefItem {
+  const populated = Object.fromEntries(
+    Object.entries(incoming).filter(
+      ([, value]) =>
+        value !== undefined &&
+        value !== "" &&
+        !(Array.isArray(value) && value.length === 0),
+    ),
+  );
+  const merged: RefItem = {
+    ...old,
+    ...populated,
+    identifiers: { ...old.identifiers, ...incoming.identifiers },
+  };
+  if (incoming.authors?.length) {
+    // Completeness belongs to the selected byline, not to the merged record.
+    merged.authorsTruncated = incoming.authorsTruncated;
+    const matching = authorMatching();
+    const before = names(old.authors, false);
+    const after = names(incoming.authors, false);
+    if (matching.aligned(before, after)) {
+      if (
+        (incoming.authorsTruncated || before.length > after.length) &&
+        !old.authorsTruncated &&
+        before.length >= after.length
+      ) {
+        merged.authors = before;
+        merged.authorsTruncated = old.authorsTruncated;
+      } else {
+        merged.authors = after.map((name, index) =>
+          before[index] &&
+          matching.detail(before[index]) > matching.detail(name)
+            ? before[index]
+            : name,
+        );
+      }
+    }
+  }
+  return merged;
+}
+
+/** Presentation only: keep the authoritative internal byline and role groups. */
+function authorDisplay(
+  baseline: string[],
+  baselineTruncated: boolean,
+  all: PopupCandidate[],
+  firstOwner?: PopupCandidate,
+  correspondingOwner?: PopupCandidate,
+) {
+  const matching = authorMatching();
+  const bylines = all
+    .map((candidate) => ({
+      names: names(candidate.info.authors, false),
+      truncated: candidate.info.authorsTruncated === true,
+    }))
+    .filter((line) => line.names.length);
+  // Partial lists can identify first or explicit-role authors, but only a
+  // verified complete byline can identify the actual last author.
+  let displayLine = baseline;
+  let displayTruncated = baselineTruncated;
+  for (const line of bylines) {
+    if (
+      line.truncated ||
+      line.names.length < baseline.length ||
+      !matching.aligned(baseline, line.names)
+    )
+      continue;
+    if (displayTruncated || line.names.length > displayLine.length) {
+      displayLine = line.names;
+      displayTruncated = false;
+    }
+  }
+  const expand = (
+    name: string,
+    index: number,
+    anchor: string[],
+    requireComplete = false,
+  ) => {
+    let best = name;
+    for (const candidate of bylines) {
+      if (requireComplete && candidate.truncated) continue;
+      const line = candidate.names;
+      const proposed = line[index];
+      if (
+        !proposed ||
+        !matching.aligned(anchor, line) ||
+        !matching.compatible(best, proposed)
+      )
+        continue;
+      if (matching.detail(proposed) > matching.detail(best)) best = proposed;
+    }
+    return best;
+  };
+  const group = (
+    owner: PopupCandidate | undefined,
+    field: "firstAuthors" | "correspondingAuthors",
+  ) => {
+    const values = names(owner?.info[field]);
+    const anchor = names(owner?.info.authors, false);
+    return values.map((name) => {
+      const positions = anchor
+        .map((author, index) =>
+          matching.compatible(name, author) ? index : -1,
+        )
+        .filter((index) => index >= 0);
+      return positions.length === 1 ? expand(name, positions[0], anchor) : name;
+    });
+  };
+  const explicitFirst = group(firstOwner, "firstAuthors");
+  const corresponding = group(correspondingOwner, "correspondingAuthors");
+  const first = displayLine[0]
+    ?.replace(/\s*\bet\s+al\.?$|\s*等(?:人)?[。.]?$/i, "")
+    .trim();
+  return {
+    first: explicitFirst.length
+      ? explicitFirst
+      : first
+        ? [expand(first, 0, displayLine)]
+        : [],
+    corresponding,
+    last:
+      corresponding.length ||
+      displayTruncated ||
+      displayLine.length < 2 ||
+      displayLine.some((name) => ABBREVIATED_BYLINE.test(name))
+        ? []
+        : [
+            expand(
+              displayLine.at(-1)!,
+              displayLine.length - 1,
+              displayLine,
+              true,
+            ),
+          ],
+  };
+}
+
 function rank(candidate: PopupCandidate): number {
   if (candidate.kind === "library") return -2;
   const index = ORDER.indexOf(candidate.info.source!);
@@ -145,6 +442,7 @@ function sortKey(candidate: PopupCandidate): string {
     Object.entries(i.identifiers || {}).sort(),
     i.title,
     i.authors,
+    i.authorsTruncated,
     i.publishDate,
     i.year,
     i.abstract,
@@ -178,7 +476,8 @@ function sourceURL(source: string, info: RefItem): string | undefined {
   if (source === "arxiv" && ids.arXiv)
     return `https://arxiv.org/abs/${encodeURIComponent(ids.arXiv)}`;
   if (source === "cnki") return popupURL(ids.CNKI || info.url);
-  if (source === "readpaper") return popupURL(info.url);
+  if (source === "readpaper" || source === "europepmc")
+    return popupURL(info.url);
   return undefined;
 }
 
@@ -248,8 +547,10 @@ export function mergePopupMetadata(
   });
   const field = (key: "title" | "primaryVenue" | "type" | "description") =>
     all.map((c) => cleanText(c.info[key])).find(Boolean);
-  const authors =
-    all.map((c) => names(c.info.authors, false)).find((a) => a.length) || [];
+  const authorOwner = all.find(
+    (candidate) => names(candidate.info.authors, false).length,
+  );
+  const authors = names(authorOwner?.info.authors, false);
   const date = all.find((c) => c.info.publishDate || c.info.year)?.info;
   const abstractText = (candidate: PopupCandidate) =>
     candidate.kind === "library"
@@ -282,27 +583,28 @@ export function mergePopupMetadata(
       })[0];
   const citation = counter("citationCount");
   const references = counter("referenceCount");
-  const explicitFirst = all
-    .map((c) => names(c.info.firstAuthors))
-    .find((a) => a.length);
-  const correspondingAuthors =
-    all.map((c) => names(c.info.correspondingAuthors)).find((a) => a.length) ||
-    [];
-  const abbreviatedByline = authors.some((author) =>
-    /\bet\s+al\b|\band\s+others\b|等(?:人)?[。.]?$|…|\.\.\./i.test(author),
+  const firstOwner = all.find(
+    (candidate) => names(candidate.info.firstAuthors).length,
   );
-  const firstAuthors =
-    explicitFirst ||
-    authors
-      .slice(0, 1)
-      .map((author) =>
-        author.replace(/\s*\bet\s+al\.?$|\s*等(?:人)?[。.]?$/i, "").trim(),
-      )
-      .filter(Boolean);
-  const lastAuthors =
-    correspondingAuthors.length || authors.length < 2 || abbreviatedByline
-      ? []
-      : authors.slice(-1);
+  const correspondingOwner = all.find(
+    (candidate) => names(candidate.info.correspondingAuthors).length,
+  );
+  const explicitFirst = firstOwner
+    ? names(firstOwner.info.firstAuthors)
+    : undefined;
+  const explicitCorresponding = correspondingOwner
+    ? names(correspondingOwner.info.correspondingAuthors)
+    : [];
+  const authorNames = authorDisplay(
+    authors,
+    authorOwner?.info.authorsTruncated === true,
+    all,
+    firstOwner,
+    correspondingOwner,
+  );
+  const firstAuthors = authorNames.first;
+  const correspondingAuthors = authorNames.corresponding;
+  const lastAuthors = authorNames.last;
   // Keep keywords/library tags, but counts and source/navigation chips are
   // assembled separately so their meaning and order cannot change by source.
   const tags: RefTag[] = [];
@@ -329,9 +631,10 @@ export function mergePopupMetadata(
     identifiers: ids,
     title: field("title"),
     authors,
+    authorsTruncated: authorOwner?.info.authorsTruncated || undefined,
     firstAuthors: explicitFirst,
-    correspondingAuthors: correspondingAuthors.length
-      ? correspondingAuthors
+    correspondingAuthors: explicitCorresponding.length
+      ? explicitCorresponding
       : undefined,
     year: date?.year,
     publishDate: date?.publishDate,

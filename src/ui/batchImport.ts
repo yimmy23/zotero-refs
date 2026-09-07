@@ -1,6 +1,7 @@
 import { getString } from "../utils/locale";
 import { importAll } from "../core/importer";
 import type { RefItem } from "../core/types";
+import { itemStateKey } from "../core/storage";
 
 /**
  * Batch import with the two safeguards a mis-click needs: an explicit
@@ -15,6 +16,9 @@ export async function runBatchImport(
   collections?: number[],
 ): Promise<{ ok: number; fail: number; stopped: number } | null> {
   if (!targets.length) return null;
+  // Capture before the confirmation dialog, which can dispatch application
+  // events while open. An edited host must not start an obsolete batch.
+  const identity = itemStateKey(hostItem);
   const win = Zotero.getMainWindow();
   const confirmed = Services.prompt.confirm(
     win as any,
@@ -54,8 +58,14 @@ export async function runBatchImport(
         text: `${done}/${total} ${msg}`,
         progress: (done / total) * 100,
       }),
-    () => cancelled,
+    () =>
+      cancelled ||
+      !addon.data.alive ||
+      hostItem.deleted ||
+      itemStateKey(hostItem) !== identity,
   );
+  if (!addon.data.alive) return result;
+  if (hostItem.deleted || itemStateKey(hostItem) !== identity) cancelled = true;
   if (!cancelled) {
     popupWin.changeHeadline(`${title} ✓`);
     popupWin.changeLine({

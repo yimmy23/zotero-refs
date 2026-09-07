@@ -10,6 +10,7 @@ export type SourceID =
   | "openalex"
   | "arxiv"
   | "pubmed"
+  | "europepmc"
   | "unpaywall"
   | "cnki"
   | "readpaper"
@@ -52,6 +53,8 @@ export interface RefItem {
   identifiers: Identifiers;
   title?: string;
   authors: string[];
+  /** A source omitted byline members; the final listed author is not the last author. */
+  authorsTruncated?: boolean;
   /** Explicitly identified first/co-first authors; never inferred from the tail. */
   firstAuthors?: string[];
   /** Explicitly identified corresponding authors, including co-corresponding. */
@@ -157,6 +160,7 @@ export const SOURCE_NAME: Record<string, string> = {
   semanticscholar: "Semantic Scholar",
   openalex: "OpenAlex",
   pubmed: "PubMed",
+  europepmc: "Europe PMC",
   unpaywall: "Unpaywall",
   readpaper: "ReadPaper",
   connectedpapers: "Connected Papers",

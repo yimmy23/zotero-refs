@@ -103,6 +103,14 @@ function mapWork(w: any): RefItem {
         .map((a: any) => cleanText(a.author?.display_name))
         .filter(Boolean)
     : [];
+  // List endpoints cap the byline at 100; the cap's final author still has
+  // author_position=middle. Never promote that member to a last-author claim.
+  const authorsTruncated =
+    w.is_authors_truncated === true ||
+    (Array.isArray(w.authorships) &&
+      (authors.length !== w.authorships.length ||
+        (w.authorships.length >= 100 &&
+          !w.authorships.some((a: any) => a.author_position === "last"))));
   // Only an explicit flag establishes correspondence. author_position=last
   // is a byline position and must never become a corresponding-author claim.
   const correspondingAuthors: string[] = Array.isArray(w.authorships)
@@ -132,6 +140,7 @@ function mapWork(w: any): RefItem {
     identifiers,
     title: cleanText(w.title || w.display_name),
     authors,
+    authorsTruncated: authorsTruncated || undefined,
     correspondingAuthors: correspondingAuthors.length
       ? correspondingAuthors
       : undefined,

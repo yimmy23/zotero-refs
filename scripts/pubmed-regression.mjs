@@ -16,7 +16,7 @@ const source = await fs.readFile(
 );
 const compiled = await build({
   stdin: {
-    contents: source + "\nexport { extractAbstractText };",
+    contents: source,
     resolveDir: path.join(root, "src/sources"),
     loader: "ts",
   },
@@ -67,7 +67,9 @@ const context = vm.createContext({
   },
 });
 vm.runInContext(compiled.outputFiles[0].text, context);
-const { pubmed, extractAbstractText } = context.module.exports;
+const { pubmed, extractAbstractRecord } = context.module.exports;
+const extractAbstractText = (raw, pmid) =>
+  extractAbstractRecord(raw, pmid)?.abstract;
 const article = (pmid, content = "", metadata = "") =>
   `<PubmedArticle><MedlineCitation><PMID>${pmid}</PMID><Article><ArticleTitle>Do not return this title</ArticleTitle><AuthorList><Author><LastName>Fixture</LastName><AffiliationInfo><Affiliation>Do not return affiliation</Affiliation></AffiliationInfo></Author></AuthorList>${content}</Article>${metadata}</MedlineCitation></PubmedArticle>`;
 const document = (...articles) =>
@@ -152,7 +154,7 @@ test("XML entities and inline markup are decoded once without losing comparisons
   );
   assert.equal(
     extractAbstractText(raw, "11111111"),
-    "SAFETY & EFFICACY: A <threshold> & B ≤ C. Italic and 2.",
+    "SAFETY & EFFICACY: A <threshold> & B ≤ C. Italic and ².",
   );
 });
 test("malformed XML, parser errors and wrong document roots return no abstract", () => {

@@ -546,10 +546,15 @@ async function fetchFileInfo(
 
   const refs: RefItem[] = [];
 
-  if (infoData && String(infoData.code) === "200") {
+  const bibliography = infoData?.content?.paper?.bibliography;
+  if (
+    infoData &&
+    String(infoData.code) === "200" &&
+    Array.isArray(bibliography) &&
+    bibliography.length
+  ) {
     // richer source: the paper's own bibliography, cross-matched against
     // the reader-API reference list for CNKI urls/types.
-    const bibliography: any[] = infoData.content?.paper?.bibliography || [];
     const refer: any[] = refData.content?.refer || [];
     for (const ref of bibliography) {
       const text = String(ref.title).replace(/^\[\d+\]/, "");

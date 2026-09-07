@@ -1,7 +1,7 @@
 import { getPref } from "../utils/prefs";
 
 /**
- * In-PDF citation link CLICK enhancement, built on Zotero 7+'s reader
+ * Optional Alt/Option+click split navigation, built on Zotero 7+'s reader
  * overlay pipeline (the pdf.js annotation layer is hidden by the reader's
  * CSS — Zotero renders internal links / citations through its own overlay
  * system).
@@ -14,9 +14,9 @@ import { getPref } from "../utils/prefs";
  *     `internal._secondaryView` (a PDFView with `navigate(location)`).
  *     (`reader.menuCmd` no longer exists in Zotero 9.)
  *
- * Integration — clickLink only: wrap `navigate` with a pointerup
- * correlation so ONLY overlay-click navigations are redirected into the
- * split view (outline / back-button navigation stays untouched).
+ * Ordinary clicks always use Zotero's native navigation. With clickLink
+ * enabled, only Alt/Option+left-click can redirect an overlay destination
+ * to a split view; outline / back-button navigation stays untouched.
  *
  * Hover previews are deliberately NOT touched: reader citation popups
  * stay native (user decision, 2026-08-25) — the plugin must not wrap
@@ -24,7 +24,7 @@ import { getPref } from "../utils/prefs";
  */
 
 const READY_TIMEOUT = 10000;
-/** max ms between an overlay pointerup and the navigate() it triggers */
+/** Max ms between an explicit split gesture and the navigate() it triggers. */
 const NAV_CORRELATION_MS = 300;
 
 interface ReaderState {
@@ -188,19 +188,32 @@ export class ReaderLinks {
       // window already tearing down
     }
 
-    // ---------------- click: redirect overlay navigation into the split view
+    // Only explicit split gestures may authorize one matching navigation.
     if (typeof view.navigate === "function") {
-      let pendingNav: { position: any; at: number } | null = null;
+      let pendingNav: { destination: string; at: number } | null = null;
       const pointerListener = (event: any) => {
+        pendingNav = null;
         try {
-          if (event.button !== undefined && event.button !== 0) {
-            pendingNav = null;
+          if (
+            state.cancelled ||
+            !getPref("clickLink") ||
+            event.button !== 0 ||
+            !event.altKey ||
+            event.ctrlKey ||
+            event.metaKey ||
+            event.shiftKey
+          ) {
             return;
           }
           const pos = view.pointerEventToPosition?.(event);
           const overlay = pos && view._getSelectableOverlay?.(pos);
           const destPos = overlayDestPosition(overlay);
-          pendingNav = destPos ? { position: destPos, at: Date.now() } : null;
+          // Snapshot the complete destination, not just its page: other
+          // navigations on that page must not inherit the split gesture.
+          if (destPos) {
+            const destination = JSON.stringify(destPos);
+            if (destination) pendingNav = { destination, at: Date.now() };
+          }
         } catch {
           pendingNav = null;
         }
@@ -214,18 +227,20 @@ export class ReaderLinks {
       const origNavigate = view.navigate.bind(view);
       state.origNavigate = view.navigate;
       state.wrappedNavigate = (location: any, options?: any) => {
+        const gesture = pendingNav;
+        pendingNav = null;
         try {
           if (
             !state.cancelled &&
+            this.states.get(reader) === state &&
+            reader._internalReader?._primaryView === view &&
             getPref("clickLink") &&
-            pendingNav &&
-            Date.now() - pendingNav.at < NAV_CORRELATION_MS &&
+            gesture &&
+            Date.now() - gesture.at < NAV_CORRELATION_MS &&
             location?.position &&
-            (location.position === pendingNav.position ||
-              location.position.pageIndex === pendingNav.position.pageIndex)
+            JSON.stringify(location.position) === gesture.destination
           ) {
             const position = location.position;
-            pendingNav = null;
             void this.jumpInSecondView(reader, position, state)
               .then((jumped) => {
                 if (
@@ -246,7 +261,7 @@ export class ReaderLinks {
         } catch (e) {
           ztoolkit.log("[readerLinks] navigate hook failed", e);
         }
-        pendingNav = null;
+        // Keep the original return value and synchronous call timing.
         return origNavigate(location, options);
       };
       view.navigate = state.wrappedNavigate;
@@ -264,7 +279,12 @@ export class ReaderLinks {
   ): Promise<boolean> {
     try {
       const internal = (reader as any)._internalReader;
-      if (!internal) return false;
+      const ownsView = () =>
+        !state.cancelled &&
+        this.states.get(reader) === state &&
+        reader._internalReader === internal &&
+        internal?._primaryView === state.view;
+      if (!internal || !ownsView()) return false;
       if (!internal._secondaryView) {
         const cmd = getPref("clickLinkCmd") as string;
         if (cmd === "splitVertically") {
@@ -277,14 +297,14 @@ export class ReaderLinks {
         }
         const deadline = Date.now() + READY_TIMEOUT;
         while (!internal._secondaryView?._iframeWindow) {
-          if (state.cancelled || Date.now() > deadline) return false;
+          if (!ownsView() || Date.now() > deadline) return false;
           await Zotero.Promise.delay(100);
         }
         // let the fresh view settle before navigating
         await Zotero.Promise.delay(300);
       }
       if (
-        state.cancelled ||
+        !ownsView() ||
         typeof internal._secondaryView?.navigate !== "function"
       )
         return false;

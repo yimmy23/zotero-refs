@@ -90,7 +90,13 @@ function mapWork(w: any): RefItem {
 
   const title = cleanText(Array.isArray(w.title) ? w.title[0] : w.title);
   const authors: string[] = Array.isArray(w.author)
-    ? w.author.map((a: any) => a.family || a.name).filter(Boolean)
+    ? w.author
+        .map((a: any) =>
+          cleanText(
+            a.family ? [a.given, a.family].filter(Boolean).join(" ") : a.name,
+          ),
+        )
+        .filter(Boolean)
     : [];
 
   const dateParts =

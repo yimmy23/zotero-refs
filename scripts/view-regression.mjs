@@ -4,13 +4,14 @@ import console from "node:console";
 import process from "node:process";
 import { Buffer } from "node:buffer";
 import { build } from "esbuild";
+import { setTimeout, clearTimeout } from "node:timers";
 import { DOMImplementation } from "@xmldom/xmldom";
 Error.stackTraceLimit = 0;
 
 const bundle = await build({
   stdin: {
     contents:
-      'export {GraphView} from "./src/graph/view"; export {PopupCard} from "./src/ui/popup";',
+      'export {GraphView} from "./src/graph/view"; export {PopupCard} from "./src/ui/popup"; export {clearPopupTranslations} from "./src/core/popupTranslation";',
     resolveDir: process.cwd(),
   },
   bundle: true,
@@ -19,7 +20,7 @@ const bundle = await build({
   write: false,
   define: { __env__: '"production"' },
 });
-const { GraphView, PopupCard } = await import(
+const { GraphView, PopupCard, clearPopupTranslations } = await import(
   "data:text/javascript;base64," +
     Buffer.from(bundle.outputFiles[0].text).toString("base64")
 );
@@ -82,6 +83,8 @@ let width = 1600,
   height = 1000;
 const listeners = new Map();
 const win = {
+  setTimeout,
+  clearTimeout,
   addEventListener: (name, fn) => listeners.set(name, fn),
   removeEventListener: (name, fn) => {
     if (listeners.get(name) === fn) listeners.delete(name);
@@ -98,10 +101,13 @@ const doc = {
   },
 };
 win.document = doc;
-globalThis.Zotero = {
+const Zotero = (globalThis.Zotero = {
   getMainWindow: () => win,
-  Prefs: { get: () => undefined },
-};
+  Prefs: {
+    get: (key) => (key.endsWith("ctrlClickTranslate") ? true : undefined),
+  },
+});
+globalThis.Components = { utils: { isDeadWrapper: () => false } };
 globalThis.addon = {
   data: {
     locale: { current: { formatMessagesSync: ([{ id }]) => [{ value: id }] } },
@@ -191,10 +197,14 @@ console.log(
 );
 
 let translateCalls = 0;
-abstractCard.translate = async (text) => {
-  translateCalls++;
-  assert.equal(text, copied);
-  return "背景：需要。方法：试验。结果：P<0.001。结论：随访。";
+Zotero.PDFTranslate = {
+  api: {
+    translate: async (text) => {
+      translateCalls++;
+      assert.equal(text, copied);
+      return "背景：需要。方法：试验。结果：P<0.001。结论：随访。";
+    },
+  },
 };
 await abstractCard.toggleTranslation(body);
 assert.equal(body.dataset.showTranslation, "true");
@@ -211,16 +221,18 @@ console.log(
   "PASS translation receives paragraph breaks and toggles back with structure intact",
 );
 
+clearPopupTranslations();
 delete body.dataset.translatedText;
 let resolveTranslation;
 let pendingCalls = 0;
-abstractCard.translate = () => {
+Zotero.PDFTranslate.api.translate = () => {
   pendingCalls++;
   return new Promise((resolve) => {
     resolveTranslation = resolve;
   });
 };
 const pending = abstractCard.toggleTranslation(body);
+await new Promise((resolve) => setTimeout(resolve, 5));
 assert.equal(body.dataset.translating, "true");
 const replacement = abstractDoc.createElementNS(
   "http://www.w3.org/1999/xhtml",
@@ -232,6 +244,7 @@ replacement.replaceChildren = body.replaceChildren;
 abstractDoc.documentElement.replaceChild(replacement, body);
 abstractCard.container = { querySelector: () => replacement };
 abstractCard.renderText(replacement, source);
+abstractCard.restoreTranslation(replacement);
 await abstractCard.toggleTranslation(replacement);
 assert.equal(
   pendingCalls,
@@ -247,6 +260,7 @@ console.log(
   "PASS pending translation follows a metadata refresh of the same abstract without a duplicate request",
 );
 
+clearPopupTranslations();
 replacement.dataset.showTranslation = "false";
 delete replacement.dataset.translatedText;
 abstractCard.renderText(replacement, source);
@@ -254,6 +268,7 @@ Object.defineProperty(replacement, "classList", {
   value: { contains: (name) => name === "abstract" },
 });
 const stale = abstractCard.toggleTranslation(replacement);
+await new Promise((resolve) => setTimeout(resolve, 5));
 const changed = abstractDoc.createElementNS(
   "http://www.w3.org/1999/xhtml",
   "div",
@@ -284,4 +299,67 @@ assert.equal(abstractCard.readableText(body), citation);
 console.log(
   "PASS citation fallback keeps original text without abstract section formatting",
 );
-console.log("7 view regressions passed");
+// A new card/DOM restores the user's translated view without a second click.
+clearPopupTranslations();
+let revisitCalls = 0;
+Zotero.PDFTranslate.api.translate = async () => {
+  revisitCalls++;
+  return "背景：缓存。方法：复用。结果：立即显示。结论：保留。";
+};
+const makeBody = () => {
+  const node = abstractDoc.createElementNS(
+    "http://www.w3.org/1999/xhtml",
+    "div",
+  );
+  node.dataset = { contentKind: "abstract", sourceText: source };
+  node.closest = body.closest;
+  node.replaceChildren = body.replaceChildren;
+  abstractDoc.documentElement.appendChild(node);
+  return node;
+};
+const firstBody = makeBody();
+const firstCard = new PopupCard();
+firstCard.renderText(firstBody, source);
+await firstCard.toggleTranslation(firstBody);
+abstractDoc.documentElement.removeChild(firstBody);
+const secondBody = makeBody();
+const secondCard = new PopupCard();
+secondCard.renderText(secondBody, source);
+secondCard.restoreTranslation(secondBody);
+assert.equal(secondBody.dataset.showTranslation, "true");
+assert.ok(secondBody.textContent.includes("立即显示"));
+assert.equal(revisitCalls, 1);
+await secondCard.toggleTranslation(secondBody);
+const thirdBody = makeBody();
+const thirdCard = new PopupCard();
+thirdCard.renderText(thirdBody, source);
+thirdCard.restoreTranslation(thirdBody);
+assert.equal(thirdBody.dataset.showTranslation, "false");
+assert.equal(thirdCard.readableText(thirdBody), copied);
+assert.equal(revisitCalls, 1);
+console.log(
+  "PASS new cards restore the explicitly chosen translation/original view without requests",
+);
+clearPopupTranslations();
+let finishRemoved;
+Zotero.PDFTranslate.api.translate = () =>
+  new Promise((resolve) => {
+    finishRemoved = resolve;
+  });
+const removedBody = makeBody();
+const removedCard = new PopupCard();
+removedCard.renderText(removedBody, source);
+const removedTask = removedCard.toggleTranslation(removedBody);
+await new Promise((resolve) => setTimeout(resolve, 5));
+assert.equal(removedBody.dataset.translating, "true");
+Zotero.PDFTranslate = undefined;
+finishRemoved("Stale provider text.");
+await removedTask;
+assert.equal(removedBody.dataset.translating, "false");
+assert.equal(removedBody.dataset.showTranslation, "false");
+assert.equal(removedBody.dataset.displayText, source);
+console.log(
+  "PASS removing the translation provider clears busy state and preserves original content",
+);
+clearPopupTranslations();
+console.log("9 view regressions passed");

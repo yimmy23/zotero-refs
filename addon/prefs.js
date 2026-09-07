@@ -24,7 +24,7 @@ pref("DOIInfoIndex", 0);
 pref("PMIDInfoIndex", 0);
 pref("TitleInfoIndex", 0);
 
-// PDF reader citation links
+// Optional Alt/Option+click split navigation; ordinary clicks stay native.
 pref("clickLink", true);
 pref("clickLinkCmd", "splitHorizontally");
 

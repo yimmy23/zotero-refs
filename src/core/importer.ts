@@ -4,6 +4,8 @@ import type { RefItem } from "./types";
 import { getString } from "../utils/locale";
 import { resolveDOIByTitle, sources } from "../sources";
 import { importCNKIItem, searchCNKI } from "../sources/cnki";
+import { parseAuthorName } from "./authorNames";
+import { itemStateKey } from "./storage";
 
 /**
  * Import references into the library and manage bidirectional
@@ -77,20 +79,8 @@ export async function createItemFromInfo(
   const creators: any[] = [];
   for (const name of info.authors || []) {
     if (!name) continue;
-    if (isChinese(name)) {
-      creators.push({
-        creatorType: "author",
-        lastName: name,
-        fieldMode: 1,
-      });
-    } else {
-      const parts = name.trim().split(/\s+/);
-      creators.push({
-        creatorType: "author",
-        firstName: parts.slice(0, -1).join(" "),
-        lastName: parts.slice(-1)[0],
-      });
-    }
+    const parsed = parseAuthorName(name);
+    if (parsed) creators.push({ creatorType: "author", ...parsed });
   }
   if (creators.length) item.setCreators(creators);
   for (const collectionID of collections) {
@@ -235,14 +225,23 @@ export async function importAll(
 ): Promise<{ ok: number; fail: number; stopped: number }> {
   let ok = 0;
   let fail = 0;
+  const identity = itemStateKey(hostItem);
+  const stopped = () =>
+    shouldStop?.() || hostItem.deleted || itemStateKey(hostItem) !== identity;
   for (let i = 0; i < refs.length; i++) {
-    if (shouldStop?.()) {
+    if (stopped()) {
       return { ok, fail, stopped: refs.length - i };
     }
     const ref = refs[i];
     const label = ref.title || ref.text || `#${i + 1}`;
     try {
       const refItem = await importReference(hostItem, ref, collections);
+      // A translator may finish after cancellation or after the host record
+      // was edited into another paper. Keep its newly created library item,
+      // but never attach the old bibliography to the changed host.
+      if (stopped()) {
+        return { ok, fail, stopped: refs.length - i };
+      }
       if (refItem) {
         if (!isRelated(hostItem, refItem)) {
           await addRelation(hostItem, refItem);

@@ -2,7 +2,7 @@ import { createSearch, actionButton, setListMessage } from "./controls";
 import { config } from "../../package.json";
 import { getLocaleID, getString } from "../utils/locale";
 import { getPref } from "../utils/prefs";
-import { itemCacheKey } from "../core/storage";
+import { itemStateKey } from "../core/storage";
 import type { Identifiers, RefItem } from "../core/types";
 import { getRelatedByAPI } from "../sources";
 import { hostIdentifiers, normalizeTitle, isHttpUrl } from "../core/text";
@@ -124,9 +124,13 @@ export function registerRelatedSection() {
         reload.disabled = !ids;
         if (!refs.length) setListMessage(list, getString("related-empty"));
         if (!ids) return;
-        const cacheKey = itemCacheKey(item);
+        const cacheKey = itemStateKey(item);
+        const current = () =>
+          list.isConnected &&
+          itemStateKey(item) === cacheKey &&
+          addon.data.alive;
         const paint = (recommended: RefItem[]) => {
-          if (!list.isConnected) return;
+          if (!current()) return;
           refs.splice(0, refs.length, ...zoteroRelated(item));
           list.textContent = "";
           const seen = new Set<string>();
@@ -157,7 +161,7 @@ export function registerRelatedSection() {
         };
         let loading = false;
         const load = async (useCache: boolean) => {
-          if (loading || !list.isConnected) return;
+          if (loading || !current()) return;
           loading = true;
           reload.disabled = true;
           list.setAttribute("aria-busy", "true");
@@ -166,6 +170,7 @@ export function registerRelatedSection() {
             const fetched =
               (useCache ? cache.get(cacheKey) : undefined) ??
               (await getRelatedByAPI(ids, 20));
+            if (!current()) return;
             if (fetched) {
               if (cache.size >= 150) {
                 const oldest = cache.keys().next().value;
@@ -173,16 +178,18 @@ export function registerRelatedSection() {
               }
               cache.set(cacheKey, fetched);
               paint(fetched);
-            } else if (!refs.length && list.isConnected)
+            } else if (!refs.length && current())
               setListMessage(list, getString("panel-load-failed"));
           } catch (error) {
             ztoolkit.log("[related] fetch failed", error);
-            if (!refs.length && list.isConnected)
+            if (!refs.length && current())
               setListMessage(list, getString("panel-load-failed"));
           } finally {
             loading = false;
-            reload.disabled = false;
-            list.setAttribute("aria-busy", "false");
+            if (current()) {
+              reload.disabled = false;
+              list.setAttribute("aria-busy", "false");
+            }
           }
         };
         reload.addEventListener("click", () => {
@@ -199,5 +206,12 @@ export function registerRelatedSection() {
 
 export function invalidateRelated(stateKeys?: string[]) {
   if (!stateKeys) cache.clear();
-  else for (const key of stateKeys) cache.delete(key);
+  else
+    for (const key of cache.keys())
+      if (
+        stateKeys.some(
+          (stateKey) => key === stateKey || key.startsWith(`${stateKey}@`),
+        )
+      )
+        cache.delete(key);
 }

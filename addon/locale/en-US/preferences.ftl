@@ -22,7 +22,7 @@ pref-ctrlClickTranslate =
 
 pref-group-reader = PDF Reader Links
 pref-clickLink =
-    .label = Open in-text jump links (figures, equations) in a split view
+    .label = Alt / Option+click a citation or internal link to open it in a split view
 pref-clickLinkCmd = Split direction
 pref-split-horizontally =
     .label = Horizontal
@@ -63,7 +63,7 @@ pref-list-intro = Control automatic loading and reference-list readability.
 pref-types-hint = Use Zotero type names, for example: book, letter, note, thesis.
 pref-opacity-hint = Lower values dim papers outside your library. Use 1 for full contrast.
 pref-popup-intro = Preview metadata from reference rows and graph nodes. Delays are in milliseconds.
-pref-reader-intro = Keep your reading position while following links. Citation hover previews remain native to Zotero.
+pref-reader-intro = Click normally to jump within the PDF. Hold Alt / Option while clicking to keep your reading position and open the destination in a split view. Citation hover previews remain native to Zotero.
 pref-discovery-intro = Choose which discovery sections load and how much they show.
 pref-group-cache = Local cache
 pref-cache-intro = Reuse saved results to load papers faster and reduce repeated requests.

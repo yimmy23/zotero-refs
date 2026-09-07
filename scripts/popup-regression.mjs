@@ -28,10 +28,16 @@ const library = (info) => ({ info, kind: "library" });
 function environment() {
   const errors = [];
   const sources = { according: "DOI", thunks: [] };
+  const abstracts = {
+    cachedAbstract: () => null,
+    fetchAbstract: async () => null,
+  };
   const items = new Map();
   const selected = [];
   const launched = [];
   const libraryIndex = { match: async () => undefined };
+  const importer = {};
+  const isRelated = (item, other) => item.relatedItems.includes(other.key);
   const Zotero = {
     locale: "en-US",
     Items: { get: (id) => items.get(id) },
@@ -66,6 +72,7 @@ function environment() {
   const globals = {
     Zotero,
     ztoolkit,
+    addon: { data: { alive: true } },
     URL,
     PathUtils: { join: path.join },
     IOUtils: { exists: async () => false },
@@ -96,13 +103,20 @@ function environment() {
     "./types": types,
   });
   const windowTools = {
-    setTimeout: () => 1,
+    setTimeout: (callback) => {
+      globalThis.queueMicrotask(callback);
+      return 1;
+    },
     clearTimeout: () => {},
     getWin: () => ({
       Zotero_Tabs: { select: () => {} },
       ZoteroPane: { selectItem: (id) => selected.push(id) },
     }),
   };
+  const storage = load("src/core/storage.ts", {
+    "./text": text,
+    "../utils/window": windowTools,
+  });
   const rows = (extra = "") =>
     load(
       "src/ui/rows.ts",
@@ -112,11 +126,13 @@ function environment() {
         "../utils/locale": { getString },
         "../utils/window": windowTools,
         "../core/text": text,
-        "../core/libmatch": { libraryIndex },
-        "../core/importer": {},
+        "../core/libmatch": { libraryIndex, isRelated },
+        "../core/importer": importer,
+        "../core/storage": storage,
         "../core/types": types,
         "../core/popupMetadata": metadata,
         "../sources": { infoCandidates: () => sources },
+        "../sources/abstract": abstracts,
         "../sources/cnki": {},
         "./popup": { PopupCard },
       },
@@ -129,6 +145,7 @@ function environment() {
     metadata,
     rows,
     sources,
+    abstracts,
     items,
     errors,
     windowTools,
@@ -136,6 +153,12 @@ function environment() {
     selected,
     launched,
     libraryIndex,
+    importer,
+    isRelated,
+    storage,
+    Zotero,
+    ztoolkit,
+    addon: globals.addon,
   };
 }
 
@@ -647,6 +670,336 @@ test("OpenAlex keeps explicit co-corresponding flags and never guesses from last
   assert.deepEqual(result.correspondingAuthors, ["First", "Middle"]);
   assert.equal(result.firstAuthors, undefined);
   assert.deepEqual(result.authors, ["First", "Middle", "Last"]);
+});
+
+test("missing abstract enrichment is cached across closed and reopened cards", async () => {
+  const env = environment();
+  let finish,
+    calls = 0;
+  env.abstracts.fetchAbstract = () => {
+    calls++;
+    return new Promise((resolve) => {
+      finish = resolve;
+    });
+  };
+  const { showRefPopup } = env.rows();
+  const ref = makeRef("pdf", { text: "Synthetic citation without abstract." });
+  const first = showRefPopup(ref, {}, "left");
+  assert.equal(first.last.details.contentKind, "citation");
+  first.clear();
+  finish(
+    makeRef("europepmc", {
+      abstract:
+        "A verified synthetic abstract returned after leaving its card.",
+    }),
+  );
+  await tick();
+  const next = showRefPopup(ref, {}, "left");
+  assert.equal(next.last.details.contentKind, "abstract");
+  assert.match(next.last.content, /verified synthetic abstract/);
+  assert.equal(calls, 1);
+});
+
+test("missing abstract fallback skips existing abstracts and rejects a different DOI", async () => {
+  const env = environment();
+  let calls = 0;
+  env.abstracts.fetchAbstract = async () => {
+    calls++;
+    return makeRef("europepmc", {
+      identifiers: { DOI: "10.5555/wrong" },
+      abstract: "Wrong paper.",
+    });
+  };
+  const { showRefPopup } = env.rows();
+  showRefPopup(
+    makeRef("crossref", { abstract: "Already supplied." }),
+    {},
+    "left",
+  );
+  await tick();
+  assert.equal(calls, 0);
+  const card = showRefPopup(
+    makeRef("pdf", { text: "Original citation." }),
+    {},
+    "left",
+  );
+  await tick();
+  assert.equal(calls, 1);
+  assert.equal(card.last.details.contentKind, "citation");
+});
+
+test("same-source abstract enrichment retains richer metadata in either arrival order", async () => {
+  for (const abstractFirst of [true, false]) {
+    const env = environment();
+    let resolveAbstract, resolveSummary;
+    env.abstracts.fetchAbstract = () =>
+      new Promise((resolve) => {
+        resolveAbstract = resolve;
+      });
+    env.sources.thunks = [
+      () =>
+        new Promise((resolve) => {
+          resolveSummary = resolve;
+        }),
+    ];
+    const { showRefPopup } = env.rows();
+    const card = showRefPopup(makeRef(), {}, "left");
+    await tick();
+    const summary = makeRef("pubmed", {
+      primaryVenue: "Rich Journal",
+      publishDate: "2024-02-10",
+      correspondingAuthors: ["C. Example"],
+    });
+    const abstract = {
+      identifiers: { DOI: "10.5555/synthetic" },
+      authors: [],
+      source: "pubmed",
+      abstract: "Verified abstract.",
+    };
+    if (abstractFirst) resolveAbstract(abstract);
+    else resolveSummary(summary);
+    await tick();
+    if (abstractFirst) resolveSummary(summary);
+    else resolveAbstract(abstract);
+    await tick();
+    assert.equal(card.last.content, "Verified abstract.");
+    assert.match(card.last.details.venue, /Rich Journal/);
+    assert.deepEqual(card.last.details.correspondingAuthors, ["C. Example"]);
+  }
+});
+
+test("title-only abstract lookup retries when a source supplies the first author", async () => {
+  const env = environment();
+  env.sources.according = "Title";
+  const base = makeRef("pdf", {
+    identifiers: {},
+    authors: [],
+    year: "2024",
+    text: "Original citation.",
+  });
+  let calls = 0;
+  env.abstracts.fetchAbstract = async (ref) => {
+    calls++;
+    return ref.authors.length
+      ? {
+          ...ref,
+          source: "europepmc",
+          abstract: "Verified title-only abstract.",
+        }
+      : null;
+  };
+  env.sources.thunks = [
+    async () => ({ ...base, source: "crossref", authors: ["A. Synthetic"] }),
+  ];
+  const card = env.rows().showRefPopup(base, {}, "left");
+  await tick();
+  assert.equal(calls, 2);
+  assert.equal(card.last.content, "Verified title-only abstract.");
+});
+
+test("same-source refresh preserves compatible full names in either order", async () => {
+  for (const fullFirst of [true, false]) {
+    const env = environment();
+    let resolveAbstract, resolveSummary;
+    env.abstracts.fetchAbstract = () =>
+      new Promise((resolve) => {
+        resolveAbstract = resolve;
+      });
+    env.sources.thunks = [
+      () =>
+        new Promise((resolve) => {
+          resolveSummary = resolve;
+        }),
+    ];
+    const card = env.rows().showRefPopup(makeRef(), {}, "left");
+    await tick();
+    const full = makeRef("pubmed", {
+      authors: ["Paul J Carter", "Peter D Senter"],
+      abstract: "Verified full article abstract.",
+    });
+    const summary = makeRef("pubmed", { authors: ["Carter PJ", "Senter PD"] });
+    if (fullFirst) resolveAbstract(full);
+    else resolveSummary(summary);
+    await tick();
+    if (fullFirst) resolveSummary(summary);
+    else resolveAbstract(full);
+    await tick();
+    assert.deepEqual(card.last.details.firstAuthors, ["Paul J Carter"]);
+    assert.deepEqual(card.last.details.lastAuthors, ["Peter D Senter"]);
+  }
+});
+
+test("same-source byline updates retain their own completeness and reject incompatible name expansion", () => {
+  const { mergePopupSource: merge } = environment().metadata;
+  const partial = makeRef("pubmed", {
+    authors: ["Carter PJ"],
+    authorsTruncated: true,
+  });
+  const complete = makeRef("pubmed", {
+    authors: ["Paul J Carter", "Peter D Senter"],
+  });
+  const result = merge(partial, complete);
+  assert.equal(result.authorsTruncated, undefined);
+  assert.deepEqual(result.authors, complete.authors);
+  assert.deepEqual(merge(complete, partial).authors, complete.authors);
+  assert.deepEqual(
+    merge(complete, { ...partial, authorsTruncated: undefined }).authors,
+    complete.authors,
+  );
+  const conflict = makeRef("pubmed", { authors: ["Carter Q", "Senter PD"] });
+  assert.deepEqual(merge(complete, conflict).authors, conflict.authors);
+});
+
+function importFixture() {
+  const env = environment();
+  let release, entered;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const item = (id) => ({
+    id,
+    key: `ITEM${id}`,
+    libraryID: 1,
+    relatedItems: [],
+    fields: {
+      DOI: `10.5555/paper${id}`,
+      title: `Synthetic paper ${id}`,
+      date: "2024",
+    },
+    getField(key) {
+      return this.fields[key] || "";
+    },
+    getCollections: () => [],
+    addRelatedItem(other) {
+      this.relatedItems.push(other.key);
+    },
+    saves: 0,
+    async saveTx() {
+      this.saves++;
+    },
+  });
+  const host = item(1),
+    imported = item(2);
+  const windows = [];
+  env.ztoolkit.ProgressWindow = class {
+    constructor() {
+      windows.push(this);
+    }
+    createLine() {
+      return this;
+    }
+    show() {
+      return this;
+    }
+    changeLine() {}
+    changeHeadline(value) {
+      this.headline = value;
+    }
+    startCloseTimer() {}
+    close() {
+      this.closed = true;
+    }
+  };
+  env.Zotero.Translate = {
+    Search: class {
+      setIdentifier() {}
+      getTranslators = async () => [{}];
+      setTranslator() {}
+      async translate() {
+        entered();
+        await gate;
+        return [imported];
+      }
+    },
+  };
+  Object.assign(
+    env.importer,
+    env.load("src/core/importer.ts", {
+      "./text": env.text,
+      "./libmatch": {
+        libraryIndex: env.libraryIndex,
+        isRelated: env.isRelated,
+      },
+      "./storage": env.storage,
+      "./authorNames": env.load("src/core/authorNames.ts", {
+        "./text": env.text,
+      }),
+      "../utils/locale": { getString: env.getString },
+      "../sources": {},
+      "../sources/cnki": {},
+    }),
+  );
+  const { addReference } = env.rows("\nexport { addReference };\n");
+  const action = { style: {}, setAttribute() {}, classList: { toggle() {} } };
+  const row = { isConnected: true, style: { setProperty() {} } };
+  const ref = makeRef();
+  return {
+    host,
+    imported,
+    windows,
+    ref,
+    started,
+    release,
+    addon: env.addon,
+    run: () => addReference({ hostItem: host }, ref, action, row),
+  };
+}
+
+test("single-row imports do not associate a pending reference with an edited or deleted host", async () => {
+  for (const mutate of [
+    (host) => {
+      host.fields.DOI = "10.5555/changed";
+    },
+    (host) => {
+      host.fields.title = "Another paper";
+    },
+    (host) => {
+      host.deleted = true;
+    },
+  ]) {
+    const f = importFixture();
+    const pending = f.run();
+    await f.started;
+    mutate(f.host);
+    f.release();
+    await pending;
+    assert.deepEqual(f.host.relatedItems, []);
+    assert.deepEqual(f.imported.relatedItems, []);
+    assert.equal(f.host.saves, 0);
+    assert.equal(f.ref.libItemID, undefined);
+    assert.equal(f.windows[0].closed, true);
+  }
+});
+
+test("single-row imports still associate both directions when host identity stays unchanged", async () => {
+  const f = importFixture();
+  const pending = f.run();
+  await f.started;
+  f.host.fields.abstractNote = "An unrelated metadata edit";
+  f.release();
+  await pending;
+  assert.deepEqual(f.host.relatedItems, ["ITEM2"]);
+  assert.deepEqual(f.imported.relatedItems, ["ITEM1"]);
+  assert.equal(f.host.saves, 1);
+  assert.equal(f.imported.saves, 1);
+  assert.equal(f.ref.libItemID, 2);
+  assert.equal(f.windows[0].headline, "progress-import-done");
+});
+
+test("single-row imports finishing after shutdown do not create relations", async () => {
+  const f = importFixture();
+  const pending = f.run();
+  await f.started;
+  f.addon.data.alive = false;
+  f.release();
+  await pending;
+  assert.deepEqual(f.host.relatedItems, []);
+  assert.deepEqual(f.imported.relatedItems, []);
+  assert.equal(f.ref.libItemID, undefined);
+  assert.equal(f.windows[0].closed, true);
 });
 
 let failed = 0;

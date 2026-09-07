@@ -1,5 +1,6 @@
 import { identifiersConflict, normalizeTitle, refTextToInfo } from "./text";
 import type { RefItem } from "./types";
+import { authorFamilyName } from "./authorNames";
 
 /**
  * Fuse the two readings of a bibliography into the single list the panel
@@ -70,8 +71,7 @@ const normDOI = (d?: string) =>
     .replace(/^https?:\/\/(dx\.)?doi\.org\//, "")
     .trim();
 
-const surname = (author?: string) =>
-  normalizeTitle((author || "").split(/[,\s]/)[0]);
+const surname = (author?: string) => normalizeTitle(authorFamilyName(author));
 
 /** A parsed title must agree completely; raw-text fallback needs an author. */
 function titleEvidence(pdf: RefItem, remote: RefItem): boolean {
@@ -116,6 +116,9 @@ function enrich(p: RefItem, a: RefItem): RefItem {
     identifiers: { ...a.identifiers, ...p.identifiers },
     title: a.title || p.title,
     authors: a.authors?.length ? a.authors : p.authors,
+    authorsTruncated: a.authors?.length
+      ? a.authorsTruncated
+      : p.authorsTruncated,
     firstAuthors: a.firstAuthors?.length ? a.firstAuthors : p.firstAuthors,
     correspondingAuthors: a.correspondingAuthors?.length
       ? a.correspondingAuthors

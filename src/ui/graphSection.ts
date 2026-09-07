@@ -3,7 +3,7 @@ import { config } from "../../package.json";
 import { getLocaleID, getString } from "../utils/locale";
 import { getNumPref, getPref } from "../utils/prefs";
 import { clearTimeout, getWin, setTimeout } from "../utils/window";
-import { itemCacheKey } from "../core/storage";
+import { itemStateKey } from "../core/storage";
 import type { GraphData, GraphNode, Identifiers, RefItem } from "../core/types";
 import { buildGraph } from "../graph/build";
 import { GraphView } from "../graph/view";
@@ -16,7 +16,7 @@ import {
   isHttpUrl,
 } from "../core/text";
 import { addRelation, importReference } from "../core/importer";
-import { isRelated } from "../core/libmatch";
+import { isRelated, libraryIndex } from "../core/libmatch";
 import { getCurrentPopup, showRefPopup } from "./rows";
 import { guard, guardAsync } from "../utils/guard";
 
@@ -43,11 +43,22 @@ const centers = new WeakMap<HTMLElement, GraphCenter>();
 const requests = new WeakMap<HTMLElement, number>();
 let requestSequence = 0;
 
-function nodeClicked(node: GraphNode) {
-  if (node.ref.libItemID) {
+async function nodeClicked(
+  node: GraphNode,
+  libraryID: number,
+  current: () => boolean,
+) {
+  if (!current()) return;
+  try {
     const win = getWin();
+    // A cached binding can now describe another work, or a deleted item.
+    // Resolve the reference again in the graph's own library before selecting.
+    const local = await libraryIndex.match(node.ref, libraryID);
+    if (!local || !current()) return;
     win.Zotero_Tabs.select("zotero-pane");
-    win.ZoteroPane.selectItem(node.ref.libItemID);
+    win.ZoteroPane.selectItem(local.id);
+  } catch (error) {
+    ztoolkit.log("[graph] locate failed", error);
   }
 }
 
@@ -64,6 +75,12 @@ async function importNode(
   node: GraphNode,
   view: GraphView | undefined,
 ) {
+  const identity = itemStateKey(hostItem);
+  const current = () =>
+    !hostItem.deleted &&
+    itemStateKey(hostItem) === identity &&
+    addon.data.alive;
+  if (!current()) return;
   const label = collapseText(node.ref.title || node.ref.text || "");
   const popupWin = new ztoolkit.ProgressWindow(getString("graph-menu-import"), {
     closeTime: -1,
@@ -72,21 +89,40 @@ async function importNode(
     .createLine({ text: label, type: "default", progress: 10 })
     .show();
   try {
-    const refItem = await importReference(hostItem, node.ref, undefined, (m) =>
-      popupWin.changeLine({ text: m }),
+    const refItem = await importReference(
+      hostItem,
+      node.ref,
+      undefined,
+      (m) => {
+        if (current()) popupWin.changeLine({ text: m });
+      },
     );
+    // The library import can outlive an edit/deletion of the host. Keep the
+    // successfully imported item, but never link it to a different paper.
+    if (!current()) {
+      popupWin.close();
+      return;
+    }
     if (!refItem) {
       popupWin.changeLine({ text: `✗ ${label}`, type: "fail", progress: 100 });
       popupWin.startCloseTimer(4000);
       return;
     }
     if (!isRelated(hostItem, refItem)) await addRelation(hostItem, refItem);
+    if (!current()) {
+      popupWin.close();
+      return;
+    }
     node.ref.libItemID = refItem.id;
     node.inLibrary = true;
     view?.setInLibrary(node.id, true);
     popupWin.changeLine({ text: `✓ ${label}`, type: "success", progress: 100 });
     popupWin.startCloseTimer(3000);
   } catch (e) {
+    if (!current()) {
+      popupWin.close();
+      return;
+    }
     ztoolkit.log("[graph] import failed", e);
     popupWin.changeLine({ text: `✗ ${label}`, type: "fail", progress: 100 });
     popupWin.startCloseTimer(4000);
@@ -127,6 +163,13 @@ function showNodeMenu(
   screenX: number,
   screenY: number,
 ) {
+  const generation = requests.get(body);
+  const stateKey = itemStateKey(item);
+  const current = () =>
+    body.isConnected &&
+    requests.get(body) === generation &&
+    itemStateKey(item) === stateKey &&
+    addon.data.alive;
   const win = getWin();
   const doc = win.document;
   const id = `${config.addonRef}-graph-node-menu`;
@@ -141,7 +184,9 @@ function showNodeMenu(
     const mi = doc.createXULElement("menuitem") as any;
     mi.setAttribute("label", label);
     if (disabled) mi.setAttribute("disabled", "true");
-    mi.addEventListener("command", () => guard("graph.menu", run)());
+    mi.addEventListener("command", () => {
+      if (current()) guard("graph.menu", run)();
+    });
     popup.appendChild(mi);
     return mi;
   };
@@ -153,7 +198,10 @@ function showNodeMenu(
   const view = views.get(body);
 
   if (ref.libItemID) {
-    add(getString("graph-menu-locate"), () => nodeClicked(node));
+    add(
+      getString("graph-menu-locate"),
+      () => void nodeClicked(node, item.libraryID, current),
+    );
   } else {
     add(
       getString("graph-menu-import"),
@@ -226,6 +274,12 @@ function makeHoverHandler(
 ): GraphHandlers["onHover"] {
   let hoverTimer: number | undefined;
   const generation = requests.get(body);
+  const stateKey = itemStateKey(item);
+  const current = () =>
+    body.isConnected &&
+    requests.get(body) === generation &&
+    itemStateKey(item) === stateKey &&
+    addon.data.alive;
   return (node, rect) => {
     const tip = body.querySelector<HTMLElement>(".references-graph-tip");
     // never toggle display: a layout jump under the canvas while the
@@ -254,15 +308,12 @@ function makeHoverHandler(
     hoverTimer = setTimeout(
       () => {
         hoverTimer = undefined;
-        if (
-          !body.isConnected ||
-          requests.get(body) !== generation ||
-          !addon.data.alive
-        )
-          return;
+        if (!current()) return;
         const view = views.get(body);
         showRefPopup(node.ref, rect, "left", undefined, {
-          onImport: () => void importNode(item, node, view),
+          onImport: () => {
+            if (current()) void importNode(item, node, view);
+          },
         });
       },
       getNumPref("graphPopupDelay", 550),
@@ -282,10 +333,12 @@ async function renderGraph(
   const status = body.querySelector<HTMLElement>(".references-graph-status");
   const home = body.querySelector<HTMLElement>(".references-graph-home");
   if (!container || !status) return;
+  const stateKey = itemStateKey(item);
   const generation = ++requestSequence;
   requests.set(body, generation);
   const current = () =>
     container.isConnected &&
+    itemStateKey(item) === stateKey &&
     requests.get(body) === generation &&
     addon.data.alive;
   views.get(body)?.destroy();
@@ -298,7 +351,7 @@ async function renderGraph(
     label: "",
   };
   const cacheKey =
-    itemCacheKey(item) + (center.key ? `#${center.key}` : "") + `/${maxNodes}`;
+    stateKey + (center.key ? `#${center.key}` : "") + `/${maxNodes}`;
   if (home) {
     home.style.display = center.key ? "" : "none";
     home.textContent = center.key ? `↩ ${getString("graph-back-home")}` : "";
@@ -347,7 +400,7 @@ async function renderGraph(
     }
     if (!view) {
       view = new GraphView(container, {
-        onSelect: nodeClicked,
+        onSelect: (node) => void nodeClicked(node, item.libraryID, current),
         onOpen: nodeOpened,
         onHover: makeHoverHandler(body, item),
         onContext: (node, sx, sy) =>
@@ -496,7 +549,9 @@ export function invalidateGraph(stateKeys?: string[]) {
       if (
         stateKeys.some(
           (stateKey) =>
-            key.startsWith(`${stateKey}/`) || key.startsWith(`${stateKey}#`),
+            key.startsWith(`${stateKey}@`) ||
+            key.startsWith(`${stateKey}/`) ||
+            key.startsWith(`${stateKey}#`),
         )
       )
         dataCache.delete(key);

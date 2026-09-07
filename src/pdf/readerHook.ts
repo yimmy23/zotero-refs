@@ -2,8 +2,8 @@ import { ReaderLinks } from "./readerLinks";
 import { clearTimeout, setTimeout } from "../utils/window";
 
 /**
- * Attaches the in-PDF citation-link click enhancement (split-view jump)
- * to every open reader.
+ * Attaches optional Alt/Option+click split-view navigation to every open
+ * reader. Ordinary link and citation clicks keep Zotero's native jump.
  *
  * Hover previews are left to Zotero's native citation popup (user
  * decision, 2026-08-25) — the plugin no longer wraps

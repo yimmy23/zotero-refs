@@ -16,6 +16,7 @@ import {
 import { destroyAllGraphViews } from "./graph/view";
 import { registerStyles, unregisterStyles } from "./ui/styles";
 import { closePopup } from "./ui/rows";
+import { clearPopupTranslations } from "./core/popupTranslation";
 import {
   registerItemMenus,
   registerWindowMenus,
@@ -117,6 +118,7 @@ async function onShutdown(): Promise<void> {
     notifierID = undefined;
   }
   closePopup();
+  clearPopupTranslations();
   destroyAllGraphViews();
   removeGraphMenus();
   unregisterItemMenus();

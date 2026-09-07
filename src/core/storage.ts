@@ -1,6 +1,6 @@
 import { config } from "../../package.json";
 import { setTimeout, clearTimeout } from "../utils/window";
-import { cleanText, isHttpUrl } from "./text";
+import { cleanText, hostIdentifiers, isHttpUrl } from "./text";
 import type { RefItem } from "./types";
 
 /**
@@ -34,6 +34,7 @@ function sanitizeRef(r: any): RefItem | null {
   const out: RefItem = {
     identifiers: ids,
     authors: authorNames(r.authors),
+    authorsTruncated: r.authorsTruncated === true ? true : undefined,
     firstAuthors: authorNames(r.firstAuthors),
     correspondingAuthors: authorNames(r.correspondingAuthors),
     // markup left by APIs in older caches ("<i>ALK</i>") is cleaned here too
@@ -87,6 +88,46 @@ export function itemCacheKey(item: Zotero.Item): string {
   return `${item.libraryID}/${item.key}`;
 }
 
+/** The fields that determine which paper's bibliography/API results are valid. */
+export function itemStateKey(item: Zotero.Item): string {
+  const field = (name: string) => {
+    try {
+      return String(item.getField(name as any) || "");
+    } catch {
+      return "";
+    }
+  };
+  let ids: Record<string, string | undefined> = {};
+  try {
+    ids = hostIdentifiers(item);
+  } catch {
+    /* unloaded fields produce a miss */
+  }
+  const identifiers = Object.entries(ids)
+    .filter(([, value]) => !!value)
+    .map(([key, value]) => [
+      key,
+      key === "DOI"
+        ? value!
+            .trim()
+            .toLowerCase()
+            .replace(/^https?:\/\/(?:dx\.)?doi\.org\//, "")
+        : key === "arXiv"
+          ? value!.trim().toLowerCase().replace(/v\d+$/, "")
+          : value!.trim(),
+    ])
+    .sort(([a], [b]) => a.localeCompare(b));
+  return `${itemCacheKey(item)}@${JSON.stringify([
+    identifiers,
+    // Preserve semantic punctuation (HER2+ versus HER2−); matching's looser
+    // title normalization is unsuitable for invalidating a host's results.
+    field("title").normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase(),
+    (field("year") || field("date")).match(/\d{4}/)?.[0] || "",
+    // CNKI retrieval can select a different paper solely from the item URL.
+    field("url").trim(),
+  ])}`;
+}
+
 /**
  * Bump to discard all previously persisted entries. v1 files (which had
  * no version marker) can hold DOIs backfilled from wrong library
@@ -99,13 +140,13 @@ const SCHEMA_VERSION = 2;
  * Zotero data directory. Writes are debounced.
  *
  * File layout: { v, items: { [libraryID/itemKey]:
- *   { [slot]: { t: epochMs, refs: RefItem[] } } } } — slots: "PDF" / "API"
+ *   { [slot]: { t: epochMs, identity: hostSnapshot, refs: RefItem[] } } } } — slots: "PDF" / "API"
  *   (raw fetch layers) and "FUSED" (the fused list the panel shows).
  */
 class RefStorage {
   private cache: Record<
     string,
-    Record<string, { t: number; refs: RefItem[] }>
+    Record<string, { t: number; identity?: string; refs: RefItem[] }>
   > = Object.create(null);
   private ready: Promise<void>;
   private writeTimer?: number;
@@ -154,6 +195,8 @@ class RefStorage {
             if (!refs.length) continue;
             (clean[key] ??= Object.create(null))[slot] = {
               t: Number(entry.t) || 0,
+              identity:
+                typeof entry.identity === "string" ? entry.identity : undefined,
               refs,
             };
           }
@@ -167,25 +210,35 @@ class RefStorage {
     }
   }
 
-  async get(item: Zotero.Item, slot: string): Promise<RefItem[] | undefined> {
+  async get(
+    item: Zotero.Item,
+    slot: string,
+    expectedStateKey = itemStateKey(item),
+  ): Promise<RefItem[] | undefined> {
     await this.ready;
-    // Rows enrich identifiers and library bindings in memory. Never let a
-    // cache-first render mutate the persistent snapshot through this getter.
-    return this.cache[itemCacheKey(item)]?.[slot]?.refs
-      .map(sanitizeRef)
-      .filter((ref): ref is RefItem => !!ref);
+    if (itemStateKey(item) !== expectedStateKey) return undefined;
+    const entry = this.cache[itemCacheKey(item)]?.[slot];
+    // Legacy entries have no provable host identity. Retain them on disk for
+    // recovery, but do not display or fuse them as this paper's references.
+    if (entry?.identity !== expectedStateKey) return undefined;
+    // Rows may enrich identifiers/bindings: never expose the stored snapshot.
+    return entry.refs.map(sanitizeRef).filter((ref): ref is RefItem => !!ref);
   }
 
-  async set(item: Zotero.Item, slot: string, refs: RefItem[]) {
+  async set(
+    item: Zotero.Item,
+    slot: string,
+    refs: RefItem[],
+    expectedStateKey = itemStateKey(item),
+  ) {
     await this.ready;
+    // A request started for A must not stamp its result as B after an edit.
+    if (itemStateKey(item) !== expectedStateKey) return;
     const itemKey = itemCacheKey(item);
-    // Strip runtime-only fields before persisting. identifiers must be
-    // deep-copied: the live rows keep mutating their identifiers object
-    // (e.g. DOI backfill on library match) after this snapshot is taken,
-    // and a shared reference would leak those mutations into the file.
     const clean = refs.map(sanitizeRef).filter((r): r is RefItem => !!r);
     (this.cache[itemKey] ??= Object.create(null))[slot] = {
       t: Date.now(),
+      identity: expectedStateKey,
       refs: clean,
     };
     this.evictIfNeeded();

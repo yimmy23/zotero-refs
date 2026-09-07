@@ -65,10 +65,16 @@ function readerFixture() {
   let clock = 0;
   const win = windowDouble();
   const primaryCalls = [],
-    secondaryCalls = [];
+    secondaryCalls = [],
+    primaryOptions = [],
+    primaryReceivers = [];
   const position = { pageIndex: 3, rects: [[1, 2, 3, 4]] };
   const nativePopup = () => {};
-  const original = (location) => primaryCalls.push(location);
+  const original = function (location, options) {
+    primaryOptions.push(options);
+    primaryReceivers.push(this);
+    return primaryCalls.push(location);
+  };
   const view = {
     _iframeWindow: win,
     navigate: original,
@@ -114,8 +120,13 @@ function readerFixture() {
     prefs,
     links,
     primaryCalls,
+    primaryOptions,
+    primaryReceivers,
     secondaryCalls,
     nativePopup,
+    advanceClock: (ms) => {
+      clock += ms;
+    },
   };
 }
 await check("attach is idempotent and preserves native hover", async () => {
@@ -160,29 +171,181 @@ await check("teardown preserves a later plugin wrapper", async () => {
   assert.equal(f.view.navigate, newer);
   assert.equal(f.win.count("unload"), 0);
 });
+for (const type of ["citation", "reference", "internal-link"]) {
+  for (const splitOpen of [false, true]) {
+    await check(
+      `ordinary ${type} click stays native with split ${splitOpen ? "open" : "closed"}`,
+      async () => {
+        const f = readerFixture();
+        let splitCalls = 0;
+        if (!splitOpen) f.internal._secondaryView = null;
+        f.internal.toggleHorizontalSplit = () => {
+          splitCalls++;
+          f.internal._secondaryView = f.secondary;
+        };
+        f.view._getSelectableOverlay = () =>
+          type === "internal-link"
+            ? { type, destinationPosition: f.position }
+            : { type, references: [{ position: f.position }] };
+        f.links.attach(f.reader);
+        await settle();
+        f.win.emit("pointerup", { button: 0 });
+        const result = f.view.navigate({ position: f.position });
+        // Native return value and jump must be preserved synchronously.
+        assert.equal(result, 1);
+        assert.equal(f.primaryCalls.length, 1);
+        await settle();
+        assert.equal(splitCalls, 0);
+        assert.equal(f.secondaryCalls.length, 0);
+      },
+    );
+  }
+}
 await check(
-  "only correlated primary-button clicks use split navigation",
+  "only explicit Alt/Option left-click uses existing split",
   async () => {
     const f = readerFixture();
     f.links.attach(f.reader);
     await settle();
+    f.win.emit("pointerup", { button: 0, altKey: true });
+    f.view.navigate({ position: JSON.parse(JSON.stringify(f.position)) });
+    await settle();
+    assert.equal(f.primaryCalls.length, 0);
+    assert.equal(f.secondaryCalls.length, 1);
+    // A gesture can authorize only one navigation.
     f.view.navigate({ position: f.position });
     assert.equal(f.primaryCalls.length, 1);
-    f.win.emit("pointerup", { button: 0 });
+  },
+);
+for (const direction of ["splitHorizontally", "splitVertically"]) {
+  await check(`explicit gesture opens ${direction}`, async () => {
+    const f = readerFixture();
+    f.prefs.clickLinkCmd = direction;
+    f.internal._secondaryView = null;
+    let opened = 0;
+    const method =
+      direction === "splitHorizontally"
+        ? "toggleHorizontalSplit"
+        : "toggleVerticalSplit";
+    f.internal[method] = (enabled) => {
+      assert.equal(enabled, true);
+      opened++;
+      f.internal._secondaryView = f.secondary;
+    };
+    f.links.attach(f.reader);
+    await settle();
+    f.win.emit("pointerup", { button: 0, altKey: true });
     f.view.navigate({ position: f.position });
     await settle();
-    assert.equal(f.primaryCalls.length, 1);
+    assert.equal(opened, 1);
     assert.equal(f.secondaryCalls.length, 1);
-    f.win.emit("pointerup", { button: 2 });
+    assert.equal(f.primaryCalls.length, 0);
+  });
+}
+await check(
+  "other modifiers and disabled split preference stay native",
+  async () => {
+    const f = readerFixture();
+    f.links.attach(f.reader);
+    await settle();
+    const gestures = [
+      { button: 0, ctrlKey: true },
+      { button: 0, metaKey: true },
+      { button: 0, shiftKey: true },
+      { button: 0, altKey: true, ctrlKey: true },
+      { button: 0, altKey: true, metaKey: true },
+      { button: 0, altKey: true, shiftKey: true },
+      { button: 1, altKey: true },
+      { button: 2, altKey: true },
+    ];
+    for (const event of gestures) {
+      f.win.emit("pointerup", event);
+      f.view.navigate({ position: f.position });
+    }
+    f.prefs.clickLink = false;
+    f.win.emit("pointerup", { button: 0, altKey: true });
+    f.view.navigate({ position: f.position });
+    assert.equal(f.primaryCalls.length, gestures.length + 1);
+    await settle();
+    assert.equal(f.secondaryCalls.length, 0);
+  },
+);
+await check(
+  "unrelated destination on same page consumes gesture without interception",
+  async () => {
+    const f = readerFixture();
+    f.links.attach(f.reader);
+    await settle();
+    f.win.emit("pointerup", { button: 0, altKey: true });
+    const unrelated = {
+      pageIndex: f.position.pageIndex,
+      rects: [[11, 22, 33, 44]],
+    };
+    f.view.navigate({ position: unrelated });
     f.view.navigate({ position: f.position });
     await settle();
     assert.equal(f.primaryCalls.length, 2);
-    f.prefs.clickLink = false;
-    f.win.emit("pointerup", { button: 0 });
-    f.view.navigate({ position: f.position });
-    assert.equal(f.primaryCalls.length, 3);
+    assert.equal(f.secondaryCalls.length, 0);
   },
 );
+await check(
+  "destination mutation after gesture cannot authorize a different jump",
+  async () => {
+    const f = readerFixture();
+    f.links.attach(f.reader);
+    await settle();
+    f.win.emit("pointerup", { button: 0, altKey: true });
+    f.position.rects[0][0] = 99;
+    f.view.navigate({ position: f.position });
+    assert.equal(f.primaryCalls.length, 1);
+    await settle();
+    assert.equal(f.secondaryCalls.length, 0);
+  },
+);
+await check("ordinary click clears an earlier explicit gesture", async () => {
+  const f = readerFixture();
+  f.links.attach(f.reader);
+  await settle();
+  f.win.emit("pointerup", { button: 0, altKey: true });
+  f.win.emit("pointerup", { button: 0 });
+  f.view.navigate({ position: f.position });
+  assert.equal(f.primaryCalls.length, 1);
+  await settle();
+  assert.equal(f.secondaryCalls.length, 0);
+});
+await check(
+  "expired gesture preserves native location, options and receiver",
+  async () => {
+    const f = readerFixture();
+    f.links.attach(f.reader);
+    await settle();
+    f.win.emit("pointerup", { button: 0, altKey: true });
+    f.advanceClock(301);
+    const location = { position: f.position };
+    const options = { skipHistory: true };
+    assert.equal(f.view.navigate(location, options), 1);
+    assert.equal(f.primaryCalls[0], location);
+    assert.equal(f.primaryOptions[0], options);
+    assert.equal(f.primaryReceivers[0], f.view);
+    await settle();
+    assert.equal(f.secondaryCalls.length, 0);
+  },
+);
+await check("later wrappers remain native after Refs teardown", async () => {
+  const f = readerFixture();
+  f.links.attach(f.reader);
+  await settle();
+  const refsWrap = f.view.navigate;
+  const newer = (...args) => refsWrap(...args);
+  f.view.navigate = newer;
+  f.win.emit("pointerup", { button: 0, altKey: true });
+  f.links.detachAll();
+  assert.equal(f.view.navigate, newer);
+  f.view.navigate({ position: f.position });
+  assert.equal(f.primaryCalls.length, 1);
+  await settle();
+  assert.equal(f.secondaryCalls.length, 0);
+});
 for (const failure of [
   "missing split API",
   "throwing split API",
@@ -206,7 +369,7 @@ for (const failure of [
     }
     f.links.attach(f.reader);
     await settle();
-    f.win.emit("pointerup", { button: 0 });
+    f.win.emit("pointerup", { button: 0, altKey: true });
     f.view.navigate({ position: f.position });
     for (let i = 0; i < 20; i++) await settle();
     assert.equal(f.primaryCalls.length, 1);
@@ -220,13 +383,46 @@ await check("pending split does not navigate after shutdown", async () => {
   f.internal.toggleHorizontalSplit = () => wait.promise;
   f.links.attach(f.reader);
   await settle();
-  f.win.emit("pointerup", { button: 0 });
+  f.win.emit("pointerup", { button: 0, altKey: true });
   f.view.navigate({ position: f.position });
   f.links.detachAll();
   wait.resolve();
   await settle();
   assert.equal(f.primaryCalls.length, 0);
   assert.equal(f.view.navigate, f.original);
+});
+await check(
+  "pending split cannot navigate a replaced reader view",
+  async () => {
+    const f = readerFixture();
+    const wait = deferred();
+    f.internal._secondaryView = null;
+    f.internal.toggleHorizontalSplit = () => wait.promise;
+    f.links.attach(f.reader);
+    await settle();
+    f.win.emit("pointerup", { button: 0, altKey: true });
+    f.view.navigate({ position: f.position });
+    f.internal._primaryView = { _iframeWindow: windowDouble(), navigate() {} };
+    f.internal._secondaryView = f.secondary;
+    wait.resolve();
+    await settle();
+    assert.equal(f.primaryCalls.length, 0);
+    assert.equal(f.secondaryCalls.length, 0);
+  },
+);
+await check("pending split fallback retains original options", async () => {
+  const f = readerFixture();
+  f.internal._secondaryView = null;
+  f.links.attach(f.reader);
+  await settle();
+  f.win.emit("pointerup", { button: 0, altKey: true });
+  const location = { position: f.position };
+  const options = { skipHistory: true };
+  f.view.navigate(location, options);
+  await settle();
+  assert.equal(f.primaryCalls[0], location);
+  assert.equal(f.primaryOptions[0], options);
+  assert.equal(f.primaryReceivers[0], f.view);
 });
 function hookFixture() {
   const wait = deferred();
@@ -306,6 +502,8 @@ function devFixture() {
         "../sources/openalex",
         "../sources/crossref",
         "../pdf/readerHook",
+        "../ui/rows",
+        "../sources/abstract",
       ].map((name) => [name, {}]),
     ),
     {

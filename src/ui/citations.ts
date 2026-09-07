@@ -2,7 +2,7 @@ import { createSearch, setListMessage } from "./controls";
 import { config } from "../../package.json";
 import { getLocaleID, getString } from "../utils/locale";
 import { getPref } from "../utils/prefs";
-import { itemCacheKey } from "../core/storage";
+import { itemStateKey } from "../core/storage";
 import { setTimeout } from "../utils/window";
 import type { Identifiers, RefItem } from "../core/types";
 import { getCitationsByAPI } from "../sources";
@@ -22,6 +22,7 @@ import type { RowContext } from "./rows";
  */
 
 interface CitationsState {
+  stateKey: string;
   refs: RefItem[];
   total?: number;
   nextOffset: number;
@@ -67,12 +68,14 @@ interface PanelDOM {
 }
 
 async function loadMore(item: Zotero.Item, state: CitationsState) {
-  if (state.loading || state.exhausted) return;
+  const current = () =>
+    itemStateKey(item) === state.stateKey && addon.data.alive;
+  if (!current() || state.loading || state.exhausted) return;
   const ids = idsOf(item);
   if (!ids) return;
   state.loading = true;
   for (const dom of state.doms) {
-    if (!dom.list.isConnected) {
+    if (!current() || !dom.list.isConnected) {
       state.doms.delete(dom);
       continue;
     }
@@ -90,6 +93,7 @@ async function loadMore(item: Zotero.Item, state: CitationsState) {
       pageSize,
       state.source,
     );
+    if (!current()) return;
     if (page === null) {
       // transient API failure — keep the button so the user can retry
       failed = true;
@@ -119,7 +123,7 @@ async function loadMore(item: Zotero.Item, state: CitationsState) {
       // may have been rebuilt while the request ran); every render paints
       // exactly state.refs.length rows, so `start` always lines up
       for (const live of state.doms) {
-        if (!live.list.isConnected) {
+        if (!current() || !live.list.isConnected) {
           state.doms.delete(live);
           continue;
         }
@@ -141,7 +145,7 @@ async function loadMore(item: Zotero.Item, state: CitationsState) {
   } finally {
     state.loading = false;
     for (const live of state.doms) {
-      if (!live.list.isConnected) {
+      if (!current() || !live.list.isConnected) {
         state.doms.delete(live);
         continue;
       }
@@ -189,7 +193,7 @@ export function registerCitationsSection() {
       "citations.onAsyncRender",
       async ({ body, item, setSectionSummary }) => {
         if (!item?.isRegularItem?.()) return;
-        const stateKey = itemCacheKey(item);
+        const stateKey = itemStateKey(item);
         let state = states.get(stateKey);
         const doc = body.ownerDocument!;
         body.textContent = "";
@@ -231,6 +235,7 @@ export function registerCitationsSection() {
 
         if (!state) {
           state = {
+            stateKey,
             refs: [],
             nextOffset: 0,
             exhausted: false,
@@ -303,5 +308,12 @@ export function registerCitationsSection() {
 
 export function invalidateCitations(stateKeys?: string[]) {
   if (!stateKeys) states.clear();
-  else for (const key of stateKeys) states.delete(key);
+  else
+    for (const key of states.keys())
+      if (
+        stateKeys.some(
+          (stateKey) => key === stateKey || key.startsWith(`${stateKey}@`),
+        )
+      )
+        states.delete(key);
 }
