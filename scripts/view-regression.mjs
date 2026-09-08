@@ -26,6 +26,8 @@ const { GraphView, PopupCard, clearPopupTranslations } = await import(
 );
 const fakeGraph = () => ({
   clearScene() {},
+  root: { style: {} },
+  scheduleFrame() {},
   createSVG() {
     return { setAttribute() {}, style: {} };
   },

@@ -1,4 +1,5 @@
 import { cancelAllTimers } from "./utils/window";
+import { unregisterItemPaneSections } from "./utils/itemPaneLifecycle";
 import { initLocale } from "./utils/locale";
 import { registerPrefsScripts } from "./modules/preferenceScript";
 import { createZToolkit } from "./utils/ztoolkit";
@@ -38,6 +39,7 @@ async function onStartup() {
     Zotero.unlockPromise,
     Zotero.uiReadyPromise,
   ]);
+  if (!addon.data.alive) return;
 
   registerDevEval();
 
@@ -67,6 +69,9 @@ async function onStartup() {
   );
   // library index for O(1) in-library matching
   step("libraryIndex", () => libraryIndex.register());
+  // Remove old reader callbacks before registering the same pane IDs.
+  // This also repairs readers left open while upgrading an older version.
+  step("itemPaneCleanup", () => unregisterItemPaneSections());
   // item pane sections
   step("referencesSection", () => registerReferencesSection());
   step("citationsSection", () => registerCitationsSection());
@@ -120,6 +125,7 @@ async function onShutdown(): Promise<void> {
   closePopup();
   clearPopupTranslations();
   destroyAllGraphViews();
+  unregisterItemPaneSections();
   removeGraphMenus();
   unregisterItemMenus();
   detachAllReaders();

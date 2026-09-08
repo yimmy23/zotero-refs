@@ -589,6 +589,326 @@ await check(
     assert.equal(f.endpoints["/refs-dev/eval"], newer);
   },
 );
+// Match Zotero's real lifecycle boundary: registrations are removed
+// synchronously, while serial notifier callbacks can reach readers later.
+function itemPaneLifecycleFixture() {
+  const config = {
+    addonID: "refs@zotero-refs.app",
+    addonRef: "refs",
+    addonInstance: "Refs",
+    addonName: "Refs",
+  };
+  const ids = [
+    "references",
+    "citations",
+    "related-papers",
+    "citation-graph",
+  ].map((id) => `refs\\@zotero-refs\\.app-${id}`);
+  const registry = new Map();
+  const errors = [],
+    calls = [];
+  let updateID = 0;
+  const old = { alive: false },
+    fresh = { alive: true };
+  const register = (id, owner, pluginID = config.addonID) => {
+    registry.set(id, {
+      paneID: id,
+      pluginID,
+      hooks: { render: () => (owner.alive ? "ready" : "loading") },
+    });
+    updateID++;
+  };
+  for (const id of ids) register(id, old);
+  register("other-plugin-pane", fresh, "other-plugin");
+  const details = (initialized = true) => ({
+    initialized,
+    panes: new Map(),
+    observed: new Set(),
+    sidenav: new Set(),
+    removed: [],
+    renderCustomSections() {
+      calls.push(this);
+      if (this.lastUpdate === updateID) return;
+      this.lastUpdate = updateID;
+      for (const [id, element] of this.panes)
+        if (!registry.has(id)) {
+          this.observed.delete(element);
+          this.panes.delete(id);
+          this.sidenav.delete(id);
+          this.removed.push(element);
+        }
+      for (const [id, option] of registry)
+        if (!this.panes.has(id)) {
+          const element = { paneID: id, _hooks: option.hooks };
+          this.panes.set(id, element);
+          this.observed.add(element);
+          this.sidenav.add(id);
+        }
+    },
+  });
+  const library = details(),
+    reader = details(),
+    secondReader = details(),
+    uninitialized = details(false);
+  const document = { querySelectorAll: () => [library, reader, uninitialized] };
+  const win = { document, MozXULElement: { insertFTLIfNeeded() {} } };
+  const readerWin = { document: { querySelectorAll: () => [secondReader] } };
+  const manager = {
+    get customSectionData() {
+      return { updateID, options: [...registry.values()] };
+    },
+    unregisterSection(id) {
+      const removed = registry.delete(id);
+      if (removed) updateID++;
+      return removed;
+    },
+  };
+  for (const pane of [library, reader, secondReader])
+    pane.renderCustomSections();
+  calls.length = 0;
+  const Zotero = {
+    ItemPaneManager: manager,
+    getMainWindows: () => [win],
+    Reader: { _readers: [{ _window: readerWin }, { _window: win }] },
+  };
+  const ztoolkit = { log: (...args) => errors.push(args) };
+  const lifecycle = compile(
+    "src/utils/itemPaneLifecycle.ts",
+    { "../../package.json": { config } },
+    { Zotero, ztoolkit },
+  );
+  return {
+    config,
+    ids,
+    registry,
+    old,
+    fresh,
+    register,
+    library,
+    reader,
+    secondReader,
+    uninitialized,
+    calls,
+    errors,
+    win,
+    readerWin,
+    Zotero,
+    ztoolkit,
+    lifecycle,
+  };
+}
+
+await check(
+  "pre-registration cleanup repairs readers after native unregister notification races",
+  async () => {
+    // The control reproduces the native same-ID preservation bug; the actual
+    // cleanup then makes all readers attach callbacks from the current addon.
+    const f = itemPaneLifecycleFixture();
+    const oldReaderPane = f.reader.panes.get(f.ids[3]);
+    for (const id of f.ids) f.Zotero.ItemPaneManager.unregisterSection(id);
+    const gate = deferred();
+    const notify = (async () => {
+      f.library.renderCustomSections();
+      await gate.promise;
+      f.reader.renderCustomSections();
+    })();
+    for (const id of f.ids) f.register(id, f.fresh);
+    gate.resolve();
+    await notify;
+    assert.equal(f.reader.panes.get(f.ids[3]), oldReaderPane);
+    assert.equal(oldReaderPane._hooks.render(), "loading");
+    const other = f.reader.panes.get("other-plugin-pane");
+    const result = f.lifecycle.unregisterItemPaneSections();
+    assert.equal(
+      result,
+      undefined,
+      "cleanup must finish synchronously before registration",
+    );
+    for (const pane of [f.library, f.reader, f.secondReader]) {
+      assert.equal(pane.panes.size, 1);
+      assert.equal(pane.observed.size, 1);
+      assert.equal(pane.sidenav.size, 1);
+    }
+    assert.equal(f.reader.panes.get("other-plugin-pane"), other);
+    assert.ok(!f.calls.includes(f.uninitialized));
+    assert.ok(!f.reader.observed.has(oldReaderPane));
+    for (const id of f.ids) f.register(id, f.fresh);
+    for (const pane of [f.library, f.reader, f.secondReader]) {
+      pane.renderCustomSections();
+      assert.equal(pane.panes.get(f.ids[3])._hooks.render(), "ready");
+      assert.notEqual(pane.panes.get(f.ids[3]), oldReaderPane);
+    }
+    assert.equal(f.errors.length, 0);
+  },
+);
+
+await check(
+  "cleanup consumes an already-empty registration window and isolates dead panes",
+  async () => {
+    const f = itemPaneLifecycleFixture();
+    for (const id of f.ids) f.Zotero.ItemPaneManager.unregisterSection(id);
+    // Old auto-unregister has emptied the registry; it has not reached readers.
+    assert.ok(f.reader.panes.has(f.ids[0]));
+    const broken = {
+      initialized: true,
+      renderCustomSections() {
+        throw new Error("closed pane");
+      },
+    };
+    const original = f.win.document.querySelectorAll;
+    f.win.document.querySelectorAll = () => [broken, ...original()];
+    f.lifecycle.unregisterItemPaneSections();
+    assert.equal(f.reader.panes.size, 1);
+    assert.equal(f.secondReader.panes.size, 1);
+    assert.equal(f.errors.length, 1);
+    assert.equal(
+      f.calls.filter((pane) => pane === f.library).length,
+      1,
+      "duplicate reader/main windows must be visited once",
+    );
+    f.lifecycle.unregisterItemPaneSections();
+    assert.equal(
+      f.reader.panes.size,
+      1,
+      "repeated cleanup must preserve other plugins",
+    );
+  },
+);
+
+function addonLifecycleFixture() {
+  const f = itemPaneLifecycleFixture();
+  const events = [],
+    flush = deferred(),
+    initialized = deferred();
+  const addon = { data: { alive: true }, hooks: null };
+  const noop = () => {};
+  const record = (name) => () => events.push(name);
+  Object.assign(f.Zotero, {
+    initializationPromise: initialized.promise,
+    unlockPromise: Promise.resolve(),
+    uiReadyPromise: Promise.resolve(),
+    PreferencePanes: { register: noop },
+    Notifier: {
+      registerObserver: () => "observer",
+      unregisterObserver: record("observer removed"),
+    },
+    logError: noop,
+  });
+  f.ztoolkit.unregisterAll = record("toolkit removed");
+  const imports = {
+    "./utils/window": { cancelAllTimers: record("timers cancelled") },
+    "./utils/itemPaneLifecycle": {
+      unregisterItemPaneSections: () => {
+        events.push(
+          addon.data.alive ? "startup pane cleanup" : "shutdown pane cleanup",
+        );
+        f.lifecycle.unregisterItemPaneSections();
+      },
+    },
+    "./utils/locale": { initLocale: noop },
+    "./modules/preferenceScript": { registerPrefsScripts: noop },
+    "./utils/ztoolkit": { createZToolkit: noop },
+    "../package.json": { config: f.config },
+    "./core/libmatch": { libraryIndex: { register: noop, unregister: noop } },
+    "./core/storage": {
+      refStorage: {
+        flush: () => {
+          events.push("flush");
+          return flush.promise;
+        },
+      },
+    },
+    "./ui/styles": { registerStyles: noop, unregisterStyles: noop },
+    "./ui/rows": { closePopup: noop },
+    "./core/popupTranslation": { clearPopupTranslations: noop },
+    "./graph/view": { destroyAllGraphViews: record("graphs destroyed") },
+    "./modules/menus": {
+      registerItemMenus: noop,
+      registerWindowMenus: noop,
+      unregisterItemMenus: noop,
+    },
+    "./modules/devEval": { registerDevEval: noop, unregisterDevEval: noop },
+    "./pdf/readerHook": {
+      attachAllReaders: async () => {},
+      detachAllReaders: noop,
+      onReaderTabSelect: noop,
+      sweepReaders: noop,
+    },
+  };
+  for (const [file, name, id] of [
+    ["section", "registerReferencesSection", f.ids[0]],
+    ["citations", "registerCitationsSection", f.ids[1]],
+    ["related", "registerRelatedSection", f.ids[2]],
+    ["graphSection", "registerGraphSection", f.ids[3]],
+  ])
+    imports[`./ui/${file}`] = {
+      [name]: () => {
+        events.push(name);
+        f.register(id, f.fresh);
+      },
+      removeGraphMenus: noop,
+    };
+  const hooks = compile("src/hooks.ts", imports, {
+    Zotero: f.Zotero,
+    ztoolkit: f.ztoolkit,
+    addon,
+    rootURI: "chrome://refs/",
+  }).default;
+  addon.hooks = hooks;
+  f.Zotero[f.config.addonInstance] = addon;
+  return { ...f, addon, hooks, events, flush, initialized };
+}
+
+await check(
+  "addon startup and shutdown consume pane cleanup before registration and asynchronous flush",
+  async () => {
+    const f = addonLifecycleFixture();
+    f.initialized.resolve();
+    await f.hooks.onStartup();
+    assert.ok(
+      f.events.indexOf("startup pane cleanup") <
+        f.events.indexOf("registerReferencesSection"),
+    );
+    assert.equal(
+      f.reader.panes.size,
+      1,
+      "old reader callbacks must be gone before new native notifications",
+    );
+    f.reader.renderCustomSections();
+    assert.equal(f.reader.panes.get(f.ids[3])._hooks.render(), "ready");
+    const stopping = f.hooks.onShutdown();
+    assert.equal(f.addon.data.alive, false);
+    assert.equal(f.reader.panes.size, 1);
+    assert.ok(
+      f.events.indexOf("graphs destroyed") <
+        f.events.indexOf("shutdown pane cleanup"),
+    );
+    assert.ok(
+      f.events.indexOf("shutdown pane cleanup") < f.events.indexOf("flush"),
+    );
+    assert.equal(
+      f.registry.size,
+      1,
+      "shutdown leaves other plugin registrations intact",
+    );
+    f.flush.resolve();
+    await stopping;
+    assert.equal(f.errors.length, 0);
+  },
+);
+
+await check(
+  "startup cancelled while Zotero initializes cannot register dead section callbacks",
+  async () => {
+    const f = addonLifecycleFixture();
+    const starting = f.hooks.onStartup();
+    f.addon.data.alive = false;
+    f.initialized.resolve();
+    await starting;
+    assert.equal(f.events.length, 0);
+  },
+);
+
 console.log(
   `Reader regression: ${passed} checks passed (no application/profile access).`,
 );

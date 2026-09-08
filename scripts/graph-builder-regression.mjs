@@ -327,12 +327,25 @@ test("missing host identifiers or missing origin fail without extra provider req
   );
 });
 
-function graphDOM() {
+function graphDOM({ reduced = false } = {}) {
   const pending = new Map();
   let nextID = 0;
+  let time = 0;
+  const size = { width: 340, height: 400 };
+  let resize;
   const win = {
-    matchMedia: () => ({
-      matches: false,
+    performance: { now: () => time++ },
+    ResizeObserver: class {
+      constructor(callback) {
+        resize = callback;
+      }
+      observe() {}
+      disconnect() {
+        resize = null;
+      }
+    },
+    matchMedia: (query) => ({
+      matches: reduced && query.includes("reduced-motion"),
       addEventListener() {},
       removeEventListener() {},
     }),
@@ -342,7 +355,16 @@ function graphDOM() {
     },
     cancelAnimationFrame: (id) => pending.delete(id),
   };
-  const doc = { defaultView: win, createElementNS: (_ns, tag) => node(tag) };
+  let hitTarget = null,
+    hitTests = 0;
+  const doc = {
+    defaultView: win,
+    createElementNS: (_ns, tag) => node(tag),
+    elementFromPoint: () => {
+      hitTests++;
+      return hitTarget;
+    },
+  };
   function node(tag) {
     return {
       tagName: tag,
@@ -350,13 +372,34 @@ function graphDOM() {
       attributes: new Map(),
       children: [],
       style: {},
+      listeners: new Map(),
+      captures: new Set(),
+      reads: 0,
+      measurements: 0,
+      hovered: false,
+      matches(selector) {
+        return selector === ":hover" && this.hovered;
+      },
+      getBBox() {
+        this.measurements++;
+        return { width: this.textContent.length * 6, height: 12, y: -9 };
+      },
+      writes: new Map(),
       setAttribute(name, value) {
+        this.writes.set(name, (this.writes.get(name) || 0) + 1);
         this.attributes.set(name, String(value));
       },
       getAttribute(name) {
         return this.attributes.get(name) ?? null;
       },
+      removeAttribute(name) {
+        this.attributes.delete(name);
+      },
+      get lastElementChild() {
+        return this.children.at(-1);
+      },
       appendChild(child) {
+        child.remove?.();
         this.children.push(child);
         child.parent = this;
       },
@@ -373,17 +416,70 @@ function graphDOM() {
       get textContent() {
         return this.text || "";
       },
-      addEventListener() {},
-      removeEventListener() {},
-      getBoundingClientRect: () => ({
-        width: 340,
-        height: 400,
-        left: 0,
-        top: 0,
-      }),
+      addEventListener(type, listener) {
+        if (!this.listeners.has(type)) this.listeners.set(type, new Set());
+        this.listeners.get(type).add(listener);
+      },
+      removeEventListener(type, listener) {
+        this.listeners.get(type)?.delete(listener);
+      },
+      setPointerCapture(id) {
+        this.captures.add(id);
+      },
+      releasePointerCapture(id) {
+        this.captures.delete(id);
+      },
+      dispatch(type, options = {}) {
+        if (type === "pointerenter") this.hovered = true;
+        if (type === "pointerleave") this.hovered = false;
+        const event = {
+          target: this,
+          button: 0,
+          isPrimary: true,
+          pointerId: 1,
+          clientX: 170,
+          clientY: 200,
+          deltaY: 0,
+          deltaMode: 0,
+          preventDefault() {
+            this.defaultPrevented = true;
+          },
+          stopPropagation() {},
+          ...options,
+        };
+        for (const listener of [...(this.listeners.get(type) || [])])
+          listener(event);
+        return event;
+      },
+      getBoundingClientRect() {
+        this.reads++;
+        return { ...size, left: 0, top: 0, x: 0, y: 0, bottom: size.height };
+      },
     };
   }
-  return { container: node("div"), pending };
+  const frame = () => {
+    const callbacks = [...pending.values()];
+    pending.clear();
+    for (const callback of callbacks) callback();
+  };
+  return {
+    container: node("div"),
+    pending,
+    frame,
+    hit: (target) => {
+      hitTarget = target;
+    },
+    hitTests: () => hitTests,
+    flush() {
+      let count = 0;
+      while (pending.size && count++ < 500) frame();
+      assert.equal(pending.size, 0, "RAF work must eventually settle");
+    },
+    resize(width, height) {
+      Object.assign(size, { width, height });
+      resize?.();
+    },
+  };
 }
 
 test("view preserves directed edge metadata, marks only citations and never mutates shared roles", async () => {
@@ -401,6 +497,8 @@ test("view preserves directed edge metadata, marks only citations and never muta
   try {
     first.setData(graph);
     second.setData(graph);
+    firstDOM.flush();
+    secondDOM.flush();
     assert.notEqual(first.arrowID, second.arrowID);
     const arrows = first.edgeEls.filter(({ el }) =>
       el.getAttribute("marker-end"),
@@ -433,6 +531,509 @@ test("view preserves directed edge metadata, marks only citations and never muta
   }
   assert.equal(firstDOM.pending.size, 0);
   assert.equal(secondDOM.pending.size, 0);
+});
+
+async function graphViewFixture(options = {}, handlers = {}) {
+  const f = fixture({
+    origin: work("W0", ["WR"], ["WP"]),
+    works: [work("WR"), work("WP")],
+    citing: [paper("WC")],
+  });
+  const graph = await f.graph();
+  const dom = graphDOM(options);
+  const view = new f.GraphView(dom.container, handlers);
+  view.setData(graph);
+  return { view, dom, graph };
+}
+
+function instrument(view, method) {
+  const original = view[method].bind(view);
+  let calls = 0;
+  view[method] = (...args) => {
+    calls++;
+    return original(...args);
+  };
+  return () => calls;
+}
+
+function assertReleased(view, target) {
+  assert.equal(view.gesture, null);
+  assert.equal(target.captures.size, 0);
+  for (const event of [
+    "pointermove",
+    "pointerup",
+    "pointercancel",
+    "lostpointercapture",
+  ])
+    assert.equal(target.listeners.get(event)?.size || 0, 0, event);
+  assert.equal(view.svg.style.cursor, "grab");
+}
+
+test("startup warm-up yields within its time budget and reveals only settled positions", async () => {
+  const { view, dom } = await graphViewFixture();
+  try {
+    const ticks = instrument(view.sim, "tick");
+    assert.equal(view.root.style.visibility, "hidden");
+    assert.equal(ticks(), 0);
+    dom.frame();
+    assert.ok(
+      ticks() > 0 && ticks() <= 4,
+      "one frame must yield at the 4 ms budget",
+    );
+    assert.equal(view.root.style.visibility, "hidden");
+    assert.equal(view.nodeEls.get("WR").getAttribute("cx"), null);
+    dom.flush();
+    assert.equal(view.root.style.visibility, "visible");
+    assert.ok(
+      Number.isFinite(Number(view.nodeEls.get("WR").getAttribute("cx"))),
+    );
+    assert.ok(ticks() >= 110);
+    assert.equal(view.edgeLayer.style.pointerEvents, "none");
+  } finally {
+    view.destroy();
+  }
+});
+
+test("empty graphs finish immediately without simulation or animation work", async () => {
+  const { view, dom } = await graphViewFixture();
+  try {
+    view.setData({ originId: "", nodes: [], edges: [] });
+    assert.equal(view.sim, null);
+    assert.equal(view.root.style.visibility, "visible");
+    assert.equal(view.nodeEls.size, 0);
+    assert.equal(dom.pending.size, 0);
+  } finally {
+    view.destroy();
+  }
+});
+
+test("wheel is proportional, mode-normalized, cursor-anchored and commits once per frame", async () => {
+  const { view, dom } = await graphViewFixture();
+  try {
+    dom.flush();
+    const transforms = instrument(view, "applyTransform");
+    const reads = view.svg.reads;
+    const wheel = (deltaY, extra = {}) =>
+      view.svg.dispatch("wheel", {
+        ctrlKey: true,
+        deltaY,
+        clientX: 250,
+        clientY: 270,
+        ...extra,
+      });
+    for (const delta of [0, NaN, Infinity, -Infinity]) wheel(delta);
+    assert.equal(view.scale, 1);
+    assert.equal(dom.pending.size, 0);
+    assert.equal(wheel(10, { ctrlKey: false }).defaultPrevented, undefined);
+    assert.equal(view.scale, 1);
+    const before = view.toLocal(250, 270);
+    for (let i = 0; i < 100; i++) wheel(-0.1);
+    assert.ok(Math.abs(view.scale - Math.exp(0.02)) < 1e-12);
+    assert.equal(transforms(), 0);
+    assert.equal(view.svg.reads - reads, 1);
+    assert.equal(dom.pending.size, 1);
+    const after = view.toLocal(250, 270);
+    assert.ok(
+      Math.abs(before.x - after.x) < 1e-10 &&
+        Math.abs(before.y - after.y) < 1e-10,
+    );
+    dom.frame();
+    assert.equal(transforms(), 1);
+    const scale = view.scale;
+    wheel(1, { deltaMode: 1 });
+    assert.ok(Math.abs(view.scale / scale - Math.exp(-16 * 0.002)) < 1e-12);
+    dom.frame();
+    const lineScale = view.scale;
+    wheel(0.1, { deltaMode: 2 });
+    assert.ok(Math.abs(view.scale / lineScale - Math.exp(-40 * 0.002)) < 1e-12);
+    dom.flush();
+  } finally {
+    view.destroy();
+  }
+});
+
+test("node dragging coalesces samples, applies release coordinates and suppresses accidental activation", async () => {
+  let selected = 0,
+    opened = 0;
+  const { view, dom } = await graphViewFixture(
+    {},
+    { onSelect: () => selected++, onOpen: () => opened++ },
+  );
+  try {
+    dom.flush();
+    const circle = view.nodeEls.get("WR"),
+      node = view.data.nodes.find((n) => n.id === "WR");
+    const positions = instrument(view, "updatePositions"),
+      ticks = instrument(view.sim, "tick");
+    const reads = view.svg.reads;
+    circle.dispatch("pointerdown");
+    for (let i = 0; i < 100; i++)
+      circle.dispatch("pointermove", { clientX: 180 + i / 10, clientY: 210 });
+    assert.equal(positions(), 0);
+    assert.equal(ticks(), 0);
+    assert.equal(view.svg.reads, reads);
+    circle.dispatch("pointerup", { clientX: 215, clientY: 230 });
+    circle.dispatch("click");
+    circle.dispatch("dblclick");
+    assert.equal(selected + opened, 0);
+    dom.frame();
+    assert.equal(positions(), 1);
+    assert.equal(view.svg.reads - reads, 1);
+    assert.ok(
+      Math.abs(node.x - 45) < 5 && Math.abs(node.y - 30) < 5,
+      "release must include final unpainted sample",
+    );
+    assert.equal(node.fx, null);
+    assert.equal(view.sim.alphaTarget(), 0);
+    assertReleased(view, circle);
+    dom.flush();
+    circle.dispatch("pointerdown");
+    circle.dispatch("pointerup");
+    circle.dispatch("click");
+    assert.equal(selected, 1);
+    dom.flush();
+  } finally {
+    view.destroy();
+  }
+});
+
+test("reduced-motion dragging never batch-ticks or passively settles after release", async () => {
+  const { view, dom } = await graphViewFixture({ reduced: true });
+  try {
+    dom.flush();
+    const circle = view.nodeEls.get("WR"),
+      node = view.data.nodes.find((n) => n.id === "WR");
+    const ticks = instrument(view.sim, "tick");
+    circle.dispatch("pointerdown");
+    for (let i = 0; i < 80; i++)
+      circle.dispatch("pointermove", { clientX: 200 + i / 10 });
+    assert.equal(ticks(), 0);
+    dom.frame();
+    assert.ok(Math.abs(node.x - 37.9) < 1e-10);
+    circle.dispatch("pointerup", { clientX: 220, clientY: 230 });
+    dom.frame();
+    assert.equal(node.x, 50);
+    assert.ok(Math.abs(node.y - 30) < 1e-10);
+    assert.equal(node.fx, null);
+    assert.equal(ticks(), 0);
+    assert.equal(dom.pending.size, 0);
+    assertReleased(view, circle);
+  } finally {
+    view.destroy();
+  }
+});
+
+test("gesture identity, cancellation, replacement and destruction clean up capture and pending work", async () => {
+  const { view, dom, graph } = await graphViewFixture();
+  try {
+    dom.flush();
+    let circle = view.nodeEls.get("WR");
+    for (const extra of [{ button: 2 }, { isPrimary: false }]) {
+      circle.dispatch("pointerdown", extra);
+      view.svg.dispatch("pointerdown", extra);
+      assert.equal(view.gesture, null);
+    }
+    circle.dispatch("pointerdown");
+    circle.dispatch("pointermove", { pointerId: 2, clientX: 240 });
+    circle.dispatch("pointerup", { pointerId: 2 });
+    assert.equal(view.gesture.dragging, false);
+    circle.dispatch("pointermove", { clientX: 240 });
+    dom.frame();
+    circle.dispatch("lostpointercapture");
+    assertReleased(view, circle);
+    assert.equal(view.data.nodes.find((n) => n.id === "WR").fx, null);
+    circle.dispatch("pointerdown");
+    circle.dispatch("pointermove", { clientX: 260 });
+    const oldNode = view.data.nodes.find((n) => n.id === "WR");
+    view.setData(graph);
+    assertReleased(view, circle);
+    assert.equal(oldNode.fx, null);
+    dom.flush();
+    circle = view.nodeEls.get("WR");
+    circle.dispatch("pointerdown");
+    circle.dispatch("pointermove", { clientX: 280 });
+    view.destroy();
+    assertReleased(view, circle);
+    assert.equal(dom.pending.size, 0);
+    dom.frame();
+  } finally {
+    view.destroy();
+  }
+});
+
+test("same-frame release accepts the next gesture or zoom without losing its final sample", async () => {
+  let selected = 0;
+  const { view, dom } = await graphViewFixture(
+    { reduced: true },
+    { onSelect: () => selected++ },
+  );
+  try {
+    dom.flush();
+    const circle = view.nodeEls.get("WR"),
+      node = view.data.nodes.find((n) => n.id === "WR");
+    circle.dispatch("pointerdown");
+    circle.dispatch("pointermove", { clientX: 200 });
+    circle.dispatch("pointerup", { clientX: 220 });
+    circle.dispatch("click");
+    assert.equal(selected, 0);
+    circle.dispatch("pointerdown", { pointerId: 2 });
+    assert.equal(node.x, 50, "new press must first apply the prior release");
+    assert.equal(view.gesture.pointerId, 2);
+    assert.equal(view.gesture.ending, undefined);
+    circle.dispatch("pointerup", { pointerId: 2 });
+    circle.dispatch("click");
+    assert.equal(selected, 1, "new click must not inherit drag suppression");
+    circle.dispatch("pointerdown", { pointerId: 3 });
+    circle.dispatch("pointermove", { pointerId: 3, clientX: 240 });
+    circle.dispatch("pointerup", { pointerId: 3, clientX: 250 });
+    view.svg.dispatch("wheel", { ctrlKey: true, deltaY: -1 });
+    assert.ok(
+      Math.abs(node.x - 80) < 1e-10,
+      "zoom must first apply the pending release",
+    );
+    assertReleased(view, circle);
+    dom.flush();
+    assert.ok(Math.abs(node.x - 80) < 1e-10);
+    assert.equal(dom.pending.size, 0);
+  } finally {
+    view.destroy();
+  }
+});
+
+test("click, double-click, keyboard and context actions survive gesture cleanup", async () => {
+  let selected = 0,
+    opened = 0,
+    context = 0;
+  const { view, dom } = await graphViewFixture(
+    {},
+    {
+      onSelect: () => selected++,
+      onOpen: () => opened++,
+      onContext: () => context++,
+    },
+  );
+  try {
+    dom.flush();
+    const circle = view.nodeEls.get("WR");
+    circle.dispatch("pointerdown");
+    circle.dispatch("pointerup");
+    // Native implicit capture release occurs before the animation callback.
+    circle.dispatch("lostpointercapture");
+    circle.dispatch("click");
+    circle.dispatch("dblclick");
+    assert.equal(selected, 1);
+    assert.equal(opened, 1);
+    dom.flush();
+    assertReleased(view, circle);
+    circle.dispatch("pointerdown", { button: 2 });
+    circle.dispatch("contextmenu");
+    assert.equal(context, 1);
+    circle.dispatch("pointerdown");
+    circle.dispatch("pointercancel");
+    circle.dispatch("click");
+    circle.dispatch("dblclick");
+    assert.equal(selected, 1);
+    assert.equal(opened, 1);
+    assertReleased(view, circle);
+    circle.dispatch("keydown", { key: "Enter" });
+    circle.dispatch("keydown", { key: "Enter", ctrlKey: true });
+    circle.dispatch("keydown", { key: "ContextMenu" });
+    assert.equal(selected, 2);
+    assert.equal(opened, 2);
+    assert.equal(context, 2);
+  } finally {
+    view.destroy();
+  }
+});
+
+test("release restores hovered-node details once, but cancellation and superseding input do not", async () => {
+  const hovers = [];
+  const { view, dom, graph } = await graphViewFixture(
+    { reduced: true },
+    { onHover: (node) => hovers.push(node?.id || null) },
+  );
+  try {
+    dom.flush();
+    const circle = view.nodeEls.get("WR");
+    dom.hit(circle);
+    circle.dispatch("pointerenter");
+    circle.dispatch("pointerdown");
+    circle.dispatch("pointermove", { clientX: 200 });
+    circle.dispatch("pointerup", { clientX: 210 });
+    assert.deepEqual(hovers, ["WR", null]);
+    dom.frame();
+    assert.deepEqual(hovers, ["WR", null, "WR"]);
+    assert.equal(dom.hitTests(), 1);
+    for (let i = 0; i < 5; i++) dom.frame();
+    assert.equal(dom.hitTests(), 1, "idle/simulation frames must not hit-test");
+    circle.dispatch("pointerdown");
+    circle.dispatch("pointercancel");
+    dom.flush();
+    assert.equal(hovers.at(-1), null);
+    assert.equal(dom.hitTests(), 1);
+    circle.dispatch("pointerdown");
+    circle.dispatch("pointerup");
+    circle.dispatch("pointerdown", { pointerId: 2 });
+    dom.frame();
+    assert.equal(
+      dom.hitTests(),
+      1,
+      "a continuing gesture must not reopen details",
+    );
+    circle.dispatch("pointerup", { pointerId: 2 });
+    view.svg.dispatch("wheel", { ctrlKey: true, deltaY: 2 });
+    dom.flush();
+    assert.equal(dom.hitTests(), 1, "zoom must not reopen details");
+    circle.dispatch("pointerdown");
+    circle.dispatch("pointerup");
+    dom.hit(null);
+    dom.flush();
+    assert.equal(dom.hitTests(), 2);
+    assert.equal(
+      hovers.at(-1),
+      null,
+      "release away from node must not open details",
+    );
+    circle.dispatch("pointerdown");
+    circle.dispatch("pointerup");
+    view.setData(graph);
+    dom.flush();
+    assert.equal(dom.hitTests(), 2, "rebuild must not reopen old details");
+    const replacement = view.nodeEls.get("WR");
+    replacement.dispatch("pointerdown");
+    replacement.dispatch("pointerup");
+    view.destroy();
+    dom.frame();
+    assert.equal(
+      dom.hitTests(),
+      2,
+      "destroy must cancel pending hover restoration",
+    );
+  } finally {
+    view.destroy();
+  }
+});
+
+test("pointer leaving after release cannot reopen a card from stale release coordinates", async () => {
+  const hovers = [];
+  const { view, dom } = await graphViewFixture(
+    { reduced: true },
+    { onHover: (node) => hovers.push(node?.id || null) },
+  );
+  try {
+    dom.flush();
+    const circle = view.nodeEls.get("WR");
+    dom.hit(circle);
+    circle.dispatch("pointerenter");
+    circle.dispatch("pointerdown");
+    circle.dispatch("pointermove", { clientX: 200 });
+    circle.dispatch("pointerup", { clientX: 210 });
+    circle.dispatch("pointerleave", { clientX: 300, clientY: 300 });
+    dom.frame();
+    assert.deepEqual(hovers, ["WR", null]);
+    assert.equal(
+      dom.hitTests(),
+      1,
+      "old coordinates alone cannot prove current hover",
+    );
+    assert.equal(view.hoveredCircle, null);
+  } finally {
+    view.destroy();
+  }
+});
+
+test("label geometry is measured once and captions stay inside resized canvas edges", async () => {
+  const { view, dom } = await graphViewFixture();
+  try {
+    dom.flush();
+    const labels = [...view.labelEls.values()];
+    assert.ok(labels.every((label) => label.measurements === 1));
+    const node = view.data.nodes.find((n) => n.id === "WR");
+    const label = view.labelEls.get("WR");
+    node.x = node.fx = 160;
+    node.y = node.fy = 190;
+    view.updatePositions();
+    assert.ok(
+      Number(label.getAttribute("y")) < node.y,
+      "bottom labels should move above their node",
+    );
+    for (const [width, height] of [
+      [320, 400],
+      [90, 100],
+      [40, 100],
+      [680, 600],
+    ]) {
+      dom.resize(width, height);
+      dom.frame();
+      for (const [id, caption] of view.labelEls) {
+        const m = view.labelMetrics.get(id);
+        const x = Number(caption.getAttribute("x"));
+        const y = Number(caption.getAttribute("y"));
+        if (m.width > width - 8) {
+          assert.equal(caption.style.visibility, "hidden");
+          assert.equal(
+            x,
+            0,
+            "oversized captions must not reverse their bounds",
+          );
+          continue;
+        }
+        assert.equal(caption.style.visibility, "visible");
+        assert.ok(x - m.width / 2 >= -width / 2 + 4);
+        assert.ok(x + m.width / 2 <= width / 2 - 4);
+        assert.ok(y - m.ascent >= -height / 2 + 4);
+        assert.ok(y + m.descent <= height / 2 - 4);
+      }
+    }
+    assert.ok(
+      labels.every((label) => label.measurements === 1),
+      "resizing must reuse text geometry",
+    );
+  } finally {
+    view.destroy();
+  }
+});
+
+test("pan, resize and hover avoid redundant layout work and leave a valid smaller canvas", async () => {
+  const hovers = [];
+  const { view, dom } = await graphViewFixture(
+    {},
+    { onHover: (node) => hovers.push(node?.id || null) },
+  );
+  try {
+    dom.flush();
+    const transforms = instrument(view, "applyTransform"),
+      positions = instrument(view, "updatePositions");
+    const circle = view.nodeEls.get("WR");
+    circle.dispatch("pointerenter");
+    assert.equal(hovers.at(-1), "WR");
+    view.svg.dispatch("wheel", { ctrlKey: true, deltaY: 1 });
+    assert.equal(hovers.at(-1), null);
+    circle.dispatch("pointerenter");
+    assert.equal(hovers.at(-1), null);
+    dom.flush();
+    view.svg.dispatch("pointerdown");
+    for (let i = 0; i < 20; i++)
+      view.svg.dispatch("pointermove", { clientX: 200 + i });
+    view.svg.dispatch("pointerup", { clientX: 230 });
+    const before = transforms();
+    dom.frame();
+    assert.equal(view.panX, 60);
+    assert.equal(transforms() - before, 1);
+    assertReleased(view, view.svg);
+    const commits = transforms() + positions();
+    dom.resize(340, 400);
+    assert.equal(dom.pending.size, 0);
+    assert.equal(transforms() + positions(), commits);
+    dom.resize(90, 100);
+    dom.frame();
+    assert.ok(
+      view.data.nodes.every((n) => Math.abs(n.x) <= 45 && Math.abs(n.y) <= 50),
+    );
+    assert.equal(positions(), 1);
+  } finally {
+    view.destroy();
+  }
 });
 
 let failures = 0;

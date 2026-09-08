@@ -42,27 +42,42 @@ const KIND_COLOR: Record<GraphNode["kind"], string> = {
   related: "#9b7fd4",
 };
 
-/**
- * Layout budget. The first WARMUP_TICKS run synchronously before the first
- * paint (a few ms for 50 nodes) so nodes start near their final positions;
- * only the tail is animated. Animating from a random cloud meant ~1s of
- * heavy motion competing with the other sections' rendering — visibly
- * janky. Now the visible motion is a short settle.
- */
+/** Prewarm off-screen in short frames, then reveal a mostly settled graph. */
 const WARMUP_TICKS = 110;
 const SETTLE_TICKS = 50;
 /** simulation steps per animation frame */
 const TICKS_PER_FRAME = 2;
+const FRAME_WORK_MS = 4;
+const MAX_WARMUP_TICKS_PER_FRAME = 40;
+const WHEEL_LINE_PX = 16;
+const ZOOM_PER_PIXEL = 0.002;
 /** stop animating once the largest per-tick displacement drops below this */
 const MOTION_EPS = 0.08;
 /** label budget scales with canvas width (origin always labeled) */
 const LABEL_MIN = 4;
 const LABEL_MAX = 12;
 const PX_PER_LABEL = 45;
+const LABEL_PADDING = 4;
 const MIN_SCALE = 0.2;
 const MAX_SCALE = 5;
 /** pointer movement (px) below which a press counts as a click */
 const CLICK_SLOP = 3;
+
+interface Gesture {
+  target: SVGElement;
+  pointerId: number;
+  node?: GraphNode;
+  startX: number;
+  startY: number;
+  clientX: number;
+  clientY: number;
+  startPanX: number;
+  startPanY: number;
+  dragging: boolean;
+  pending: boolean;
+  ending?: "release" | "cancel";
+  suppressClick?: () => void;
+}
 
 function nodeRadius(n: GraphNode): number {
   // log10 with a hard cap: heavily-cited classics must not dwarf the canvas
@@ -118,6 +133,10 @@ export class GraphView {
   private sim: Simulation<GraphNode, GraphEdge> | null = null;
   private nodeEls = new Map<string, SVGCircleElement>();
   private labelEls = new Map<string, SVGTextElement>();
+  private labelMetrics = new Map<
+    string,
+    { width: number; ascent: number; descent: number }
+  >();
   private edgeEls: Array<{ el: SVGLineElement; edge: GraphEdge }> = [];
 
   private width = 300;
@@ -128,6 +147,17 @@ export class GraphView {
 
   private rafId = 0;
   private tickBudget = 0;
+  private warmupTicks = 0;
+  private transformDirty = false;
+  private positionsDirty = false;
+  private inputRect: DOMRect | null = null;
+  private gesture: Gesture | null = null;
+  private hoveredCircle: SVGCircleElement | null = null;
+  private destroyed = false;
+  private motionQuery: MediaQueryList | null = null;
+  private onMotionChange = () => {
+    if (this.motionQuery?.matches) this.tickBudget = 0;
+  };
 
   private resizeObs: ResizeObserver | null = null;
   private darkQuery: MediaQueryList | null = null;
@@ -163,6 +193,7 @@ export class GraphView {
     this.svg.appendChild(defs);
     this.root = this.createG(this.svg);
     this.edgeLayer = this.createG(this.root);
+    this.edgeLayer.style.pointerEvents = "none";
     this.nodeLayer = this.createG(this.root);
     this.labelLayer = this.createG(this.root);
     container.appendChild(this.svg);
@@ -179,12 +210,20 @@ export class GraphView {
     const RO = (this.win as any)?.ResizeObserver;
     if (RO) {
       const obs = new RO(() => {
+        if (this.destroyed) return;
         const r = this.container.getBoundingClientRect();
-        if (r.width > 0 && r.height > 0) {
+        if (
+          r.width > 0 &&
+          r.height > 0 &&
+          (r.width !== this.width || r.height !== this.height)
+        ) {
           this.width = r.width;
           this.height = r.height;
+          this.inputRect = null;
           this.updateViewBox();
-          this.applyTransform();
+          this.transformDirty = true;
+          this.positionsDirty = true;
+          this.scheduleFrame();
         }
       }) as ResizeObserver;
       obs.observe(container);
@@ -201,12 +240,24 @@ export class GraphView {
       this.darkQuery = null;
     }
 
+    try {
+      this.motionQuery = this.win.matchMedia(
+        "(prefers-reduced-motion: reduce)",
+      );
+      this.motionQuery?.addEventListener("change", this.onMotionChange);
+    } catch {
+      this.motionQuery = null;
+    }
+
     this.svg.addEventListener("wheel", this.onWheel, { passive: false });
     this.svg.addEventListener("pointerdown", this.onBackgroundDown);
   }
 
   setData(data: GraphData): void {
+    if (this.destroyed) return;
     this.clearScene();
+    this.root.style.visibility = "hidden";
+    this.transformDirty = true;
     // d3 mutates node positions and replaces edge IDs with node objects.
     // Keep each window's simulation separate from the shared data cache.
     data = {
@@ -222,6 +273,12 @@ export class GraphView {
       })),
     };
     this.data = data;
+    if (!data.nodes.length) {
+      this.root.style.visibility = "visible";
+      this.applyTransform();
+      this.transformDirty = false;
+      return;
+    }
 
     // origin pinned at the simulation center
     const origin = data.nodes.find((n) => n.id === data.originId);
@@ -315,11 +372,11 @@ export class GraphView {
       .force("y", forceY<GraphNode>(0).strength(0.02))
       .stop();
 
-    // off-screen warm-up: converge most of the way before the first paint
-    for (let i = 0; i < WARMUP_TICKS; i++) this.sim.tick();
-    this.clampToCanvas();
-    this.updatePositions();
-    this.runTicks(SETTLE_TICKS);
+    // Reduced motion also finishes the tail before revealing the graph.
+    // Never spend the whole warm-up budget in Zotero's item-pane callback.
+    this.warmupTicks =
+      WARMUP_TICKS + (this.motionQuery?.matches ? SETTLE_TICKS : 0);
+    this.scheduleFrame();
   }
 
   /** flip a node's in-library state (solid vs translucent) after an import */
@@ -340,7 +397,10 @@ export class GraphView {
   }
 
   destroy(): void {
-    this.handlers.onHover?.(null);
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.cancelHover();
+    this.endGesture();
     this.stopSim();
     this.resizeObs?.disconnect();
     this.resizeObs = null;
@@ -350,11 +410,18 @@ export class GraphView {
       // ignore: view may already be torn down
     }
     this.darkQuery = null;
+    try {
+      this.motionQuery?.removeEventListener("change", this.onMotionChange);
+    } catch {
+      // ignore: view may already be torn down
+    }
+    this.motionQuery = null;
     this.svg.removeEventListener("wheel", this.onWheel);
     this.svg.removeEventListener("pointerdown", this.onBackgroundDown);
     this.svg.remove();
     this.nodeEls.clear();
     this.labelEls.clear();
+    this.labelMetrics.clear();
     this.edgeEls = [];
     this.data = null;
     liveViews.delete(this);
@@ -379,12 +446,15 @@ export class GraphView {
   }
 
   private clearScene() {
+    this.cancelHover();
+    this.endGesture();
     this.stopSim();
     this.edgeLayer.textContent = "";
     this.nodeLayer.textContent = "";
     this.labelLayer.textContent = "";
     this.nodeEls.clear();
     this.labelEls.clear();
+    this.labelMetrics.clear();
     this.edgeEls = [];
     this.data = null;
   }
@@ -406,7 +476,7 @@ export class GraphView {
 
   /** client (screen) coordinates -> simulation coordinates */
   private toLocal(clientX: number, clientY: number) {
-    const r = this.svg.getBoundingClientRect();
+    const r = (this.inputRect ??= this.svg.getBoundingClientRect());
     const sx = r.width > 0 ? ((clientX - r.left) / r.width) * this.width : 0;
     const sy = r.height > 0 ? ((clientY - r.top) / r.height) * this.height : 0;
     return {
@@ -417,24 +487,36 @@ export class GraphView {
 
   // ------------------------------------------------------------- simulation
 
-  /**
-   * Step the simulation from a requestAnimationFrame loop, a few ticks per
-   * frame, updating DOM positions each frame, until the budget runs out or
-   * the simulation cools below alphaMin.
-   */
-  private runTicks(budget: number) {
-    if (this.win.matchMedia("(prefers-reduced-motion: reduce)")?.matches) {
-      this.sim?.tick(budget);
-      this.clampToCanvas();
-      this.updatePositions();
-      return;
-    }
-    this.tickBudget = Math.max(this.tickBudget, budget);
-    if (this.rafId) return; // loop already running
-    const step = () => {
-      this.rafId = 0;
-      const sim = this.sim;
-      if (!sim) return;
+  /** Input bursts and simulation steps share one DOM commit per frame. */
+  private scheduleFrame() {
+    if (!this.rafId && !this.destroyed)
+      this.rafId = this.win.requestAnimationFrame(this.onFrame);
+  }
+
+  private onFrame = () => {
+    this.rafId = 0;
+    if (this.destroyed) return;
+    this.applyGestureSample();
+    const sim = this.sim;
+    const start = this.win.performance?.now() ?? Date.now();
+    if (sim && this.warmupTicks > 0) {
+      let steps = 0;
+      do {
+        sim.tick();
+        this.warmupTicks--;
+        steps++;
+      } while (
+        this.warmupTicks > 0 &&
+        steps < MAX_WARMUP_TICKS_PER_FRAME &&
+        (this.win.performance?.now() ?? Date.now()) - start < FRAME_WORK_MS
+      );
+      if (!this.warmupTicks) {
+        this.positionsDirty = true;
+        this.root.style.visibility = "visible";
+        this.measureLabels();
+        this.runTicks(SETTLE_TICKS);
+      }
+    } else if (sim && this.tickBudget > 0 && !this.motionQuery?.matches) {
       let ticked = 0;
       let maxMove = 0;
       while (ticked < TICKS_PER_FRAME && this.tickBudget > 0) {
@@ -445,33 +527,64 @@ export class GraphView {
         sim.tick();
         ticked++;
         this.tickBudget--;
-        for (const n of this.data?.nodes || []) {
-          const m = Math.abs(n.vx || 0) + Math.abs(n.vy || 0);
-          if (m > maxMove) maxMove = m;
-        }
+        for (const n of this.data?.nodes || [])
+          maxMove = Math.max(
+            maxMove,
+            Math.abs(n.vx || 0) + Math.abs(n.vy || 0),
+          );
+        if (
+          (this.win.performance?.now() ?? Date.now()) - start >=
+          FRAME_WORK_MS
+        )
+          break;
       }
       if (ticked) {
-        this.clampToCanvas();
-        this.updatePositions();
-        // nothing visibly moving any more (and no drag holding alpha up):
-        // stop early instead of burning frames on sub-pixel drift
-        if (maxMove < MOTION_EPS && sim.alphaTarget() === 0) {
+        this.positionsDirty = true;
+        if (maxMove < MOTION_EPS && sim.alphaTarget() === 0)
           this.tickBudget = 0;
-        }
       }
-      if (this.tickBudget > 0) {
-        this.rafId = this.win.requestAnimationFrame(step);
-      }
-    };
-    this.rafId = this.win.requestAnimationFrame(step);
+    }
+    // Keep the released node pinned through this frame's last simulation
+    // step so its final pointer sample is actually painted before settling.
+    const released = this.gesture?.ending ? this.gesture : null;
+    if (released) this.endGesture(true);
+    if (this.positionsDirty && !this.warmupTicks) {
+      this.clampToCanvas();
+      this.updatePositions();
+      this.positionsDirty = false;
+    }
+    if (this.transformDirty) {
+      this.applyTransform();
+      this.transformDirty = false;
+    }
+    this.inputRect = null;
+    // Capture suppresses pointerenter while dragging. After the final DOM
+    // commit, restore the existing hover delay only if the pointer is still
+    // over this node; cancellation and superseding input never take this path.
+    if (
+      released?.node &&
+      this.doc.elementFromPoint(released.clientX, released.clientY) ===
+        (released.target as unknown) &&
+      released.target.matches(":hover")
+    )
+      this.showHover(released.target as SVGCircleElement, released.node);
+    if (this.warmupTicks > 0 || this.tickBudget > 0) this.scheduleFrame();
+  };
+
+  private runTicks(budget: number) {
+    if (!this.sim || this.motionQuery?.matches) return;
+    this.tickBudget = Math.max(this.tickBudget, budget);
+    this.scheduleFrame();
   }
 
   private stopSim() {
-    if (this.rafId) {
-      this.win.cancelAnimationFrame(this.rafId);
-      this.rafId = 0;
-    }
+    if (this.rafId) this.win.cancelAnimationFrame(this.rafId);
+    this.rafId = 0;
     this.tickBudget = 0;
+    this.warmupTicks = 0;
+    this.positionsDirty = false;
+    this.transformDirty = false;
+    this.inputRect = null;
     this.sim?.stop();
     this.sim = null;
   }
@@ -482,9 +595,13 @@ export class GraphView {
    * pushing outward every tick, and the node visibly shivers at the border.
    */
   private clampToCanvas() {
-    const boundX = Math.max(60, this.width / 2 - 14);
-    const boundY = Math.max(60, this.height / 2 - 14);
     for (const node of this.data?.nodes || []) {
+      const boundX = Math.max(0, this.width / 2 - nodeRadius(node) - 2);
+      const boundY = Math.max(0, this.height / 2 - nodeRadius(node) - 2);
+      if (typeof node.fx === "number")
+        node.fx = Math.max(-boundX, Math.min(boundX, node.fx));
+      if (typeof node.fy === "number")
+        node.fy = Math.max(-boundY, Math.min(boundY, node.fy));
       if (typeof node.x === "number") {
         if (node.x < -boundX) {
           node.x = -boundX;
@@ -503,6 +620,30 @@ export class GraphView {
           node.vy = 0;
         }
       }
+    }
+  }
+
+  /** Text geometry is measured once, never during simulation or resizing. */
+  private measureLabels() {
+    for (const [id, label] of this.labelEls) {
+      let metrics = {
+        width: (label.textContent?.length || 0) * 10.5,
+        ascent: 10.5,
+        descent: 3,
+      };
+      try {
+        // Labels still have their initial baseline at y=0 here.
+        const box = label.getBBox();
+        if (box.width > 0 && box.height > 0)
+          metrics = {
+            width: box.width,
+            ascent: Math.max(0, -box.y),
+            descent: Math.max(0, box.y + box.height),
+          };
+      } catch {
+        // A hidden document can lack text metrics until it is painted.
+      }
+      this.labelMetrics.set(id, metrics);
     }
   }
 
@@ -533,8 +674,32 @@ export class GraphView {
       }
       const t = this.labelEls.get(node.id);
       if (t) {
-        t.setAttribute("x", String(node.x ?? 0));
-        t.setAttribute("y", String((node.y ?? 0) + nodeRadius(node) + 10));
+        const metrics = this.labelMetrics.get(node.id);
+        // A caption wider than a very narrow pane cannot fit at any x.
+        // Keep the font intact and restore it as soon as space is available;
+        // the node remains interactive and exposes its complete title.
+        t.style.visibility =
+          metrics &&
+          (metrics.width > this.width - LABEL_PADDING * 2 ||
+            metrics.ascent + metrics.descent > this.height - LABEL_PADDING * 2)
+            ? "hidden"
+            : "visible";
+        const boundX = Math.max(
+          0,
+          this.width / 2 - LABEL_PADDING - (metrics?.width || 0) / 2,
+        );
+        const x = Math.max(-boundX, Math.min(boundX, node.x ?? 0));
+        const ascent = metrics?.ascent ?? 10.5;
+        const descent = metrics?.descent ?? 3;
+        let y = (node.y ?? 0) + nodeRadius(node) + 10;
+        const bottom = this.height / 2 - LABEL_PADDING - descent;
+        if (y > bottom) y = (node.y ?? 0) - nodeRadius(node) - 5;
+        y = Math.min(
+          bottom,
+          Math.max(-this.height / 2 + LABEL_PADDING + ascent, y),
+        );
+        t.setAttribute("x", String(x));
+        t.setAttribute("y", String(y));
       }
     }
   }
@@ -585,64 +750,209 @@ export class GraphView {
 
   // ----------------------------------------------------------- interactions
 
+  private showHover(circle: SVGCircleElement, node: GraphNode) {
+    if (
+      this.destroyed ||
+      this.gesture ||
+      this.transformDirty ||
+      this.positionsDirty ||
+      this.warmupTicks ||
+      this.hoveredCircle === circle
+    )
+      return;
+    this.cancelHover();
+    this.hoveredCircle = circle;
+    // Highlight in place: re-inserting a hovered SVG node can cause an
+    // endless pointerleave/pointerenter loop in Gecko.
+    circle.setAttribute("stroke", KIND_COLOR[node.kind]);
+    circle.setAttribute("stroke-width", "3");
+    circle.setAttribute("stroke-opacity", "0.45");
+    const r = circle.getBoundingClientRect();
+    this.handlers.onHover?.(node, {
+      x: r.x,
+      y: r.y,
+      width: r.width,
+      height: r.height,
+    });
+  }
+
+  private cancelHover() {
+    const circle = this.hoveredCircle;
+    if (!circle) return;
+    this.hoveredCircle = null;
+    circle.setAttribute("stroke", this.nodeOutline());
+    circle.setAttribute("stroke-width", "1");
+    circle.removeAttribute("stroke-opacity");
+    this.handlers.onHover?.(null);
+  }
+
   private onWheel = (ev: WheelEvent) => {
-    // plain wheel scrolls the item pane; only Ctrl/Cmd+wheel (and trackpad
-    // pinch, which Firefox reports as ctrlKey wheel) zooms the graph
+    // Plain wheel belongs to the item pane; Ctrl/Cmd wheel and pinch zoom.
     if (!ev.ctrlKey && !ev.metaKey) return;
+    if (!Number.isFinite(ev.deltaY) || ev.deltaY === 0) return;
     ev.preventDefault();
-    const factor = ev.deltaY < 0 ? 1.15 : 1 / 1.15;
-    const k = Math.min(MAX_SCALE, Math.max(MIN_SCALE, this.scale * factor));
+    const unit =
+      ev.deltaMode === 1 ? WHEEL_LINE_PX : ev.deltaMode === 2 ? this.height : 1;
+    const delta = Math.max(-240, Math.min(240, ev.deltaY * unit));
+    const k = Math.min(
+      MAX_SCALE,
+      Math.max(MIN_SCALE, this.scale * Math.exp(-delta * ZOOM_PER_PIXEL)),
+    );
     if (k === this.scale) return;
-    // zoom anchored at the cursor: keep the point under it fixed
-    const r = this.svg.getBoundingClientRect();
-    const sx = r.width > 0 ? ((ev.clientX - r.left) / r.width) * this.width : 0;
-    const sy =
-      r.height > 0 ? ((ev.clientY - r.top) / r.height) * this.height : 0;
-    const lx = (sx - this.width / 2 - this.panX) / this.scale;
-    const ly = (sy - this.height / 2 - this.panY) / this.scale;
+    this.cancelHover();
+    this.finishPendingRelease();
+    this.endGesture();
+    const p = this.toLocal(ev.clientX, ev.clientY);
+    // Preserve the cursor anchor across every sample, including moving
+    // cursors, but read geometry and write the transform only once a frame.
+    this.panX += (this.scale - k) * p.x;
+    this.panY += (this.scale - k) * p.y;
     this.scale = k;
-    this.panX = sx - this.width / 2 - k * lx;
-    this.panY = sy - this.height / 2 - k * ly;
-    this.applyTransform();
+    this.transformDirty = true;
+    this.scheduleFrame();
   };
 
-  /** background drag = pan (node circles stop propagation) */
   private onBackgroundDown = (ev: PointerEvent) => {
-    if (ev.target !== this.svg) return;
-    ev.preventDefault();
-    const startX = ev.clientX;
-    const startY = ev.clientY;
-    const startPanX = this.panX;
-    const startPanY = this.panY;
-    const rect = this.svg.getBoundingClientRect();
-    const kx = rect.width > 0 ? this.width / rect.width : 1;
-    const ky = rect.height > 0 ? this.height / rect.height : 1;
-    this.svg.style.cursor = "grabbing";
-    const move = (e: PointerEvent) => {
-      this.panX = startPanX + (e.clientX - startX) * kx;
-      this.panY = startPanY + (e.clientY - startY) * ky;
-      this.applyTransform();
-    };
-    const up = () => {
-      this.svg.style.cursor = "grab";
-      this.svg.removeEventListener("pointermove", move);
-      this.svg.removeEventListener("pointerup", up);
-      this.svg.removeEventListener("pointercancel", up);
-      try {
-        this.svg.releasePointerCapture(ev.pointerId);
-      } catch {
-        // ignore: view may already be torn down
-      }
-    };
-    try {
-      this.svg.setPointerCapture(ev.pointerId);
-    } catch {
-      // ignore: view may already be torn down
-    }
-    this.svg.addEventListener("pointermove", move);
-    this.svg.addEventListener("pointerup", up);
-    this.svg.addEventListener("pointercancel", up);
+    if (ev.target === this.svg) this.beginGesture(ev, this.svg);
   };
+
+  private beginGesture(
+    ev: PointerEvent,
+    target: SVGElement,
+    node?: GraphNode,
+    suppressClick?: () => void,
+  ) {
+    if (
+      ev.button !== 0 ||
+      ev.isPrimary === false ||
+      this.destroyed ||
+      this.warmupTicks
+    )
+      return false;
+    this.finishPendingRelease();
+    if (this.gesture) return false;
+    ev.preventDefault();
+    this.cancelHover();
+    this.gesture = {
+      target,
+      pointerId: ev.pointerId,
+      node,
+      suppressClick,
+      startX: ev.clientX,
+      startY: ev.clientY,
+      clientX: ev.clientX,
+      clientY: ev.clientY,
+      startPanX: this.panX,
+      startPanY: this.panY,
+      dragging: false,
+      pending: false,
+    };
+    if (node && (this.nodeLayer.lastElementChild as unknown) !== target)
+      this.nodeLayer.appendChild(target);
+    this.svg.style.cursor = "grabbing";
+    target.addEventListener("pointermove", this.onGestureMove);
+    target.addEventListener("pointerup", this.onGestureEnd);
+    target.addEventListener("pointercancel", this.onGestureCancel);
+    target.addEventListener("lostpointercapture", this.onGestureCancel);
+    try {
+      target.setPointerCapture(ev.pointerId);
+    } catch {
+      // A detached node or an already-ended pointer cannot start a gesture.
+      this.endGesture();
+      return false;
+    }
+    return true;
+  }
+
+  /** A new input can arrive before the previous release's queued frame. */
+  private finishPendingRelease() {
+    if (!this.gesture?.ending) return;
+    this.applyGestureSample();
+    this.endGesture(true);
+  }
+
+  private queueGestureSample(ev: PointerEvent) {
+    const g = this.gesture;
+    if (!g || ev.pointerId !== g.pointerId || g.ending) return;
+    g.clientX = ev.clientX;
+    g.clientY = ev.clientY;
+    g.dragging ||=
+      Math.hypot(g.clientX - g.startX, g.clientY - g.startY) >= CLICK_SLOP;
+    g.pending = g.dragging;
+    if (g.dragging) g.suppressClick?.();
+    this.scheduleFrame();
+  }
+
+  private onGestureMove = (ev: PointerEvent) => this.queueGestureSample(ev);
+
+  private onGestureEnd = (ev: PointerEvent) => {
+    const g = this.gesture;
+    if (!g || ev.pointerId !== g.pointerId || g.ending) return;
+    this.queueGestureSample(ev);
+    g.ending = "release";
+    // Browser click follows pointerup before the queued frame executes.
+    if (g.dragging) g.suppressClick?.();
+  };
+
+  private onGestureCancel = (ev: PointerEvent) => {
+    const g = this.gesture;
+    if (!g || ev.pointerId !== g.pointerId || g.ending) return;
+    g.suppressClick?.();
+    this.endGesture();
+  };
+
+  private applyGestureSample() {
+    const g = this.gesture;
+    if (!g) return;
+    if (g.pending) {
+      g.pending = false;
+      if (g.node) {
+        const p = this.toLocal(g.clientX, g.clientY);
+        const boundX = Math.max(0, this.width / 2 - nodeRadius(g.node) - 2);
+        const boundY = Math.max(0, this.height / 2 - nodeRadius(g.node) - 2);
+        g.node.x = g.node.fx = Math.max(-boundX, Math.min(boundX, p.x));
+        g.node.y = g.node.fy = Math.max(-boundY, Math.min(boundY, p.y));
+        g.node.vx = g.node.vy = 0;
+        this.positionsDirty = true;
+        if (!this.motionQuery?.matches) {
+          this.sim?.alphaTarget(0.3);
+          this.runTicks(60);
+        }
+      } else {
+        const r = (this.inputRect ??= this.svg.getBoundingClientRect());
+        this.panX =
+          g.startPanX +
+          (g.clientX - g.startX) * (r.width > 0 ? this.width / r.width : 1);
+        this.panY =
+          g.startPanY +
+          (g.clientY - g.startY) * (r.height > 0 ? this.height / r.height : 1);
+        this.transformDirty = true;
+      }
+    }
+  }
+
+  /** Release capture/listeners and pins for completion, replacement or teardown. */
+  private endGesture(settle = false) {
+    const g = this.gesture;
+    if (!g) return;
+    this.gesture = null;
+    if (!settle || g.dragging) g.suppressClick?.();
+    g.target.removeEventListener("pointermove", this.onGestureMove);
+    g.target.removeEventListener("pointerup", this.onGestureEnd);
+    g.target.removeEventListener("pointercancel", this.onGestureCancel);
+    g.target.removeEventListener("lostpointercapture", this.onGestureCancel);
+    this.svg.style.cursor = "grab";
+    try {
+      g.target.releasePointerCapture(g.pointerId);
+    } catch {
+      // The browser may already have released capture during cancellation.
+    }
+    this.sim?.alphaTarget(0);
+    if (g.node && g.dragging) {
+      if (g.node.kind !== "origin") g.node.fx = g.node.fy = null;
+      if (settle) this.runTicks(90);
+    }
+  }
 
   private attachNodeEvents(circle: SVGCircleElement, node: GraphNode) {
     circle.setAttribute("tabindex", "0");
@@ -671,59 +981,12 @@ export class GraphView {
 
     circle.addEventListener("pointerdown", (ev: PointerEvent) => {
       ev.stopPropagation();
-      ev.preventDefault();
-      dragOccurred = false;
-      // raise above overlapping siblings while pressed / dragged
-      if ((this.nodeLayer.lastElementChild as unknown) !== circle) {
-        this.nodeLayer.appendChild(circle);
-      }
-      const startX = ev.clientX;
-      const startY = ev.clientY;
-      let dragging = false;
-      const move = (e: PointerEvent) => {
-        if (
-          !dragging &&
-          Math.hypot(e.clientX - startX, e.clientY - startY) < CLICK_SLOP
-        ) {
-          return;
-        }
-        if (!dragging) {
-          dragging = true;
-          this.sim?.alphaTarget(0.3);
-        }
-        const p = this.toLocal(e.clientX, e.clientY);
-        node.fx = p.x;
-        node.fy = p.y;
-        this.runTicks(60);
-      };
-      const up = () => {
-        circle.removeEventListener("pointermove", move);
-        circle.removeEventListener("pointerup", up);
-        circle.removeEventListener("pointercancel", up);
-        try {
-          circle.releasePointerCapture(ev.pointerId);
-        } catch {
-          // ignore: view may already be torn down
-        }
-        dragOccurred = dragging;
-        if (dragging) {
-          this.sim?.alphaTarget(0);
-          // origin stays pinned wherever it was dropped
-          if (node.kind !== "origin") {
-            node.fx = null;
-            node.fy = null;
-          }
-          this.runTicks(90);
-        }
-      };
-      try {
-        circle.setPointerCapture(ev.pointerId);
-      } catch {
-        // ignore: view may already be torn down
-      }
-      circle.addEventListener("pointermove", move);
-      circle.addEventListener("pointerup", up);
-      circle.addEventListener("pointercancel", up);
+      if (
+        this.beginGesture(ev, circle, node, () => {
+          dragOccurred = true;
+        })
+      )
+        dragOccurred = false;
     });
 
     circle.addEventListener("click", (ev: MouseEvent) => {
@@ -734,7 +997,7 @@ export class GraphView {
 
     circle.addEventListener("dblclick", (ev: MouseEvent) => {
       ev.stopPropagation();
-      this.handlers.onOpen?.(node);
+      if (!dragOccurred) this.handlers.onOpen?.(node);
     });
 
     circle.addEventListener("contextmenu", (ev: MouseEvent) => {
@@ -743,28 +1006,10 @@ export class GraphView {
       this.handlers.onContext?.(node, ev.screenX, ev.screenY);
     });
 
-    circle.addEventListener("pointerenter", () => {
-      // NEVER move the element in the DOM here: re-inserting the node
-      // under the pointer fires pointerleave/pointerenter again and the
-      // cursor flips grab ↔ pointer in a loop (visible as a flickering
-      // hand). Highlight in place instead.
-      circle.setAttribute("stroke", KIND_COLOR[node.kind]);
-      circle.setAttribute("stroke-width", "3");
-      circle.setAttribute("stroke-opacity", "0.45");
-      const r = circle.getBoundingClientRect();
-      this.handlers.onHover?.(node, {
-        x: r.x,
-        y: r.y,
-        width: r.width,
-        height: r.height,
-      });
-    });
+    circle.addEventListener("pointerenter", () => this.showHover(circle, node));
 
     circle.addEventListener("pointerleave", () => {
-      circle.setAttribute("stroke", this.nodeOutline());
-      circle.setAttribute("stroke-width", "1");
-      circle.removeAttribute("stroke-opacity");
-      this.handlers.onHover?.(null);
+      if (this.hoveredCircle === circle) this.cancelHover();
     });
   }
 }
