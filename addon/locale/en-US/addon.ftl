@@ -37,6 +37,17 @@ citations-count-suffix = citations
 citations-load-more = Load more
 
 related-count-suffix = related papers
+related-refresh = Update
+related-search-placeholder = Filter related papers…
+related-refresh-tip = Update recommendations (cached source responses may be reused)
+related-manual = Linked in Zotero
+related-manual-tip = An existing manual relation, not an algorithmic recommendation.
+related-source-rank = { $source } #{ $rank }
+related-ranking = Combined recommendations · { $sources }
+related-ranking-tip = Combines source-list positions using reciprocal rank fusion. These positions and the resulting order are not similarity probabilities or evidence quality. No citation-count weighting.
+related-loading-more = Loading other sources · { $sources }
+related-partial = Partial recommendations · { $sources }
+related-no-identifier = Add a DOI, PMID or arXiv ID to get online recommendations.
 
 graph-loading = Building citation graph…
 graph-unavailable = Citation graph unavailable. Check the DOI / PMID or try again.
@@ -54,8 +65,9 @@ menu-copy-refs =
 graph-legend-origin = this paper
 graph-legend-reference = references
 graph-legend-citation = citing works
-graph-legend-related = related
-graph-legend-hint = solid = in your library
+graph-legend-related = OpenAlex recommendations
+graph-legend-hint = Solid nodes: in library · Arrows: cites
+graph-legend-edge-tip = Solid nodes: in your library. Arrows: citing work → cited work. Dashed lines: OpenAlex recommendations, not confirmed citations. Thin lines: bibliographic coupling (shared references).
 
 import-confirm = Import { $count } references into your library and relate them to this item? Attachments are downloaded per your Zotero settings. Click the progress window to stop midway.
 import-cancel-hint = Click here to stop
@@ -146,6 +158,8 @@ panel-export-markdown = Copy list as Markdown
 panel-export-csv = Copy list as CSV
 citations-empty = No citing papers returned by this source.
 related-empty = No related papers yet. Use refresh to find recommendations.
+related-empty-result = No recommendations from these sources.
+related-partial-empty = The responding source returned no recommendations; other sources are unavailable.
 popup-detail-label = Reference details
 popup-translate-failed = Translation failed
 popup-publication-label = Publication

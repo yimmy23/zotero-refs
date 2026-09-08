@@ -645,6 +645,7 @@ test("OpenAlex keeps explicit co-corresponding flags and never guesses from last
       "../utils/prefs": {},
       "../core/text": env.text,
       "../core/http": {},
+      "../core/related": env.load("src/core/related.ts"),
       "../core/types": env.types,
       "../utils/locale": { getString: env.getString },
     },

@@ -169,6 +169,31 @@ export function registerStyles(win: Window) {
       -webkit-box-orient: vertical;
       overflow: hidden;
     }
+    .references-related-row {
+      display: grid;
+      grid-template-columns: 16px minmax(0, 1fr) auto;
+      column-gap: 7px;
+      row-gap: 3px;
+    }
+    .references-related-reason {
+      grid-column: 2 / 4;
+      font-size: .85em;
+      color: var(--fill-secondary);
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+    .references-related-status {
+      color: var(--fill-secondary);
+      font-size: .9em;
+      line-height: 1.5;
+      margin: 0 2px 6px;
+      overflow-wrap: anywhere;
+    }
+    .references-related-status:empty { display: none; }
+    .references-related-panel .references-toolbar > .references-count {
+      flex: 1 1 auto;
+      padding-bottom: 0;
+    }
     .references-retracted {
       display: inline-block;
       vertical-align: 1px;

@@ -31,6 +31,7 @@ export interface GraphHandlers {
 }
 
 const SVG_NS = "http://www.w3.org/2000/svg";
+let nextArrowID = 0;
 
 const KIND_COLOR: Record<GraphNode["kind"], string> = {
   // origin carries the plugin accent (Zest green); the other kinds stay
@@ -105,6 +106,8 @@ export class GraphView {
   private win: Window;
 
   private svg: SVGSVGElement;
+  private arrowID = `refs-citation-arrow-${++nextArrowID}`;
+  private arrowPath: SVGPathElement;
   /** pan/zoom transform root; children: edge, node, label layers */
   private root: SVGGElement;
   private edgeLayer: SVGGElement;
@@ -144,6 +147,20 @@ export class GraphView {
     this.svg.setAttribute("height", "100%");
     this.svg.style.display = "block";
     this.svg.style.cursor = "grab";
+    const defs = this.createSVG<SVGDefsElement>("defs");
+    const marker = this.createSVG<SVGMarkerElement>("marker");
+    marker.setAttribute("id", this.arrowID);
+    marker.setAttribute("viewBox", "0 0 6 6");
+    marker.setAttribute("refX", "6");
+    marker.setAttribute("refY", "3");
+    marker.setAttribute("markerWidth", "5");
+    marker.setAttribute("markerHeight", "5");
+    marker.setAttribute("orient", "auto");
+    this.arrowPath = this.createSVG<SVGPathElement>("path");
+    this.arrowPath.setAttribute("d", "M0,0 L6,3 L0,6 Z");
+    marker.appendChild(this.arrowPath);
+    defs.appendChild(marker);
+    this.svg.appendChild(defs);
     this.root = this.createG(this.svg);
     this.edgeLayer = this.createG(this.root);
     this.nodeLayer = this.createG(this.root);
@@ -194,7 +211,10 @@ export class GraphView {
     // Keep each window's simulation separate from the shared data cache.
     data = {
       ...data,
-      nodes: data.nodes.map((node) => ({ ...node })),
+      nodes: data.nodes.map((node) => ({
+        ...node,
+        roles: [...(node.roles || [node.kind])],
+      })),
       edges: data.edges.map((edge) => ({
         ...edge,
         source: typeof edge.source === "object" ? edge.source.id : edge.source,
@@ -213,6 +233,12 @@ export class GraphView {
     for (const edge of data.edges) {
       const line = this.createSVG<SVGLineElement>("line");
       line.setAttribute("stroke-linecap", "round");
+      line.setAttribute("data-edge-type", edge.type);
+      line.setAttribute("data-provenance", edge.provenance);
+      if (edge.sharedCount !== undefined)
+        line.setAttribute("data-shared-count", String(edge.sharedCount));
+      if (edge.type === "citation")
+        line.setAttribute("marker-end", `url(#${this.arrowID})`);
       this.edgeLayer.appendChild(line);
       this.edgeEls.push({ el: line, edge });
     }
@@ -268,9 +294,11 @@ export class GraphView {
         "link",
         forceLink<GraphNode, GraphEdge>(data.edges)
           .id((n) => n.id)
-          .distance((e) => (e.kind === "direct" ? 70 : 46))
+          .distance((e) => (e.type === "bibliographic-coupling" ? 46 : 70))
           .strength((e) =>
-            e.kind === "direct" ? 0.3 : Math.min(1, e.weight / 6),
+            e.type === "bibliographic-coupling"
+              ? Math.min(1, e.weight / 6)
+              : 0.3,
           ),
       )
       .force("charge", forceManyBody<GraphNode>().strength(-120))
@@ -484,10 +512,18 @@ export class GraphView {
       const s = edge.source as GraphNode;
       const t = edge.target as GraphNode;
       if (typeof s !== "object" || typeof t !== "object") continue;
-      el.setAttribute("x1", String(s.x ?? 0));
-      el.setAttribute("y1", String(s.y ?? 0));
-      el.setAttribute("x2", String(t.x ?? 0));
-      el.setAttribute("y2", String(t.y ?? 0));
+      const dx = (t.x ?? 0) - (s.x ?? 0);
+      const dy = (t.y ?? 0) - (s.y ?? 0);
+      const length = Math.hypot(dx, dy) || 1;
+      // Citation arrows end at the cited node's rim, not behind its circle.
+      const start =
+        edge.type === "citation" ? Math.min(nodeRadius(s) + 1, length / 2) : 0;
+      const end =
+        edge.type === "citation" ? Math.min(nodeRadius(t) + 2, length / 2) : 0;
+      el.setAttribute("x1", String((s.x ?? 0) + (dx * start) / length));
+      el.setAttribute("y1", String((s.y ?? 0) + (dy * start) / length));
+      el.setAttribute("x2", String((t.x ?? 0) - (dx * end) / length));
+      el.setAttribute("y2", String((t.y ?? 0) - (dy * end) / length));
     }
     for (const node of this.data?.nodes || []) {
       const c = this.nodeEls.get(node.id);
@@ -515,17 +551,22 @@ export class GraphView {
     const labelHalo = dark ? "#1e1e1e" : "#ffffff";
     const edgeStroke = dark ? "#cccccc" : "#555555";
     const nodeOutline = this.nodeOutline();
+    this.arrowPath.setAttribute("fill", edgeStroke);
     for (const t of this.labelEls.values()) {
       t.setAttribute("fill", labelFill);
       t.setAttribute("stroke", labelHalo);
     }
     for (const { el, edge } of this.edgeEls) {
       el.setAttribute("stroke", edgeStroke);
-      if (edge.kind === "direct") {
+      if (edge.type === "citation") {
         el.setAttribute("stroke-width", "1.4");
         el.setAttribute("stroke-opacity", "0.25");
+      } else if (edge.type === "provider-related") {
+        el.setAttribute("stroke-width", "1.4");
+        el.setAttribute("stroke-opacity", "0.25");
+        el.setAttribute("stroke-dasharray", "4 3");
       } else {
-        // co-citation: thinner and more translucent, width nudged by weight
+        // Bibliographic coupling: shared references, not co-citation.
         el.setAttribute(
           "stroke-width",
           String(Math.min(1.2, 0.4 + edge.weight * 0.1)),

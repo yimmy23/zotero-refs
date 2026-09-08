@@ -487,9 +487,9 @@ await check("shutdown clears both delayed reader sweeps", async () => {
   f.hooks.detachAllReaders();
   assert.equal(f.timers.size, 0);
 });
-function devFixture() {
+function devFixture(environment = "development") {
   const wait = deferred();
-  const addon = { data: { alive: true, env: "development" } };
+  const addon = { data: { alive: true, env: environment } };
   const endpoints = {};
   const writes = new Map();
   const dev = compile(
@@ -498,8 +498,11 @@ function devFixture() {
       [
         "../core/libmatch",
         "../core/storage",
+        "../graph/build",
+        "../graph/view",
         "../pdf/parser",
         "../sources/openalex",
+        "../sources/semanticscholar",
         "../sources/crossref",
         "../pdf/readerHook",
         "../ui/rows",
@@ -507,7 +510,7 @@ function devFixture() {
       ].map((name) => [name, {}]),
     ),
     {
-      __env__: "development",
+      __env__: environment,
       addon,
       ztoolkit: { log() {} },
       Zotero: {
@@ -528,6 +531,17 @@ function devFixture() {
   );
   return { dev, wait, endpoints, writes };
 }
+await check(
+  "production does not register dev endpoints or write tokens",
+  async () => {
+    const f = devFixture("production");
+    f.wait.resolve();
+    f.dev.registerDevEval();
+    await settle();
+    assert.equal(Object.keys(f.endpoints).length, 0);
+    assert.equal(f.writes.size, 0);
+  },
+);
 await check(
   "dev endpoint registration cancels during initialization",
   async () => {

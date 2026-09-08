@@ -1,5 +1,12 @@
 import { hostIdentifiers, isChinese, titlesMatch } from "../core/text";
 import { SOURCE_NAME } from "../core/types";
+import {
+  RELATED_SOURCES,
+  fuseRelated,
+  relatedLimit,
+  snapshotRelatedRefs,
+} from "../core/related";
+import type { RelatedResult, RelatedSnapshot } from "../core/related";
 import { getString } from "../utils/locale";
 import type {
   Identifiers,
@@ -211,24 +218,53 @@ export async function getCitationsByAPI(
   return empty;
 }
 
-/** recommended / related works; S2 recommendations first */
+/** Independent recommendation lists, fused by original rank (not citations). */
 export async function getRelatedByAPI(
   ids: Identifiers,
-  limit = 20,
-): Promise<RefItem[] | null> {
-  try {
-    const res = await semanticscholar.getRelated?.(ids, limit);
-    if (res?.length) return res;
-  } catch (e) {
-    ztoolkit.log("[sources] s2 related failed", e);
-  }
-  try {
-    const res = await openalex.getRelated?.(ids, limit);
-    if (res?.length) return res;
-  } catch (e) {
-    ztoolkit.log("[sources] openalex related failed", e);
-  }
-  return null;
+  limit = 40,
+  onProgress?: (result: RelatedResult) => void,
+  shouldContinue: () => boolean = () => true,
+): Promise<RelatedResult> {
+  const bounded = relatedLimit(limit);
+  const query = { ...ids };
+  const snapshots: RelatedSnapshot[] = RELATED_SOURCES.map((source) => ({
+    source,
+    status: "loading",
+    items: [],
+  }));
+  const publish = () => {
+    if (!shouldContinue()) return;
+    try {
+      onProgress?.(fuseRelated(snapshots, bounded));
+    } catch (error) {
+      ztoolkit.log("[sources] related progress failed", error);
+    }
+  };
+  publish();
+  await Promise.all(
+    RELATED_SOURCES.map(async (source, index) => {
+      if (!shouldContinue()) return;
+      let refs: RefItem[] | null = null;
+      try {
+        refs =
+          source === "openalex"
+            ? await openalex.getRelated(query, bounded, shouldContinue)
+            : ((await semanticscholar.getRelated?.(query, bounded)) ?? null);
+      } catch (error) {
+        if (shouldContinue())
+          ztoolkit.log(`[sources] ${source} related failed`, error);
+      }
+      // Cancelled work remains incomplete, never masquerades as a successful 0.
+      if (!shouldContinue()) return;
+      snapshots[index] = {
+        source,
+        status: refs === null ? "unavailable" : "ready",
+        items: refs === null ? [] : snapshotRelatedRefs(refs, bounded),
+      };
+      publish();
+    }),
+  );
+  return fuseRelated(snapshots, bounded);
 }
 
 /**

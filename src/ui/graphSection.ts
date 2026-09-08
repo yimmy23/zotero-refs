@@ -502,6 +502,7 @@ export function registerGraphSection() {
         const hint = doc.createElement("span");
         hint.className = "references-graph-legend-hint";
         hint.textContent = getString("graph-legend-hint");
+        hint.title = getString("graph-legend-edge-tip");
         legend.append(hint);
         body.append(legend);
 

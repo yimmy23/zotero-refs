@@ -4,7 +4,9 @@ import type {
   GraphData,
   GraphEdge,
   GraphNode,
+  GraphNodeRole,
   Identifiers,
+  RefItem,
 } from "../core/types";
 import { getWorkFull, getWorksBatch, openalex } from "../sources/openalex";
 
@@ -20,9 +22,9 @@ const CITATION_LIMIT = 15;
 /** Related works considered for the graph. */
 const RELATED_LIMIT = 10;
 /** Minimum shared references for a bibliographic-coupling edge. */
-const COCITE_MIN_SHARED = 3;
+const COUPLING_MIN_SHARED = 3;
 /** Hard cap on bibliographic-coupling edges (kept by weight desc). */
-const COCITE_MAX_EDGES = 200;
+const COUPLING_MAX_EDGES = 200;
 
 export async function buildGraph(
   center: { ids: Identifiers; libraryID: number },
@@ -48,17 +50,31 @@ export async function buildGraph(
       return null;
     }
 
-    // Nodes keyed by W-id. Insertion order encodes kind priority:
-    // origin, then references, citations, related — later duplicates are
-    // skipped, so a work seen as both reference and citation stays a
-    // reference.
+    // First metadata/display kind still wins, preserving selection and sorting.
+    // Overlap adds roles rather than erasing another observed relationship.
     const nodes = new Map<string, GraphNode>();
     nodes.set(originId, {
       id: originId,
       ref: origin.ref,
       kind: "origin",
+      roles: ["origin"],
       inLibrary: false,
     });
+    const addNode = (wid: string, ref: RefItem, role: GraphNodeRole) => {
+      if (wid === originId) return;
+      const existing = nodes.get(wid);
+      if (existing) {
+        if (!existing.roles.includes(role)) existing.roles.push(role);
+      } else {
+        nodes.set(wid, {
+          id: wid,
+          ref,
+          kind: role,
+          roles: [role],
+          inLibrary: false,
+        });
+      }
+    };
 
     // Reference lists of reference-kind nodes, for bibliographic-coupling edges.
     const refWorksOf = new Map<string, Set<string>>();
@@ -72,13 +88,8 @@ export async function buildGraph(
       lean: true,
     });
     for (const [wid, work] of refMap) {
-      if (wid === originId || nodes.has(wid)) continue;
-      nodes.set(wid, {
-        id: wid,
-        ref: work.ref,
-        kind: "reference",
-        inLibrary: false,
-      });
+      if (wid === originId) continue;
+      addNode(wid, work.ref, "reference");
       refWorksOf.set(wid, new Set(work.referencedWorks));
     }
 
@@ -90,8 +101,7 @@ export async function buildGraph(
     );
     for (const ref of cites?.items || []) {
       const wid = ref.identifiers.openAlex;
-      if (!wid || wid === originId || nodes.has(wid)) continue;
-      nodes.set(wid, { id: wid, ref, kind: "citation", inLibrary: false });
+      if (wid) addNode(wid, ref, "citation");
     }
 
     onStatus?.(getString("graph-status-related"));
@@ -101,13 +111,7 @@ export async function buildGraph(
       { lean: true },
     );
     for (const [wid, work] of relMap) {
-      if (wid === originId || nodes.has(wid)) continue;
-      nodes.set(wid, {
-        id: wid,
-        ref: work.ref,
-        kind: "related",
-        inLibrary: false,
-      });
+      addNode(wid, work.ref, "related");
     }
 
     // Cap node count: origin always kept, then highest-cited first.
@@ -137,20 +141,38 @@ export async function buildGraph(
     const edges: GraphEdge[] = [];
     for (const node of kept) {
       if (node.id === originId) continue;
-      edges.push({
-        source: originId,
-        target: node.id,
-        weight: 1,
-        kind: "direct",
-      });
+      if (node.roles.includes("reference"))
+        edges.push({
+          source: originId,
+          target: node.id,
+          weight: 1,
+          type: "citation",
+          provenance: "openalex:referenced-works",
+        });
+      if (node.roles.includes("citation"))
+        edges.push({
+          source: node.id,
+          target: originId,
+          weight: 1,
+          type: "citation",
+          provenance: "openalex:citing-works",
+        });
+      if (node.roles.includes("related"))
+        edges.push({
+          source: originId,
+          target: node.id,
+          weight: 1,
+          type: "provider-related",
+          provenance: "openalex:related-works",
+        });
     }
 
     // Bibliographic coupling among kept reference nodes: two references sharing
     // enough entries of their own reference lists get linked.
     const refNodes = kept.filter(
-      (n) => n.kind === "reference" && refWorksOf.has(n.id),
+      (n) => n.roles.includes("reference") && refWorksOf.has(n.id),
     );
-    const cocite: GraphEdge[] = [];
+    const coupling: GraphEdge[] = [];
     for (let i = 0; i < refNodes.length; i++) {
       const a = refWorksOf.get(refNodes[i].id)!;
       for (let j = i + 1; j < refNodes.length; j++) {
@@ -158,18 +180,20 @@ export async function buildGraph(
         const [small, large] = a.size <= b.size ? [a, b] : [b, a];
         let shared = 0;
         for (const w of small) if (large.has(w)) shared++;
-        if (shared >= COCITE_MIN_SHARED) {
-          cocite.push({
+        if (shared >= COUPLING_MIN_SHARED) {
+          coupling.push({
             source: refNodes[i].id,
             target: refNodes[j].id,
             weight: shared,
-            kind: "cocite",
+            type: "bibliographic-coupling",
+            provenance: "openalex:referenced-works",
+            sharedCount: shared,
           });
         }
       }
     }
-    cocite.sort((x, y) => y.weight - x.weight);
-    edges.push(...cocite.slice(0, COCITE_MAX_EDGES));
+    coupling.sort((x, y) => y.weight - x.weight);
+    edges.push(...coupling.slice(0, COUPLING_MAX_EDGES));
 
     onStatus?.(
       getString("graph-status-ready", {

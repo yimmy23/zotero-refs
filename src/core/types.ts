@@ -125,11 +125,14 @@ export interface MetaSource {
 }
 
 /** Graph structures for the citation graph view. */
+export type GraphNodeRole = "origin" | "reference" | "citation" | "related";
 export interface GraphNode {
   id: string;
   ref: RefItem;
-  /** node kind relative to the origin */
-  kind: "origin" | "reference" | "citation" | "related";
+  /** Primary display role; retains origin > reference > citation > related priority. */
+  kind: GraphNodeRole;
+  /** All observed roles relative to the origin, without dropping overlap. */
+  roles: GraphNodeRole[];
   inLibrary: boolean;
   /** layout state, filled by the force simulation */
   x?: number;
@@ -143,9 +146,16 @@ export interface GraphNode {
 export interface GraphEdge {
   source: string | GraphNode;
   target: string | GraphNode;
-  /** co-citation strength, >= 1 */
+  /** Layout weight: 1 for origin links; shared-reference count for coupling. */
   weight: number;
-  kind: "direct" | "cocite";
+  /** Only citation edges are directed: source cites target. */
+  type: "citation" | "provider-related" | "bibliographic-coupling";
+  provenance:
+    | "openalex:referenced-works"
+    | "openalex:citing-works"
+    | "openalex:related-works";
+  /** Distinct shared cited works; defined only for bibliographic coupling. */
+  sharedCount?: number;
 }
 
 export interface GraphData {

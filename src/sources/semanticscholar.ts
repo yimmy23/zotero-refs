@@ -7,6 +7,7 @@ import type {
   RefTag,
 } from "../core/types";
 import { http } from "../core/http";
+import { relatedLimit, withRelatedRank } from "../core/related";
 import { CITED_CHIP_COLOR } from "../core/types";
 import { getString } from "../utils/locale";
 import { getPref } from "../utils/prefs";
@@ -223,16 +224,28 @@ async function getCitations(
 
 async function getRelated(
   ids: Identifiers,
-  limit = 20,
+  limit = 40,
 ): Promise<RefItem[] | null> {
   const pid = pidFromIdentifiers(ids);
   if (!pid) return null;
   const fields = "title,year,authors,abstract,externalIds,venue,citationCount";
-  const url = `${RECOMMENDATIONS_API}/papers/forpaper/${encodeURIComponent(pid)}?fields=${fields}&limit=${limit}`;
+  const bounded = relatedLimit(limit);
+  const url = `${RECOMMENDATIONS_API}/papers/forpaper/${encodeURIComponent(pid)}?fields=${fields}&limit=${bounded}`;
   const res = await http.getJSON<any>(url, { headers: authHeaders() });
-  const list: any[] = res?.recommendedPapers || [];
-  if (!list.length) return null;
-  return list.map((item: any) => mapPaper(item));
+  const list: unknown = res?.recommendedPapers;
+  if (!Array.isArray(list)) return null;
+  const refs: RefItem[] = [];
+  list.slice(0, bounded).forEach((item, index) => {
+    if (!item || typeof item !== "object") return;
+    try {
+      const ref = mapPaper(item);
+      if (!ref.title && !Object.values(ref.identifiers).some(Boolean)) return;
+      refs.push(withRelatedRank(ref, index + 1));
+    } catch (error) {
+      ztoolkit.log("[semanticscholar] invalid related record", error);
+    }
+  });
+  return refs.length || !list.length ? refs : null;
 }
 
 export const semanticscholar: MetaSource = {

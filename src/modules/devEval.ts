@@ -11,6 +11,9 @@
 
 import { libraryIndex } from "../core/libmatch";
 import { refStorage } from "../core/storage";
+import { buildGraph } from "../graph/build";
+import { GraphView } from "../graph/view";
+import { semanticscholar } from "../sources/semanticscholar";
 import { parsePDFReferences } from "../pdf/parser";
 import { openalex } from "../sources/openalex";
 import { crossref } from "../sources/crossref";
@@ -126,6 +129,9 @@ async function registerWhenReady(generation: number) {
           let result = await fn(Zotero, addon, {
             libraryIndex,
             refStorage,
+            buildGraph,
+            GraphView,
+            semanticscholar,
             parsePDFReferences,
             openalex,
             crossref,

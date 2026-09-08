@@ -46,8 +46,10 @@ Items are looked up by DOI, or — when there is none — by PMID / arXiv id fro
 ### Cited By · Related · Citation Graph
 
 - **Cited By** — paged list of works citing this item (Semantic Scholar / OpenAlex; paging is source-pinned and deduplicated) with a keyword filter over the loaded rows.
-- **Related** — Semantic Scholar recommendations (OpenAlex fallback), merged with your Zotero related items.
+- **Related** — existing Zotero links first, followed by up to 20 recommendations from Semantic Scholar and OpenAlex. Both sources are queried concurrently (at most 40 candidates each), and source-list positions are combined with reciprocal rank fusion. Each row shows the contributing sources and their list positions; these are not similarity probabilities. Matching uses compatible shared identifiers, not titles alone, and citation counts do not boost the ranking. A working source can display results while the other is pending or unavailable. Update recomputes the list, potentially reusing the source HTTP cache; complete results have a bounded 30-minute panel cache. No abstract upload or local AI model is required.
 - **Citation Graph** — a Connected-Papers-style force graph built from OpenAlex references + citations + related works with bibliographic-coupling edges (shared references). Node size = citation count; **solid = in your library**. **Hover** a node for the same multi-source card as a reference row (with a `+ Import` chip when the work is not in your library); **right-click** for import / show in library / open DOI / PubMed / Google Scholar / copy citation / **re-centre the graph on that work** (a "back to this item" button appears); click selects the item in your library, double-click opens it online; `Ctrl+wheel` zooms, drag pans. Legend on top; Rebuild button refetches.
+
+Graph arrows run from the citing work to the cited work. Dashed links are provider recommendations, not confirmed citations; thin links represent shared references. Zest's Library Relations view instead covers local item links, authors, tags and collections.
 
 ### Settings overview
 
@@ -106,7 +108,11 @@ Architecture, invariants, and verified gotchas (Fluent l10n rules, hook guarding
 
 **阅读器引文链接**：悬停正文引文保留 Zotero 原生预览；普通点击引文或内部链接按 Zotero 原生方式在当前视图跳转；启用相关设置后，**Alt / Option＋点击**在分栏中打开目标，保留当前阅读位置，分栏方向可设置。
 
-**被引用**（分页加载，锁源去重，可关键词筛选）·**相关文献**（S2 推荐 + OpenAlex 兜底，合并 Zotero 关联条目）·**引文图谱**（OpenAlex 数据 + 基于共同参考文献的文献耦合边的力导向图：节点大小=被引量，实心=已入库）。**悬停**节点显示与参考文献行相同的多源卡片（未入库时带「+ 导入」）；**右键**菜单：导入并关联 / 在文库中显示 / 打开 DOI / PubMed / Google Scholar / 复制引文 / **以此文献为中心重建图谱**（出现「回到本文」按钮）；单击在文库中选中，双击在线打开；`Ctrl+滚轮` 缩放、拖动平移。
+**被引用**（分页加载，锁源去重，可关键词筛选）·**相关文献**（先列出 Zotero 人工关联，再融合 Semantic Scholar 与 OpenAlex 推荐）·**引文图谱**（OpenAlex 数据 + 基于共同参考文献的文献耦合边的力导向图：节点大小=被引量，实心=已入库）。**悬停**节点显示与参考文献行相同的多源卡片（未入库时带「+ 导入」）；**右键**菜单：导入并关联 / 在文库中显示 / 打开 DOI / PubMed / Google Scholar / 复制引文 / **以此文献为中心重建图谱**（出现「回到本文」按钮）；单击在文库中选中，双击在线打开；`Ctrl+滚轮` 缩放、拖动平移。
+
+相关文献并行获取两个来源的候选（每源最多 40 篇），按来源列表位次进行倒数排名融合，排除本文和已有关联后最多显示 20 条推荐。行下标明来源及其列表位次，不把它们当成相似概率，不按被引数提高排名。同名但 DOI 不同的论文保留；仅凭标题不会合并。先返回的来源可以先显示，另一来源失败不会清空已有结果。更新按钮重新组装推荐，可能复用来源 HTTP 缓存；完整双源结果另有最多 40 个条目、30 分钟的面板缓存。无需上传摘要或安装本地 AI 模型。
+
+引文图谱中的箭头方向是“引用者 → 被引用者”；来源推荐使用无箭头虚线，共享参考文献使用细线。与 Zest 的文库关系图分工不同，后者呈现本地条目、作者、标签和分类关系。
 
 ### 协议
 

@@ -1,6 +1,7 @@
 import { getPref } from "../utils/prefs";
 import { cleanText } from "../core/text";
 import { http } from "../core/http";
+import { relatedLimit, withRelatedRank } from "../core/related";
 import { CITED_CHIP_COLOR } from "../core/types";
 import { getString } from "../utils/locale";
 import type {
@@ -250,7 +251,11 @@ export const openalex: MetaSource & {
     offset?: number,
     limit?: number,
   ): Promise<PagedRefs | null>;
-  getRelated(ids: Identifiers, limit?: number): Promise<RefItem[] | null>;
+  getRelated(
+    ids: Identifiers,
+    limit?: number,
+    shouldContinue?: () => boolean,
+  ): Promise<RefItem[] | null>;
 } = {
   id: "openalex",
 
@@ -324,16 +329,54 @@ export const openalex: MetaSource & {
     };
   },
 
-  async getRelated(ids: Identifiers, limit = 20): Promise<RefItem[] | null> {
-    const full = await getWorkFull(ids);
-    if (!full || !full.relatedWorks.length) return null;
-    const wids = full.relatedWorks.slice(0, limit);
-    const batch = await getWorksBatch(wids);
-    const refs: RefItem[] = [];
-    for (const wid of wids) {
-      const hit = batch.get(wid);
-      if (hit) refs.push(hit.ref);
+  async getRelated(
+    ids: Identifiers,
+    limit = 40,
+    shouldContinue: () => boolean = () => true,
+  ): Promise<RefItem[] | null> {
+    const path = workPathFromIds(ids);
+    if (!path || !shouldContinue()) return null;
+    const bounded = relatedLimit(limit);
+    // Keep the raw list: hydrating fewer works must not renumber later ranks.
+    const full = await getJSON(`${path}?select=id,related_works`);
+    if (!shouldContinue() || !full?.id || !Array.isArray(full.related_works))
+      return null;
+    const ranked = full.related_works
+      .slice(0, bounded)
+      .map((id: unknown, index: number) => ({
+        wid: typeof id === "string" ? bareId(id) : undefined,
+        rank: index + 1,
+      }))
+      .filter(
+        (entry: { wid?: string }) => entry.wid && /^W\d+$/.test(entry.wid),
+      );
+    if (!ranked.length) return full.related_works.length ? null : [];
+    if (!shouldContinue()) return null;
+    const wids = [
+      ...new Set(ranked.map((entry: { wid: string }) => entry.wid)),
+    ];
+    const result = await getJSON(
+      `${BASE}/works?filter=openalex_id:${wids.join("|")}&per-page=${bounded}&select=${SELECT}`,
+    );
+    if (!shouldContinue() || !Array.isArray(result?.results)) return null;
+    const batch = new Map<string, RefItem>();
+    for (const work of result.results.slice(0, bounded)) {
+      if (typeof work?.id !== "string") continue;
+      const wid = bareId(work.id);
+      if (!wid || !wids.includes(wid) || batch.has(wid)) continue;
+      try {
+        batch.set(wid, mapWork(work));
+      } catch (error) {
+        ztoolkit.log("[openalex] invalid related record", error);
+      }
     }
+    const refs: RefItem[] = [];
+    for (const { wid, rank } of ranked) {
+      const hit = batch.get(wid);
+      if (hit) refs.push(withRelatedRank(hit, rank));
+    }
+    // A known non-empty recommendation list with no hydrated records is not
+    // evidence that the provider has no recommendations.
     return refs.length ? refs : null;
   },
 };

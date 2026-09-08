@@ -37,6 +37,17 @@ citations-count-suffix = 篇引证文献
 citations-load-more = 加载更多
 
 related-count-suffix = 篇相关文献
+related-refresh = 更新推荐
+related-search-placeholder = 筛选相关文献…
+related-refresh-tip = 更新推荐（可能复用来源缓存）
+related-manual = 已有关联
+related-manual-tip = 已保存在 Zotero 中的人工关联，不是算法推荐。
+related-source-rank = { $source } 第 { $rank } 项
+related-ranking = 综合推荐 · { $sources }
+related-ranking-tip = 按来源列表位次进行倒数排名融合。位次和综合顺序不代表相似概率或证据质量，不以被引数加权。
+related-loading-more = 正在补充其他来源 · { $sources }
+related-partial = 部分来源推荐 · { $sources }
+related-no-identifier = 添加 DOI、PMID 或 arXiv 标识后可获取在线推荐。
 
 graph-loading = 正在构建引文图谱…
 graph-unavailable = 暂时无法生成图谱，请检查 DOI / PMID 或重试。
@@ -54,8 +65,9 @@ menu-copy-refs =
 graph-legend-origin = 本文
 graph-legend-reference = 参考文献
 graph-legend-citation = 引证文献
-graph-legend-related = 相关
-graph-legend-hint = 实心 = 已在文库
+graph-legend-related = OpenAlex 推荐
+graph-legend-hint = 实心节点：已在文库 · 箭头：引用
+graph-legend-edge-tip = 实心节点：已在文库。箭头：引用文献 → 被引文献。虚线：OpenAlex 来源推荐，不代表已确认的引用关系。细线：书目耦合，即共享参考文献。
 
 import-confirm = 将 { $count } 条参考文献导入文库并与本条目关联？附件按 Zotero 设置自动下载。导入过程中点击进度窗口可随时停止。
 import-cancel-hint = 点击此处停止
@@ -146,6 +158,8 @@ panel-export-markdown = 复制列表 · Markdown
 panel-export-csv = 复制列表 · CSV
 citations-empty = 该数据源暂未返回被引文献。
 related-empty = 暂无相关文献，点击刷新获取推荐。
+related-empty-result = 当前来源暂无推荐文献。
+related-partial-empty = 已响应来源暂无推荐，其他来源暂不可用。
 popup-detail-label = 文献详情
 popup-translate-failed = 翻译失败
 popup-publication-label = 发表信息

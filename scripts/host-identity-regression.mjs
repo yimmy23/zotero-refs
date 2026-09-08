@@ -44,6 +44,58 @@ const reference = (title) => ({
   authors: ["Synthetic Author"],
   identifiers: {},
 });
+function relatedResult(refs, { complete = true, sources } = {}) {
+  return {
+    items: refs.map((ref, index) => ({
+      ref,
+      evidence: [{ source: "openalex", rank: index + 1 }],
+      score: 1 / (61 + index),
+    })),
+    sources: sources || [
+      {
+        source: "semanticscholar",
+        status: complete ? "ready" : "loading",
+        count: 0,
+      },
+      { source: "openalex", status: "ready", count: refs.length },
+    ],
+    complete,
+  };
+}
+function relatedPanel(env, related) {
+  related.registerRelatedSection();
+  const pane = env.panes.get("related-papers"),
+    doc = document(),
+    section = doc.createElement("collapsible-section"),
+    summaries = [];
+  doc.body.root = false;
+  section.root = true;
+  section.open = true;
+  section.append(doc.body);
+  return {
+    pane,
+    doc,
+    section,
+    summaries,
+    render: (item) =>
+      pane.onAsyncRender({
+        body: doc.body,
+        item,
+        setSectionSummary: (value) => summaries.push(value),
+      }),
+    rows: () => doc.body.querySelectorAll(".references-row"),
+    titles: () =>
+      doc.body.querySelectorAll(".references-row").map((row) => row.ref.title),
+    status: () =>
+      doc.body.querySelector(".references-related-status").textContent,
+    list: () => doc.body.querySelector(".references-list"),
+    reload: () => doc.body.querySelector(".references-toolbar").children[1],
+    toggle: (open) => {
+      section.open = open;
+      pane.onToggle({ body: doc.body });
+    },
+  };
+}
 class Element {
   constructor(tag, doc) {
     this.localName = tag;
@@ -72,7 +124,8 @@ class Element {
   }
   get textContent() {
     return (
-      this.text || this.children.map((child) => child.textContent).join("")
+      (this.text || "") +
+      this.children.map((child) => child.textContent).join("")
     );
   }
   append(...children) {
@@ -87,6 +140,15 @@ class Element {
   }
   setAttribute(key, value) {
     this.attributes.set(key, String(value));
+  }
+  getAttribute(key) {
+    return this.attributes.get(key) ?? null;
+  }
+  closest(selector) {
+    for (let node = this; node; node = node.parentElement) {
+      if (node.localName === selector) return node;
+    }
+    return null;
   }
   addEventListener(key, fn) {
     this.events.set(key, fn);
@@ -105,7 +167,20 @@ class Element {
   }
 }
 function document() {
-  const doc = { createElement: (tag) => new Element(tag, doc) };
+  const events = new Map();
+  const doc = {
+    hidden: false,
+    createElement: (tag) => new Element(tag, doc),
+    events,
+    addEventListener: (name, fn) => {
+      if (!events.has(name)) events.set(name, new Set());
+      events.get(name).add(fn);
+    },
+    removeEventListener: (name, fn) => events.get(name)?.delete(fn),
+    dispatch: (name) => {
+      for (const fn of [...(events.get(name) || [])]) fn();
+    },
+  };
   doc.body = doc.createElement("body");
   doc.body.root = true;
   return doc;
@@ -231,8 +306,10 @@ function fixture(options = {}) {
       renderRefRow: (ctx, refs, index) => {
         const row = ctx.list.ownerDocument.createElement("div");
         row.className = "references-row";
+        row.ref = refs[index];
         row.textContent = refs[index].title;
         ctx.list.append(row);
+        return row;
       },
       filterRows: () => {},
       closePopup: () => {},
@@ -260,11 +337,26 @@ function fixture(options = {}) {
       },
       "\nexport {getState,findReaderForItem,fetchReferences,refresh,states};\n",
     );
+  const related = (overrides = {}) =>
+    load(
+      "src/ui/related.ts",
+      {
+        ...shared,
+        "../core/related": load("src/core/related.ts", {
+          "./text": text,
+          "./types": types,
+        }),
+        "../sources": { getRelatedByAPI: async () => relatedResult([]) },
+        ...overrides,
+      },
+      "\nexport {cache};\n",
+    );
   return {
     globals,
     load,
     shared,
     section,
+    related,
     storage,
     prefs,
     timers,
@@ -566,45 +658,589 @@ test("related recommendations cannot cache or paint an obsolete host response", 
     old = deferred(),
     fresh = deferred();
   let calls = 0;
-  const related = env.load(
-    "src/ui/related.ts",
-    {
-      ...env.shared,
-      "../sources": {
-        getRelatedByAPI: () => (++calls === 1 ? old.promise : fresh.promise),
-      },
+  const related = env.related({
+    "../sources": {
+      getRelatedByAPI: () => (++calls === 1 ? old.promise : fresh.promise),
     },
-    "\nexport {cache};\n",
-  );
-  related.registerRelatedSection();
-  const pane = env.panes.get("related-papers"),
-    doc = document();
-  await pane.onAsyncRender({
-    body: doc.body,
-    item,
-    setSectionSummary: () => {},
   });
+  const panel = relatedPanel(env, related);
+  await panel.render(item);
   const oldKey = env.storage.itemStateKey(item);
   await env.fire(350);
   item.fields.DOI = "10.5555/b";
-  await pane.onAsyncRender({
-    body: doc.body,
-    item,
-    setSectionSummary: () => {},
-  });
+  await panel.render(item);
   await env.fire(350);
-  old.resolve([reference("Old recommendation")]);
+  old.resolve(relatedResult([reference("Old recommendation")]));
   await tick();
   assert.equal(related.cache.has(oldKey), false);
-  fresh.resolve([reference("Current recommendation")]);
+  fresh.resolve(relatedResult([reference("Current recommendation")]));
   await tick();
   assert.equal(
-    related.cache.get(env.storage.itemStateKey(item))[0].title,
+    related.cache.get(env.storage.itemStateKey(item)).result.items[0].ref.title,
     "Current recommendation",
   );
+  assert.equal(panel.rows()[0].ref.title, "Current recommendation");
+});
+
+test("related renders the first partial result before final completion and caches only the final result", async () => {
+  const env = fixture(),
+    item = host(),
+    wait = deferred(),
+    calls = [];
+  let publish;
+  const related = env.related({
+    "../sources": {
+      getRelatedByAPI: (ids, limit, partial, current) => {
+        calls.push({ ids, limit, current });
+        publish = partial;
+        return wait.promise;
+      },
+    },
+  });
+  const panel = relatedPanel(env, related);
+  await panel.render(item);
+  assert.equal(calls.length, 0, "render does not await provider requests");
+  await env.fire(350);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].ids, { DOI: "10.5555/a" });
+  assert.equal(calls[0].limit, 40);
+  assert.equal(calls[0].current(), true);
+  publish(relatedResult([reference("First provider")], { complete: false }));
+  assert.deepEqual(panel.titles(), ["First provider"]);
+  assert.equal(panel.status(), "related-loading-more");
+  assert.equal(panel.list().getAttribute("aria-busy"), "true");
+  assert.equal(panel.reload().disabled, true);
+  assert.equal(related.cache.size, 0);
+  const final = relatedResult([
+    reference("First provider"),
+    reference("Second provider"),
+  ]);
+  final.items[0].evidence.push({ source: "semanticscholar", rank: 3 });
+  final.sources[0] = { source: "semanticscholar", status: "ready", count: 1 };
+  wait.resolve(final);
+  await tick();
+  assert.deepEqual(panel.titles(), ["First provider", "Second provider"]);
+  assert.equal(panel.status(), "related-ranking");
+  assert.equal(panel.list().getAttribute("aria-busy"), "false");
+  assert.equal(panel.reload().disabled, false);
+  assert.equal(panel.summaries.at(-1), "2");
   assert.equal(
-    doc.body.querySelectorAll(".references-row")[0].textContent,
-    "Current recommendation",
+    panel.rows()[0].querySelector(".references-related-reason").textContent,
+    "related-source-rank · related-source-rank",
+  );
+  assert.equal(related.cache.get(env.storage.itemStateKey(item)).result, final);
+  assert.equal(
+    typeof related.cache.get(env.storage.itemStateKey(item)).time,
+    "number",
+  );
+});
+
+for (const change of [
+  "collapse",
+  "destroy",
+  "detach",
+  "switch",
+  "hidden",
+  "shutdown",
+  "identity",
+]) {
+  test(`related drops partial/final completion after ${change}`, async () => {
+    const env = fixture(),
+      item = host(),
+      wait = deferred();
+    let publish, current;
+    const related = env.related({
+      "../sources": {
+        getRelatedByAPI: (_ids, _limit, partial, owns) => {
+          publish = partial;
+          current = owns;
+          return wait.promise;
+        },
+      },
+    });
+    const panel = relatedPanel(env, related);
+    await panel.render(item);
+    await env.fire(350);
+    publish(relatedResult([reference("Visible partial")], { complete: false }));
+    if (change === "collapse") panel.toggle(false);
+    if (change === "destroy") panel.pane.onDestroy({ body: panel.doc.body });
+    if (change === "detach") panel.section.root = false;
+    if (change === "hidden") panel.doc.hidden = true;
+    if (change === "shutdown") env.globals.addon.data.alive = false;
+    if (change === "identity") item.fields.DOI = "10.5555/changed";
+    if (change === "switch") {
+      const next = host(2);
+      next.key = "OTHERKEY";
+      next.fields.DOI = "10.5555/next";
+      panel.pane.onItemChange({
+        body: panel.doc.body,
+        item: next,
+        setEnabled: () => {},
+      });
+      await panel.render(next);
+    }
+    const before = panel.doc.body.textContent;
+    const summaries = panel.summaries.length;
+    assert.equal(current(), false, "source cancellation predicate is live");
+    publish(relatedResult([reference("Late partial")], { complete: false }));
+    wait.resolve(relatedResult([reference("Late final")]));
+    await tick();
+    assert.equal(panel.doc.body.textContent, before);
+    assert.equal(panel.summaries.length, summaries);
+    assert.equal(related.cache.size, 0);
+  });
+}
+
+test("related cancels collapsed/destroyed debounce work and retries when reopened", async () => {
+  for (const change of ["collapse", "destroy"]) {
+    const env = fixture(),
+      item = host();
+    let calls = 0;
+    const related = env.related({
+      "../sources": {
+        getRelatedByAPI: async () => {
+          calls++;
+          return relatedResult([reference("Fresh result")]);
+        },
+      },
+    });
+    const panel = relatedPanel(env, related);
+    await panel.render(item);
+    if (change === "collapse") panel.toggle(false);
+    else panel.pane.onDestroy({ body: panel.doc.body });
+    await env.fire(350);
+    assert.equal(calls, 0, change);
+    assert.equal(related.cache.size, 0);
+    if (change === "collapse") panel.toggle(true);
+    else await panel.render(item);
+    await env.fire(350);
+    assert.equal(calls, 1, change);
+    assert.deepEqual(panel.titles(), ["Fresh result"]);
+  }
+});
+
+test("related reopening an interrupted request starts a fresh generation without caching the late old result", async () => {
+  const env = fixture(),
+    item = host(),
+    old = deferred(),
+    fresh = deferred(),
+    owns = [];
+  let calls = 0;
+  const related = env.related({
+    "../sources": {
+      getRelatedByAPI: (_ids, _limit, _partial, current) => {
+        owns.push(current);
+        return ++calls === 1 ? old.promise : fresh.promise;
+      },
+    },
+  });
+  const panel = relatedPanel(env, related);
+  await panel.render(item);
+  await env.fire(350);
+  panel.toggle(false);
+  assert.equal(panel.list().getAttribute("aria-busy"), "false");
+  assert.equal(panel.reload().disabled, false);
+  panel.toggle(true);
+  await env.fire(350);
+  assert.equal(calls, 2);
+  assert.equal(owns[0](), false);
+  assert.equal(owns[1](), true);
+  old.resolve(relatedResult([reference("Abandoned request")]));
+  await tick();
+  assert.equal(related.cache.size, 0);
+  assert.deepEqual(panel.titles(), []);
+  fresh.resolve(relatedResult([reference("Retried request")]));
+  await tick();
+  assert.deepEqual(panel.titles(), ["Retried request"]);
+  assert.equal(related.cache.size, 1);
+});
+
+test("related row/import enrichment cannot mutate cached provider metadata or later cached views", async () => {
+  const env = fixture(),
+    item = host();
+  const ref = {
+    ...reference("Provider paper"),
+    text: "Provider description",
+    identifiers: { DOI: "10.5555/recommended" },
+    tags: [{ tag: "Evidence" }, "Original"],
+    firstAuthors: ["First Author"],
+    correspondingAuthors: ["Corresponding Author"],
+    references: [
+      {
+        ...reference("Nested reference"),
+        identifiers: { DOI: "10.5555/nested" },
+      },
+    ],
+  };
+  const result = relatedResult([ref]),
+    snapshot = JSON.parse(JSON.stringify(result));
+  let calls = 0;
+  const related = env.related({
+    "../sources": {
+      getRelatedByAPI: async () => {
+        calls++;
+        return result;
+      },
+    },
+  });
+  const panel = relatedPanel(env, related);
+  await panel.render(item);
+  await env.fire(350);
+  const rendered = panel.rows()[0].ref;
+  assert.notEqual(rendered, ref);
+  assert.equal(rendered.text, "Provider description");
+  rendered.libItemID = 99;
+  rendered.identifiers.DOI = "10.5555/import-enriched";
+  rendered.authors.push("Enriched Author");
+  rendered.tags[0].tag = "Modified";
+  rendered.tags.push("Extra");
+  rendered.firstAuthors.push("Enriched First Author");
+  rendered.correspondingAuthors.push("Enriched Corresponding Author");
+  rendered.references[0].identifiers.DOI = "10.5555/nested-enrichment";
+  rendered.references.push(reference("Extra nested reference"));
+  rendered.text = "Modified row description";
+  assert.deepEqual(
+    related.cache.get(env.storage.itemStateKey(item)).result,
+    snapshot,
+  );
+  await panel.render(item);
+  await env.fire(350);
+  assert.equal(calls, 1, "reopen uses the valid final cache");
+  assert.deepEqual(panel.rows()[0].ref, ref);
+  assert.equal(panel.rows()[0].ref.libItemID, undefined);
+});
+
+test("related visibility changes cancel pending work, resume it, and dispose listeners", async () => {
+  const env = fixture(),
+    item = host(),
+    old = deferred(),
+    fresh = deferred();
+  let calls = 0;
+  const related = env.related({
+    "../sources": {
+      getRelatedByAPI: () => (++calls === 1 ? old.promise : fresh.promise),
+    },
+  });
+  const panel = relatedPanel(env, related);
+  await panel.render(item);
+  assert.equal(panel.doc.events.get("visibilitychange").size, 1);
+  await env.fire(350);
+  panel.doc.hidden = true;
+  panel.doc.dispatch("visibilitychange");
+  old.resolve(relatedResult([reference("Hidden completion")]));
+  await tick();
+  assert.deepEqual(panel.titles(), []);
+  assert.equal(related.cache.size, 0);
+  panel.doc.hidden = false;
+  panel.doc.dispatch("visibilitychange");
+  await env.fire(350);
+  assert.equal(calls, 2);
+  fresh.resolve(relatedResult([reference("Visible retry")]));
+  await tick();
+  assert.deepEqual(panel.titles(), ["Visible retry"]);
+  await panel.render(item);
+  assert.equal(
+    panel.doc.events.get("visibilitychange").size,
+    1,
+    "rerender removes the previous listener",
+  );
+  panel.pane.onDestroy({ body: panel.doc.body });
+  assert.equal(panel.doc.events.get("visibilitychange").size, 0);
+  panel.doc.dispatch("visibilitychange");
+  await env.fire(350);
+  assert.equal(calls, 2, "destroyed visibility callbacks cannot restart work");
+});
+
+test("related failure is not cached and explicit refresh retries while keeping manual links", async () => {
+  const env = fixture(),
+    item = host(),
+    manual = host(3);
+  manual.fields.title = "Manual paper retained on failure";
+  manual.fields.DOI = "10.5555/manual";
+  manual.getCreators = () => [];
+  item.relatedItems = ["MANUAL"];
+  env.globals.Zotero.Items.getByLibraryAndKey = () => manual;
+  let calls = 0;
+  const related = env.related({
+    "../sources": {
+      getRelatedByAPI: async () =>
+        ++calls === 1
+          ? relatedResult([], {
+              sources: [
+                { source: "openalex", status: "unavailable", count: 0 },
+                { source: "semanticscholar", status: "unavailable", count: 0 },
+              ],
+            })
+          : relatedResult([reference("Recovered recommendation")]),
+    },
+  });
+  const panel = relatedPanel(env, related);
+  await panel.render(item);
+  await env.fire(350);
+  assert.deepEqual(panel.titles(), ["Manual paper retained on failure"]);
+  assert.equal(panel.status(), "panel-load-failed");
+  assert.equal(related.cache.size, 0);
+  assert.equal(panel.reload().disabled, false);
+  panel.reload().events.get("click")();
+  await tick();
+  assert.equal(calls, 2);
+  assert.deepEqual(panel.titles(), [
+    "Manual paper retained on failure",
+    "Recovered recommendation",
+  ]);
+  assert.equal(related.cache.size, 1);
+});
+
+test("related no-identifier items retain manual links without making provider requests", async () => {
+  const env = fixture(),
+    item = host(),
+    manual = host(3);
+  item.fields.DOI = "";
+  manual.fields.title = "Local relation";
+  manual.getCreators = () => [];
+  item.relatedItems = ["MANUAL"];
+  env.globals.Zotero.Items.getByLibraryAndKey = () => manual;
+  const related = env.related({
+    "../sources": {
+      getRelatedByAPI: () =>
+        assert.fail("missing identifier must not trigger provider request"),
+    },
+  });
+  const panel = relatedPanel(env, related);
+  await panel.render(item);
+  await env.fire(350);
+  assert.deepEqual(panel.titles(), ["Local relation"]);
+  assert.equal(panel.status(), "related-no-identifier");
+  assert.equal(panel.reload().disabled, true);
+  assert.equal(related.cache.size, 0);
+});
+
+test("related distinguishes empty success, incomplete empty results, and unavailable providers", async () => {
+  for (const [statuses, message, cached] of [
+    [["ready", "ready"], "related-empty-result", true],
+    [["ready", "unavailable"], "related-partial-empty", false],
+    [["unavailable", "unavailable"], "panel-load-failed", false],
+  ]) {
+    const env = fixture(),
+      item = host();
+    const result = relatedResult([], {
+      sources: [
+        { source: "semanticscholar", status: statuses[0], count: 0 },
+        { source: "openalex", status: statuses[1], count: 0 },
+      ],
+    });
+    const related = env.related({
+      "../sources": { getRelatedByAPI: async () => result },
+    });
+    const panel = relatedPanel(env, related);
+    await panel.render(item);
+    await env.fire(350);
+    assert.equal(panel.list().message, message);
+    assert.equal(related.cache.has(env.storage.itemStateKey(item)), cached);
+    if (message === "panel-load-failed")
+      assert.equal(
+        panel.status(),
+        "",
+        "failure is not duplicated in status and list",
+      );
+  }
+});
+
+test("related partial provider failure keeps useful recommendations but does not freeze them in cache", async () => {
+  const env = fixture(),
+    item = host();
+  let calls = 0;
+  const related = env.related({
+    "../sources": {
+      getRelatedByAPI: async () => {
+        calls++;
+        return relatedResult([reference("Available provider paper")], {
+          sources: [
+            { source: "semanticscholar", status: "unavailable", count: 0 },
+            { source: "openalex", status: "ready", count: 1 },
+          ],
+        });
+      },
+    },
+  });
+  const panel = relatedPanel(env, related);
+  await panel.render(item);
+  await env.fire(350);
+  assert.deepEqual(panel.titles(), ["Available provider paper"]);
+  assert.equal(panel.status(), "related-partial");
+  assert.equal(related.cache.size, 0);
+  await panel.render(item);
+  await env.fire(350);
+  assert.equal(calls, 2, "a new view can retry the missing provider");
+});
+
+test("related cache reuse does not extend TTL and an expired result is fetched again", async () => {
+  const env = fixture(),
+    item = host(),
+    cached = relatedResult([reference("Cached result")]),
+    fresh = relatedResult([reference("Fresh result")]);
+  let calls = 0;
+  const related = env.related({
+    "../sources": {
+      getRelatedByAPI: async () => {
+        calls++;
+        return fresh;
+      },
+    },
+  });
+  const key = env.storage.itemStateKey(item),
+    time = Date.now() - 10000;
+  related.cache.set(key, { result: cached, time });
+  const panel = relatedPanel(env, related);
+  await panel.render(item);
+  await env.fire(350);
+  assert.equal(calls, 0);
+  assert.deepEqual(panel.titles(), ["Cached result"]);
+  assert.equal(related.cache.get(key).time, time);
+  related.cache.get(key).time = Date.now() - 31 * 60 * 1000;
+  await panel.render(item);
+  await env.fire(350);
+  assert.equal(calls, 1);
+  assert.deepEqual(panel.titles(), ["Fresh result"]);
+  assert.equal(related.cache.get(key).result, fresh);
+  assert(related.cache.get(key).time > time);
+});
+
+test("related provider display cap does not consume or truncate manual links", async () => {
+  const env = fixture(),
+    item = host();
+  const manuals = Array.from({ length: 22 }, (_, index) => {
+    const entry = host(index + 2);
+    entry.fields.title = `Manual ${index + 1}`;
+    entry.fields.DOI = `10.5555/manual-${index + 1}`;
+    entry.getCreators = () => [];
+    return entry;
+  });
+  item.relatedItems = manuals.map((_, index) => String(index));
+  env.globals.Zotero.Items.getByLibraryAndKey = (_libraryID, key) =>
+    manuals[Number(key)];
+  const result = relatedResult(
+    Array.from({ length: 25 }, (_, index) => ({
+      ...reference(`Recommendation ${index + 1}`),
+      identifiers: { DOI: `10.5555/recommendation-${index + 1}` },
+    })),
+  );
+  const related = env.related({
+    "../sources": { getRelatedByAPI: async () => result },
+  });
+  const panel = relatedPanel(env, related);
+  await panel.render(item);
+  await env.fire(350);
+  assert.equal(panel.rows().length, 42);
+  assert.deepEqual(
+    panel.titles().slice(0, 22),
+    manuals.map((entry) => entry.fields.title),
+  );
+  assert.equal(panel.titles().at(-1), "Recommendation 20");
+  assert.equal(
+    related.cache.get(env.storage.itemStateKey(item)).result.items.length,
+    25,
+  );
+});
+
+test("related preserves an ambiguous ID bridge already retained by real rank fusion", async () => {
+  const env = fixture(),
+    item = host();
+  const { fuseRelated } = env.load("src/core/related.ts");
+  const a = {
+    ...reference("Work A"),
+    identifiers: { DOI: "10.5555/bridge", PMID: "11111111" },
+  };
+  const b = {
+    ...reference("Work B"),
+    identifiers: { DOI: "10.5555/bridge", PMID: "22222222" },
+  };
+  const bridge = {
+    ...reference("Ambiguous bridge"),
+    identifiers: { DOI: "10.5555/bridge" },
+  };
+  const result = fuseRelated([
+    { source: "semanticscholar", status: "ready", items: [a, b] },
+    { source: "openalex", status: "ready", items: [bridge] },
+  ]);
+  assert.equal(
+    result.items.length,
+    3,
+    "core retains a bridge matching two mutually conflicting identities",
+  );
+  const related = env.related({
+    "../sources": { getRelatedByAPI: async () => result },
+  });
+  const panel = relatedPanel(env, related);
+  await panel.render(item);
+  await env.fire(350);
+  assert.deepEqual(
+    panel.titles(),
+    result.items.map(({ ref }) => ref.title),
+    "UI only excludes host/manual records, never greedily deduplicates the fused pool again",
+  );
+  assert.equal(panel.rows().length, 3);
+  assert.deepEqual(
+    panel.rows().map(({ ref }) => ref.identifiers),
+    result.items.map(({ ref }) => ref.identifiers),
+  );
+});
+
+test("related preserves manual links first, deduplicates strict IDs, and does not drop distinct same-title papers", async () => {
+  const env = fixture(),
+    item = host(),
+    manual = host(3),
+    deleted = host(4);
+  manual.fields.DOI = "10.5555/manual";
+  manual.fields.title = "Manually linked paper";
+  manual.getCreators = () => [{ firstName: "Manual", lastName: "Author" }];
+  deleted.deleted = true;
+  item.relatedItems = ["MANUAL", "DELETED", "MISSING"];
+  env.globals.Zotero.Items.getByLibraryAndKey = (libraryID, key) => {
+    assert.equal(libraryID, item.libraryID);
+    return key === "MANUAL" ? manual : key === "DELETED" ? deleted : undefined;
+  };
+  const result = relatedResult([
+    {
+      ...reference("Remote manual duplicate"),
+      identifiers: { DOI: "https://doi.org/10.5555/MANUAL" },
+    },
+    {
+      ...reference("Host returned under a different title"),
+      identifiers: { DOI: "https://doi.org/10.5555/A" },
+    },
+    {
+      ...reference(item.fields.title),
+      identifiers: { DOI: "10.5555/distinct" },
+    },
+    reference(item.fields.title),
+    {
+      ...reference("Fresh recommendation"),
+      identifiers: { DOI: "10.5555/fresh" },
+    },
+  ]);
+  const related = env.related({
+    "../sources": { getRelatedByAPI: async () => result },
+  });
+  const panel = relatedPanel(env, related);
+  await panel.render(item);
+  assert.deepEqual(panel.titles(), ["Manually linked paper"]);
+  assert.equal(
+    panel.rows()[0].querySelector(".references-related-reason").textContent,
+    "related-manual",
+  );
+  await env.fire(350);
+  assert.deepEqual(panel.titles(), [
+    "Manually linked paper",
+    "Paper A",
+    "Paper A",
+    "Fresh recommendation",
+  ]);
+  assert.equal(panel.rows()[0].ref.libItemID, manual.id);
+  assert.equal(
+    related.cache.get(env.storage.itemStateKey(item)).result.items.length,
+    5,
+    "presentation filtering does not rewrite provider cache",
   );
 });
 
