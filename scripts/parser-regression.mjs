@@ -40,7 +40,7 @@ const parser = compile(
     "../utils/prefs": { getPref: () => 4 },
     "../utils/locale": { getString: (key) => key },
   },
-  "\nexport { mergeSameLine, mergeSameRef, mergeNumberedRefs, numAtStart, findLineNumbers, restoreNumberedColumnOrder };\n",
+  "\nexport { mergeSameLine, mergeSameRef, mergeNumberedRefs, numAtStart, findLineNumbers, restoreNumberedColumnOrder, readPdfPage };\n",
 );
 
 const item = (str, x, y, height = 10, width = 350) => ({
@@ -57,26 +57,42 @@ const oneColumn = (count, heading = true) => [
     item(reference(i + 1), 100, 650 - i * 20),
   ),
 ];
-async function parse(pages) {
+async function parse(
+  pages,
+  options = {},
+  currentPage = pages.length,
+  reads = [],
+  annotationReads = [],
+) {
   const app = {
-    page: pages.length,
+    page: currentPage,
     pdfLoadingTask: { promise: Promise.resolve() },
     pdfViewer: {
       pagesPromise: Promise.resolve(),
-      _pages: pages.map((items) => ({
+      _pages: pages.map((items, index) => ({
         pdfPage: {
           _pageInfo: { view: [0, 0, 612, 792] },
-          getTextContent: async () => ({ items }),
-          getAnnotations: async () => [],
+          getTextContent: async () => {
+            reads.push(index);
+            if (items instanceof Error) throw items;
+            return { items };
+          },
+          getAnnotations: async () => {
+            annotationReads.push(index);
+            return [];
+          },
         },
       })),
     },
   };
-  return parser.parsePDFReferences({
-    _internalReader: {
-      _primaryView: { _iframeWindow: { PDFViewerApplication: app } },
+  return parser.parsePDFReferences(
+    {
+      _internalReader: {
+        _primaryView: { _iframeWindow: { PDFViewerApplication: app } },
+      },
     },
-  });
+    options,
+  );
 }
 let passed = 0;
 async function check(name, fn) {
@@ -648,6 +664,319 @@ await check(
     );
   },
 );
+
+function linkedBibliography({
+  back = 85,
+  target = 105,
+  forward = true,
+  reverse = true,
+  duplicateFolio = false,
+} = {}) {
+  const entry = (n, group = "Target") =>
+    `[${n}] Author${String.fromCharCode(64 + n)} A. ${group} bibliography entry. Neutral Journal. ${n % 2 ? "1986" : "2024"}; 12:34–56.`;
+  const source = [
+    item("Background paragraph from the selected article.", 50, 680, 10, 225),
+    item("参考文献", 385, 730, 10, 110),
+    ...Array.from({ length: 14 }, (_, i) =>
+      item(entry(i + 1), 320, 700 - i * 44, 10, 220),
+    ),
+    ...(forward ? [item(`(下转第 ${target} 页)`, 450, 90, 10, 85)] : []),
+    // Deliberately reverse the stream order of the printed page digits.
+    item("5", 548, 770, 10, 5),
+    item("8", 543, 770, 10, 5),
+  ];
+  const tail = [
+    item("References", 60, 735, 10, 100),
+    ...Array.from({ length: 10 }, (_, i) =>
+      item(
+        entry(i + 1, "Neighbour"),
+        i < 5 ? 50 : 330,
+        710 - (i % 5) * 50,
+        10,
+        225,
+      ),
+    ),
+    ...(reverse ? [item(`(上接第 ${back} 页)`, 50, 405, 10, 110)] : []),
+    item(entry(15), 50, 385, 10, 225),
+    item(entry(16), 50, 345, 10, 225),
+    item(entry(17), 50, 305, 10, 225),
+    item(
+      "[18] AuthorR A. A neutral title whose citation wraps",
+      50,
+      265,
+      10,
+      225,
+    ),
+    item(
+      "across columns and continues with its publication details.",
+      62,
+      249,
+      10,
+      213,
+    ),
+    item("Neutral Journal. 2014; 35(5):681–690.", 330, 405.8, 10, 225),
+    item(entry(19), 330, 370, 10, 225),
+    item(entry(20), 330, 330, 10, 225),
+    item("5", 550, 770, 10, 5),
+    item("0", 545, 770, 10, 5),
+    item("1", 540, 770, 10, 5),
+  ];
+  const pages = [
+    [item("Opening body paragraph.", 80, 650)],
+    [item("More body text.", 80, 650)],
+    [item("Another body paragraph.", 80, 650)],
+    source,
+    tail,
+  ];
+  if (duplicateFolio)
+    pages.push([
+      item("Different document page.", 80, 650),
+      item("105", 520, 770, 10, 20),
+    ]);
+  return pages;
+}
+
+for (const [name, options, page] of [
+  ["automatic", {}, 5],
+  ["manual source", { fromCurrentPage: true }, 4],
+  ["manual continuation", { fromCurrentPage: true }, 5],
+])
+  await check(`verified cross-article continuation ${name}`, async () => {
+    const refs = await parse(linkedBibliography(), options, page);
+    expectRefs(refs, 20);
+    assert.ok(refs.every((ref) => !ref.text.includes("Neighbour")));
+    assert.deepEqual(
+      refs.map((ref) => ref.page),
+      [...Array(14).fill(3), ...Array(6).fill(4)],
+    );
+    assert.equal(refs[17].x, 50);
+    assert.equal(refs[17].y, 275);
+    assert.ok(refs[17].text.includes("continues with its publication details"));
+    assert.ok(refs[17].text.includes("35(5):681–690"));
+  });
+
+for (const [name, fixture] of [
+  ["missing back marker", { reverse: false }],
+  ["conflicting back folio", { back: 86 }],
+  ["missing target folio", { target: 106 }],
+  ["duplicate target folio", { duplicateFolio: true }],
+])
+  await check(
+    `uncorroborated continuation retains only known source: ${name}`,
+    async () => {
+      const refs = await parse(linkedBibliography(fixture));
+      expectRefs(refs, 14);
+      assert.ok(
+        refs.every((ref) => ref.page === 3 && !ref.text.includes("Neighbour")),
+      );
+    },
+  );
+
+await check(
+  "back marker without a confirmable source never selects neighbour references",
+  async () => {
+    assert.equal(
+      (await parse(linkedBibliography({ forward: false }))).length,
+      0,
+    );
+  },
+);
+
+await check(
+  "a cyclic or multiply marked target does not expand the verified source",
+  async () => {
+    const pages = linkedBibliography();
+    pages[4].push(item("(下转第85页)", 450, 280, 10, 85));
+    expectRefs(await parse(pages), 14);
+    const duplicateBack = linkedBibliography();
+    duplicateBack[4].push(item("(上接第85页)", 50, 425, 10, 110));
+    expectRefs(await parse(duplicateBack), 14);
+  },
+);
+
+await check(
+  "a second article below the marker cannot pass by sharing a next reference number",
+  async () => {
+    const pages = linkedBibliography();
+    pages[4].push(
+      item(
+        "[1] Other B. Independent article. Journal. 2020; 3:10–20.",
+        330,
+        280,
+        10,
+        225,
+      ),
+    );
+    expectRefs(await parse(pages), 14);
+  },
+);
+
+await check(
+  "ordinary manual chapter boundaries do not append later bibliographies",
+  async () => {
+    const pages = [
+      [item("Earlier chapter body.", 70, 650)],
+      oneColumn(8),
+      oneColumn(10),
+    ];
+    expectRefs(await parse(pages, { fromCurrentPage: true }, 2), 8);
+  },
+);
+
+await check(
+  "margin folios restore digit geometry without changing reference text",
+  async () => {
+    const items = [
+      item("5", 548, 770, 10, 5),
+      item("8", 543, 770, 10, 5),
+      item("1", 120, 600, 10, 5),
+      item("2", 125, 600, 10, 5),
+    ];
+    const lines = await parser.readPdfPage({
+      _pageInfo: { view: [0, 0, 612, 792] },
+      getTextContent: async () => ({ items }),
+      getAnnotations: async () => [],
+    });
+    assert.equal(lines[0].text, "5 8");
+    assert.equal(lines[0]._folio, 85);
+    assert.equal(lines[1].text, "1 2");
+    assert.equal(lines[1]._folio, undefined);
+  },
+);
+
+await check(
+  "continuation lookup has a finite shared page-read budget",
+  async () => {
+    const pages = linkedBibliography();
+    for (let i = 0; i < 100; i++)
+      pages.push([item(`Body content ${i}.`, 70, 600)]);
+    const reads = [];
+    const annotations = [];
+    const refs = await parse(
+      pages,
+      { fromCurrentPage: true },
+      4,
+      reads,
+      annotations,
+    );
+    expectRefs(refs, 14);
+    assert.ok(
+      new Set(reads).size <= 4 + 64 + 5,
+      "64 extra pages plus existing line-number probes/preload",
+    );
+    assert.equal(annotations.length, 68);
+    assert.equal(new Set(annotations).size, annotations.length);
+    assert.ok(refs.every((ref) => !ref.text.includes("Neighbour")));
+  },
+);
+
+await check(
+  "marked full-width spaced numbering preserves citation typography",
+  async () => {
+    const pages = linkedBibliography();
+    for (const page of pages)
+      for (const line of page)
+        line.str = line.str
+          .replace(/^\[(\d+)\]/, "［ $1 ］")
+          .replace("; 12:34–56.", "， 44 ( 2 ) : 122- 126．");
+    const refs = await parse(pages);
+    expectRefs(refs, 20);
+    assert.ok(refs[0].text.includes("44 ( 2 ) : 122- 126．"));
+    assert.ok(refs[17].text.includes("35(5):681–690"));
+  },
+);
+
+await check(
+  "ordinary body continuation notices do not replace or scan a bibliography",
+  async () => {
+    const pages = [
+      [
+        item("1. Step one: prepare the document.", 80, 200),
+        item("2. Step two: check the page settings.", 80, 170),
+        item("(下转第105页)", 80, 130, 10, 100),
+      ],
+      [item("Body text.", 80, 650)],
+      oneColumn(6),
+      [item("Future body text.", 80, 640)],
+    ];
+    const plain = pages.map((page) =>
+      page.filter((line) => !line.str.includes("下转")),
+    );
+    for (const options of [{}, { fromCurrentPage: true }]) {
+      const reads = [],
+        plainReads = [],
+        annotations = [],
+        plainAnnotations = [];
+      const refs = await parse(pages, options, 3, reads, annotations);
+      expectRefs(refs, 6);
+      const expected = await parse(
+        plain,
+        options,
+        3,
+        plainReads,
+        plainAnnotations,
+      );
+      assert.deepEqual(refs, expected);
+      assert.deepEqual(reads, plainReads);
+      assert.deepEqual(annotations, plainAnnotations);
+    }
+  },
+);
+
+await check(
+  "a body notice in the other column cannot truncate a bibliography",
+  async () => {
+    const bibliography = [
+      item("References", 50, 670, 10, 100),
+      ...Array.from({ length: 6 }, (_, i) =>
+        item(reference(i + 1), 50, 650 - i * 20, 10, 225),
+      ),
+      item("(下转第105页)", 400, 590, 10, 100),
+    ];
+    const pages = [
+      [item("Earlier body.", 60, 650)],
+      [item("Continued body.", 60, 650)],
+      bibliography,
+    ];
+    for (const options of [{}, { fromCurrentPage: true }]) {
+      const refs = await parse(pages, options);
+      expectRefs(refs, 6);
+      assert.ok(refs.every((ref) => !ref.text.includes("下转")));
+    }
+  },
+);
+
+await check(
+  "a later independent manual chapter takes precedence over cached old markers",
+  async () => {
+    const pages = linkedBibliography();
+    pages.push(oneColumn(6));
+    const refs = await parse(pages, { fromCurrentPage: true }, 6);
+    expectRefs(refs, 6);
+    assert.ok(refs.every((ref) => ref.page === 5));
+  },
+);
+
+await check(
+  "an unreadable extra page cannot discard the known local source",
+  async () => {
+    const pages = linkedBibliography();
+    pages.push(new Error("Synthetic unreadable extra page"));
+    const refs = await parse(pages, { fromCurrentPage: true }, 4);
+    expectRefs(refs, 14);
+    assert.ok(refs.every((ref) => ref.page === 3));
+  },
+);
+
+await check(
+  "conflicting folios on the target page do not prove a continuation",
+  async () => {
+    const pages = linkedBibliography();
+    pages[4].push(item("110", 80, 40, 10, 20));
+    expectRefs(await parse(pages, { fromCurrentPage: true }, 4), 14);
+  },
+);
+
 console.log(
   `Parser regression: ${passed} checks passed (synthetic text only).`,
 );

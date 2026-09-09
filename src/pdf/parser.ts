@@ -56,6 +56,8 @@ interface PDFLine {
   _x?: number;
   /** column indent offset removed from x in donePart */
   _offset?: number;
+  /** printed margin page number, reconstructed in geometric glyph order */
+  _folio?: number;
 }
 
 interface PDFAnnotation {
@@ -980,7 +982,35 @@ async function readPdfPage(
   }
   const annotations: PDFAnnotation[] = await pdfPage.getAnnotations();
   updateItemsAnnotions(items, annotations);
-  return mergeSameLine(items);
+  const lines = mergeSameLine(items);
+  const view = pdfPage._pageInfo?.view;
+  if (view?.length >= 4) {
+    const pageHeight = view[3] - view[1];
+    for (const line of lines) {
+      if (
+        !/^\d{1,5}$/.test(line.text.replace(/\s+/g, "")) ||
+        (line.y > view[1] + pageHeight * 0.12 &&
+          line.y < view[3] - pageHeight * 0.12)
+      )
+        continue;
+      // Some journals draw right-aligned page digits in reverse stream
+      // order. Only the margin folio uses geometric order; reference text
+      // and the general line-merging rules remain untouched.
+      const digits = items
+        .filter(
+          (item) =>
+            /^\d+$/.test(item.str.trim()) &&
+            Math.abs(item.transform[5] - line.y) <=
+              Math.max(1, line.height * 0.2) &&
+            item.transform[4] >= line.x - 1 &&
+            item.transform[4] + item.width <= line.x + line.width + 1,
+        )
+        .sort((a, b) => a.transform[4] - b.transform[4]);
+      const value = digits.map((item) => item.str.trim()).join("");
+      if (/^\d{1,5}$/.test(value)) line._folio = Number(value);
+    }
+  }
+  return lines;
 }
 
 /**
@@ -1008,6 +1038,302 @@ async function getViewerApp(reader: any): Promise<any | null> {
 /* ------------------------------------------------------------------ */
 /* bibliography line extraction                                        */
 /* ------------------------------------------------------------------ */
+
+interface ContinuationMarker {
+  direction: "forward" | "back";
+  folio: number;
+  line: PDFLine;
+}
+
+function continuationMarkers(lines: PDFLine[]): ContinuationMarker[] {
+  return lines.flatMap((line) => {
+    const match = line.text
+      .normalize("NFKC")
+      .replace(/\s+/g, "")
+      .match(/^[([]?(下转|下接|上接)第?(\d{1,5})页[)\]]?[。.]?$/);
+    if (!match) return [];
+    return [
+      {
+        direction: match[1] === "上接" ? "back" : "forward",
+        folio: Number(match[2]),
+        line,
+      },
+    ];
+  });
+}
+
+/** Normalize only the list prefix in the explicitly marked path. PDF fonts
+ * commonly expose full-width brackets and spaces inside the printed number. */
+function continuationNumberText(text: string): string {
+  return text.replace(/^\s*[［[]\s*(\d{1,3})\s*[］\]]\s*/, "[$1] ");
+}
+
+function continuationEvidence(text: string): boolean {
+  return hasCitationEvidence(
+    text
+      .normalize("NFKC")
+      .replace(/\(\s+(?=\d)/g, "(")
+      .replace(/(?<=\d)\s+\)/g, ")")
+      .replace(/(?<=\d)\s*([-–‒])\s*(?=\d)/g, "$1"),
+  );
+}
+
+function pageFolios(lines: PDFLine[]): number[] {
+  return [
+    ...new Set(lines.flatMap((line) => (line._folio ? [line._folio] : []))),
+  ];
+}
+
+/** A standalone continuation notice must actually border numbered references. */
+function bibliographyMarker(marker: ContinuationMarker, lines: PDFLine[]) {
+  const h = Math.max(6, marker.line.height);
+  const nearby = lines.filter((line) =>
+    marker.direction === "forward"
+      ? line.y > marker.line.y && line.y - marker.line.y < 8 * h
+      : line.y <= marker.line.y + h / 2 && marker.line.y - line.y < 8 * h,
+  );
+  const center = marker.line.x + marker.line.width / 2;
+  return nearby.some(
+    (start) =>
+      numAtStart(continuationNumberText(start.text)) > 0 &&
+      center >= start.x - h &&
+      center <= start.x + Math.max(start.width, 4 * h) + h &&
+      continuationEvidence(
+        nearby
+          .filter((line) => line.x >= start.x - h && line.x < start.x + 4 * h)
+          .map((line) => line.text)
+          .join(" "),
+      ),
+  );
+}
+
+/**
+ * Crop an explicitly marked bibliography block before combining pages. The
+ * marker bounds the vertical region; numbering proves physical column order.
+ * A small top tolerance retains a wrapped tail on the first right-column line.
+ */
+function continuationSegment(
+  lines: PDFLine[],
+  pageNum: number,
+  top: PDFLine,
+  bottom: PDFLine | null,
+  first: number,
+): PDFLine[] | null {
+  const h = Math.max(6, top.height);
+  const band = lines.filter(
+    (line) =>
+      line !== top &&
+      line !== bottom &&
+      line._folio === undefined &&
+      line.y <= top.y + h / 2 &&
+      (!bottom || line.y > bottom.y + h / 2) &&
+      !continuationMarkers([line]).length,
+  );
+  const starts = band.filter(
+    (line) =>
+      numAtStart(continuationNumberText(line.text)) === first &&
+      top.y - line.y < 6 * h &&
+      top.x + top.width / 2 >= line.x - h &&
+      top.x + top.width / 2 <= line.x + Math.max(line.width, 4 * h) + h,
+  );
+  if (starts.length !== 1) return null;
+  const left = starts[0].x;
+  const relevant = band.filter((line) => line.x >= left - h);
+  const numbered = relevant.filter(
+    (line) => numAtStart(continuationNumberText(line.text)) > 0,
+  );
+  const columns: number[] = [];
+  for (const line of [...numbered].sort((a, b) => a.x - b.x))
+    if (!columns.some((x) => Math.abs(x - line.x) < 2 * h))
+      columns.push(line.x);
+  if (!columns.length || columns.length > 3) return null;
+  const ordered = relevant
+    .map((line) => ({
+      ...line,
+      text: continuationNumberText(line.text),
+      _x: line.x,
+      pageNum,
+      column: Math.max(0, columns.filter((x) => line.x >= x - h).length - 1),
+    }))
+    .sort((a, b) => a.column - b.column || b.y - a.y);
+  const firstIndex = ordered.findIndex(
+    (line) => numAtStart(continuationNumberText(line.text)) === first,
+  );
+  const selected = ordered.slice(firstIndex);
+  const numbers = selected
+    .map((line) => numAtStart(continuationNumberText(line.text)))
+    .filter(Boolean);
+  if (numbers.length < 2 || numbers.some((n, i) => n !== first + i))
+    return null;
+  return selected;
+}
+
+/**
+ * Numbered journal continuations can share a page with another article.
+ * null = no relevant marker (use normal parsing); [] = ambiguous marked
+ * layout (do not silently pick the neighbouring article's bibliography).
+ * Extra page reads are capped and reused through the existing page cache.
+ */
+async function markedContinuation(
+  pages: any[],
+  pageLines: Record<number, PDFLine[]>,
+  totalPageNum: number,
+  lineNumbered: boolean,
+): Promise<PDFLine[] | null> {
+  const relevantMarkers = () =>
+    Object.entries(pageLines).flatMap(([page, lines]) =>
+      continuationMarkers(lines)
+        .filter((marker) => bibliographyMarker(marker, lines))
+        .map((marker) => ({ ...marker, page: Number(page) })),
+    );
+  const initialMarkers = relevantMarkers();
+  if (!initialMarkers.length) return null;
+  // A later independent chapter keeps the ordinary backward-selection rules.
+  // A heading above a back marker on the same page belongs to the mixed-page
+  // case, so only strictly later pages can override the marked region.
+  const latestMarkedPage = Math.max(
+    ...initialMarkers.map((marker) => marker.page),
+  );
+  for (const [page, lines] of Object.entries(pageLines)) {
+    if (Number(page) <= latestMarkedPage || Number(page) >= totalPageNum)
+      continue;
+    for (const heading of lines) {
+      if (
+        !/^(?:参考文献|references?|bibliography)$/i.test(
+          heading.text.replace(/\s+/g, ""),
+        )
+      )
+        continue;
+      const segment = continuationSegment(
+        lines,
+        Number(page),
+        heading,
+        null,
+        1,
+      );
+      if (!segment) continue;
+      const merged = mergeSameRef(segment.map((line) => ({ ...line })));
+      if (
+        merged.length >= 3 &&
+        merged.filter((line) => continuationEvidence(line.text)).length >=
+          merged.length * 0.5
+      )
+        return null;
+    }
+  }
+  let reads = 0;
+  const failedPages = new Set<number>();
+  const LIMIT = 64;
+  const read = async (index: number) => {
+    if (!(index in pageLines)) {
+      if (reads >= LIMIT || failedPages.has(index)) return false;
+      reads++;
+      try {
+        pageLines[index] = await readPdfPage(
+          pages[index].pdfPage,
+          lineNumbered,
+        );
+      } catch {
+        failedPages.add(index);
+        ztoolkit.log(
+          `[pdfparser] continuation lookup could not read p${index}`,
+        );
+        return false;
+      }
+    }
+    return true;
+  };
+  // First locate the source within the already-authorized backward range.
+  // A back marker alone never authorizes reading beyond a manual page limit.
+  for (let i = totalPageNum - 1; i >= 0 && reads < LIMIT; i--) await read(i);
+  const sources = relevantMarkers()
+    .filter(
+      (marker) => marker.direction === "forward" && marker.page < totalPageNum,
+    )
+    .flatMap((marker) => {
+      const lines = pageLines[marker.page];
+      const headings = lines.filter(
+        (line) =>
+          /^(?:参考文献|references?|bibliography)$/i.test(
+            line.text.replace(/\s+/g, ""),
+          ) && line.y > marker.line.y,
+      );
+      return headings.flatMap((heading) => {
+        const segment = continuationSegment(
+          lines,
+          marker.page,
+          heading,
+          marker.line,
+          1,
+        );
+        if (!segment) return [];
+        const merged = mergeSameRef(segment.map((line) => ({ ...line })));
+        if (
+          merged.length < 3 ||
+          merged.filter((line) => continuationEvidence(line.text)).length <
+            merged.length * 0.5
+        )
+          return [];
+        const folios = pageFolios(lines);
+        return [{ marker, segment, folios }];
+      });
+    });
+  if (sources.length !== 1) return [];
+  const source = sources[0];
+  // No reliable source folio means we can keep its local bibliography,
+  // but cannot prove that a continuation belongs to this article.
+  if (source.folios.length !== 1) return source.segment;
+  for (let i = totalPageNum; i < pages.length && reads < LIMIT; i++)
+    await read(i);
+  // Do not call a partially searched document unique when the lookup cap
+  // prevented ruling out another page carrying the same printed folio.
+  if (Object.keys(pageLines).length < pages.length) return source.segment;
+  const targets = Object.entries(pageLines).filter(([, lines]) =>
+    lines.some((line) => line._folio === source.marker.folio),
+  );
+  if (targets.length !== 1 || Number(targets[0][0]) <= source.marker.page)
+    return source.segment;
+  const [targetPage, targetLines] = targets[0];
+  if (pageFolios(targetLines).length !== 1) return source.segment;
+  const backs = continuationMarkers(targetLines).filter(
+    (marker) =>
+      marker.direction === "back" && marker.folio === source.folios[0],
+  );
+  if (backs.length !== 1) return source.segment;
+  // More continuation notices in the target region are not an unambiguous
+  // two-part bibliography; leave that unresolved rather than follow cycles.
+  if (
+    continuationMarkers(targetLines).some(
+      (marker) =>
+        marker !== backs[0] &&
+        marker.line !== backs[0].line &&
+        marker.line.y < backs[0].line.y,
+    )
+  )
+    return source.segment;
+  const next =
+    Math.max(...source.segment.map((line) => numAtStart(line.text))) + 1;
+  const tail = continuationSegment(
+    targetLines,
+    Number(targetPage),
+    backs[0].line,
+    null,
+    next,
+  );
+  if (!tail) return source.segment;
+  const merged = mergeSameRef(
+    [...source.segment, ...tail].map((line) => ({ ...line })),
+  );
+  if (
+    merged.length !==
+    next - 1 + tail.filter((line) => numAtStart(line.text) > 0).length
+  )
+    return source.segment;
+  ztoolkit.log(
+    `[pdfparser] verified continuation p${source.marker.page} -> p${targetPage}, ${merged.length} references`,
+  );
+  return [...source.segment, ...tail];
+}
 
 /**
  * Walk the PDF backwards page by page and return the lines belonging to the
@@ -1069,6 +1395,17 @@ async function getRefLines(
     );
   }
 
+  const marked = await markedContinuation(
+    pages,
+    pageLines,
+    totalPageNum,
+    lineNumbered,
+  );
+  if (marked !== null) {
+    onProgress(getString("parser-done"), 100);
+    return marked;
+  }
+
   // walk backwards and split each page into "parts" (visual text blocks);
   // the bibliography may span multiple parts across pages
   const parts: PDFLine[][] = [];
@@ -1101,6 +1438,22 @@ async function getRefLines(
     } else {
       lines = await readPdfPage(pdfPage, lineNumbered);
       pageLines[pageNum] = [...lines];
+      if (
+        continuationMarkers(lines).some((marker) =>
+          bibliographyMarker(marker, lines),
+        )
+      ) {
+        const linked = await markedContinuation(
+          pages,
+          pageLines,
+          totalPageNum,
+          lineNumbered,
+        );
+        if (linked !== null) {
+          onProgress(getString("parser-done"), 100);
+          return linked;
+        }
+      }
       const p = totalPageNum - pageNum;
       onProgress(`${getString("parser-read-text")} ${p}/${p}`, 90);
     }
