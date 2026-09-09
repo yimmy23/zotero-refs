@@ -60,6 +60,8 @@ interface PanelState {
   loading: boolean;
   importing: boolean;
   loadedOnce: boolean;
+  needsPDFRefresh: boolean;
+  pdfRepairAttempted: boolean;
   renders: Map<HTMLElement, (s: string) => void>;
 }
 
@@ -79,6 +81,8 @@ function getState(item: Zotero.Item): PanelState {
       loading: false,
       importing: false,
       loadedOnce: false,
+      needsPDFRefresh: false,
+      pdfRepairAttempted: false,
       renders: new Map(),
     };
     // bound per-session memory: drop the oldest items' states
@@ -143,6 +147,40 @@ function cachingEnabled(): boolean {
   return !!(getPref("savePDFReferences") || getPref("saveAPIReferences"));
 }
 
+async function checkPDFRepair(state: PanelState) {
+  const pending = await refStorage.needsPDFRefresh(state.item, state.stateKey);
+  if (itemStateKey(state.item) !== state.stateKey || !addon.data.alive) return;
+  if (pending && !state.needsPDFRefresh) {
+    state.refs = [];
+    state.loadedOnce = false;
+    state.pdfRepairAttempted = false;
+    for (const [body, summary] of state.renders)
+      if (isCurrent(body, state)) renderList(body, state.item, state, summary);
+  }
+  state.needsPDFRefresh = pending;
+}
+
+async function savePDFRepair(
+  state: PanelState,
+  pdf: RefItem[],
+  refs: RefItem[],
+) {
+  if (
+    await refStorage.commitPDFRepair(
+      state.item,
+      pdf,
+      refs,
+      { pdf: !!getPref("savePDFReferences"), fused: cachingEnabled() },
+      state.stateKey,
+    )
+  ) {
+    state.needsPDFRefresh = false;
+    state.pdfRepairAttempted = false;
+    return true;
+  }
+  return false;
+}
+
 async function fetchReferences(
   item: Zotero.Item,
   state: PanelState,
@@ -150,6 +188,8 @@ async function fetchReferences(
 ): Promise<RefItem[]> {
   const current = () =>
     itemStateKey(item) === state.stateKey && addon.data.alive;
+  if (!current()) return [];
+  await checkPDFRepair(state);
   if (!current()) return [];
   // fused fast path (plain click); Ctrl = re-parse from the current page,
   // which must not be answered from cache
@@ -203,6 +243,7 @@ async function fetchReferences(
       }
     }
     if (!reader || !current()) return [];
+    if (state.needsPDFRefresh) state.pdfRepairAttempted = true;
     try {
       const refs = await parsePDFReferences(reader, {
         fromCurrentPage: options.fromCurrentPage,
@@ -222,7 +263,11 @@ async function fetchReferences(
         type: refs.length ? "success" : "fail",
         progress: 100,
       });
-      if (refs.length && getPref("savePDFReferences")) {
+      if (
+        refs.length &&
+        getPref("savePDFReferences") &&
+        !state.needsPDFRefresh
+      ) {
         void refStorage.set(item, "PDF", refs, state.stateKey);
       }
       return refs;
@@ -322,6 +367,16 @@ async function fetchReferences(
   ztoolkit.log(
     `[section] fused pdf=${pdfRefs.length} api=${api?.refs.length ?? 0} -> ${refs.length} (id=${stats.id} title=${stats.title} volPage=${stats.volPage} pos=${stats.positional} [${stats.posMode}] unmatched=${stats.unmatched} appended=${stats.appended})`,
   );
+  if (state.needsPDFRefresh && pdfRefs.length && refs.length) {
+    if (!(await savePDFRepair(state, pdfRefs, refs))) {
+      popupWin.changeHeadline(getString("progress-refs-fail"));
+      popupWin.startCloseTimer(3000);
+      return [];
+    }
+  } else if (refs.length && cachingEnabled() && !state.needsPDFRefresh) {
+    void refStorage.set(item, "FUSED", refs, state.stateKey);
+  }
+  if (!current()) return [];
   const parts: string[] = [];
   if (pdfRefs.length) parts.push("PDF");
   if (api?.refs.length) {
@@ -330,9 +385,6 @@ async function fetchReferences(
   state.sourceUsed = parts.join(" + ");
   popupWin.changeHeadline(getString("progress-refs-done"));
   popupWin.startCloseTimer(3000);
-  if (refs.length && cachingEnabled()) {
-    void refStorage.set(item, "FUSED", refs, state.stateKey);
-  }
   return refs;
 }
 
@@ -718,11 +770,17 @@ export function registerReferencesSection() {
                 : "panel-ready",
           ),
         );
+        await checkPDFRepair(state);
+        if (!isCurrent(body as HTMLElement, state)) return;
+        const repairWithReader = () =>
+          state.needsPDFRefresh &&
+          !state.pdfRepairAttempted &&
+          !!findReaderForItem(item);
         if (state.refs.length) {
           renderList(body as HTMLElement, item, state, setSectionSummary);
-          return;
+          if (!repairWithReader()) return;
         }
-        if (state.loadedOnce) return;
+        if (state.loadedOnce && !repairWithReader()) return;
         // cache-first initial fill: the fused list if we have it, else
         // fuse whatever raw layers are cached (offline, no network)
         const fused = await refStorage.get(item, "FUSED", state.stateKey);
@@ -750,12 +808,13 @@ export function registerReferencesSection() {
           state.refs = refs;
           state.loadedOnce = true;
           state.sourceUsed = getString("panel-cached");
-          if (cachingEnabled())
+          if (cachingEnabled() && !state.needsPDFRefresh)
             void refStorage.set(item, "FUSED", refs, state.stateKey);
           renderList(body as HTMLElement, item, state, setSectionSummary);
-          return;
+          if (!repairWithReader()) return;
         }
         if (getPref("autoRefresh")) {
+          if (state.needsPDFRefresh && state.pdfRepairAttempted) return;
           const excluded = (getPref("notAutoRefreshItemTypes") as string)
             .split(/,\s*/)
             .map((s) => s.trim());
@@ -773,9 +832,12 @@ export function registerReferencesSection() {
           // pane's asyncRender in sequence, so sleeping here would delay the
           // whole item pane. Schedule the fetch and return at once; rapid
           // arrow-key browsing then never fires a request per item.
+          const scheduledRepair = state.needsPDFRefresh;
           setTimeout(
             guard("references.autoFetch", () => {
               if (!isCurrent(body as HTMLElement, state)) return;
+              if (scheduledRepair && !state.needsPDFRefresh) return;
+              if (state.needsPDFRefresh && state.pdfRepairAttempted) return;
               void refresh(
                 body as HTMLElement,
                 item,

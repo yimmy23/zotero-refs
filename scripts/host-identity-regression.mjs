@@ -129,7 +129,12 @@ class Element {
     );
   }
   append(...children) {
-    for (const child of children) {
+    for (let child of children) {
+      if (typeof child === "string") {
+        const text = this.ownerDocument.createElement("text");
+        text.textContent = child;
+        child = text;
+      }
       child.parentElement = this;
       this.children.push(child);
     }
@@ -551,6 +556,505 @@ test("legacy unstamped entries remain recoverable but are never presented as ver
     JSON.parse(env.writes.at(-1)).items["1/SHAREDKEY"].API.refs[0].title,
     "Legacy reference",
   );
+});
+
+const pdfReferences = (count = 20) =>
+  Array.from({ length: count }, (_, index) => ({
+    ...reference(`Neutral reference ${index + 1}. Journal. 2024;1:1–8.`),
+    number: index + 1,
+    page: index < 14 ? 3 : 4,
+    x: 50,
+    y: 600 - index * 15,
+  }));
+function repairFixture(slots, { reader = true } = {}) {
+  const item = host(),
+    identity = fixture().storage.itemStateKey(item);
+  const env = fixture({
+    raw: JSON.stringify({
+      v: 2,
+      items: {
+        "1/SHAREDKEY": Object.fromEntries(
+          Object.entries(slots).map(([slot, refs]) => [
+            slot,
+            { t: 1, identity, refs },
+          ]),
+        ),
+      },
+    }),
+  });
+  env.prefs.set("autoRefresh", true);
+  env.prefs.set("notAutoRefreshItemTypes", "");
+  const openReader = () => {
+    env.globals.Zotero.Items.get = () => ({
+      id: 2,
+      parentID: item.id,
+      libraryID: item.libraryID,
+    });
+    env.globals.Zotero.Reader._readers = [{ itemID: 2 }];
+  };
+  if (reader) openReader();
+  return { env, item, identity, openReader, store: env.storage.refStorage };
+}
+function oldMixedReferences(marker = "（上接第85页）") {
+  const refs = pdfReferences(16);
+  refs.forEach((ref, index) => {
+    ref.number = index < 10 ? index + 1 : index + 5;
+    ref.page = 4;
+  });
+  refs[9].text += ` ${marker}`;
+  return refs;
+}
+function referencesPanel(env, section) {
+  section.registerReferencesSection();
+  const pane = env.panes.get("references"),
+    doc = document();
+  return {
+    doc,
+    render: (item) =>
+      pane.onAsyncRender({ body: doc.body, item, setSectionSummary: () => {} }),
+    rows: () => doc.body.querySelectorAll(".references-row"),
+  };
+}
+
+test("continuation cache rejection is narrow, anchored, and preserves the raw file", async () => {
+  for (const marker of [
+    "（上接第85页）",
+    "( 下转 第 １０５ 页 )。",
+    "(下接第105页)",
+  ]) {
+    const mixed = oldMixedReferences(marker);
+    const { env, item, store } = repairFixture({
+      PDF: mixed,
+      FUSED: pdfReferences(16), // an edit removed the marker from the derived list
+      API: mixed,
+    });
+    assert.equal(await store.needsPDFRefresh(item), true);
+    assert.equal(await store.get(item, "PDF"), undefined);
+    assert.equal(await store.get(item, "FUSED"), undefined);
+    assert.equal((await store.get(item, "API")).length, 16);
+    assert.equal(env.writes.length, 0, "reads must not rewrite old evidence");
+    await store.set(item, "FUSED", [reference("API-only replacement")]);
+    await store.set(item, "PDF", pdfReferences());
+    await store.flush();
+    const persisted = JSON.parse(env.file.raw).items["1/SHAREDKEY"];
+    assert.equal(persisted.PDF.t, 1);
+    assert.equal(persisted.FUSED.t, 1);
+    assert.equal(persisted.PDF.refs[9].text.includes("页"), true);
+  }
+  const negatives = [
+    "A study of 上接第85页 text. Journal. 2024;1:1–8.",
+    "A citation (上接第85页) with following publication data.",
+    "A citation (上接第85页",
+    "A citation 上接第85页)",
+    "A citation [上接第85页]",
+    "A citation (上接第85页]",
+    "A citation (page 85)",
+    "A citation (上接第85)",
+  ];
+  for (const text of negatives) {
+    const refs = [{ ...pdfReferences(1)[0], text }];
+    const { item, store } = repairFixture({ PDF: refs, FUSED: refs });
+    assert.equal(await store.needsPDFRefresh(item), false, text);
+    assert.equal((await store.get(item, "FUSED")).length, 1, text);
+  }
+  const unanchored = [{ ...reference("A reference (上接第85页)") }];
+  const { item, store } = repairFixture({ FUSED: unanchored });
+  assert.equal(await store.needsPDFRefresh(item), false);
+  assert.equal((await store.get(item, "FUSED")).length, 1);
+  const gapOnly = oldMixedReferences("");
+  const normal = repairFixture({ PDF: gapOnly, FUSED: gapOnly });
+  assert.equal(await normal.store.needsPDFRefresh(normal.item), false);
+});
+
+test("ordinary refresh reparses rejected PDF instead of returning edited old FUSED or API", async () => {
+  const { env, item, store } = repairFixture({
+    PDF: oldMixedReferences(),
+    FUSED: pdfReferences(16),
+    API: [reference("Clean API")],
+  });
+  let parses = 0;
+  const section = env.section({
+    "../pdf/parser": {
+      parsePDFReferences: async () => {
+        parses++;
+        return pdfReferences();
+      },
+    },
+  });
+  const state = section.getState(item);
+  state.refs = oldMixedReferences();
+  const refs = await section.fetchReferences(item, state, {
+    useCache: true,
+    fromCurrentPage: false,
+  });
+  assert.equal(parses, 1);
+  assert.equal(refs.length, 20);
+  assert.equal(state.needsPDFRefresh, false);
+  assert.equal((await store.get(item, "PDF")).length, 20);
+  assert.equal((await store.get(item, "FUSED")).length, 20);
+  assert.equal((await store.get(item, "API"))[0].title, "Clean API");
+});
+
+test("FUSED contamination also reparses an unmarked but potentially incomplete raw PDF", async () => {
+  const { env, item, store } = repairFixture({
+    PDF: pdfReferences(14),
+    FUSED: oldMixedReferences(),
+  });
+  let parses = 0;
+  const section = env.section({
+    "../pdf/parser": {
+      parsePDFReferences: async () => {
+        parses++;
+        return pdfReferences();
+      },
+    },
+  });
+  const panel = referencesPanel(env, section);
+  await panel.render(item);
+  assert.equal(panel.rows().length, 0);
+  assert.equal(await store.get(item, "PDF"), undefined);
+  await env.fire(350);
+  await tick();
+  assert.equal(parses, 1);
+  assert.equal(panel.rows().length, 20);
+  assert.equal(await store.needsPDFRefresh(item), false);
+  assert.equal((await store.get(item, "FUSED")).length, 20);
+});
+
+for (const slot of ["PDF", "FUSED"]) {
+  test(`${slot} contamination survives no-reader API fallback and repairs when a reader opens`, async () => {
+    const { env, item, store, openReader } = repairFixture(
+      { [slot]: oldMixedReferences(), API: [reference("Clean API")] },
+      { reader: false },
+    );
+    let parses = 0;
+    const section = env.section({
+      "../pdf/parser": {
+        parsePDFReferences: async () => {
+          parses++;
+          return pdfReferences();
+        },
+      },
+    });
+    const panel = referencesPanel(env, section);
+    await panel.render(item);
+    assert.equal(panel.rows().length, 1);
+    assert.equal(parses, 0);
+    assert.equal(await store.needsPDFRefresh(item), true);
+    await store.flush();
+    assert.equal(JSON.parse(env.file.raw).items["1/SHAREDKEY"][slot].t, 1);
+    openReader();
+    await panel.render(item);
+    assert.equal(
+      parses,
+      0,
+      "render schedules rather than awaits local parsing",
+    );
+    await env.fire(350);
+    await tick();
+    assert.equal(parses, 1);
+    assert.equal(panel.rows().length, 20);
+    assert.equal(await store.needsPDFRefresh(item), false);
+  });
+}
+
+test("repair respects autoRefresh off but ordinary manual refresh still retries", async () => {
+  const { env, item, store } = repairFixture({
+    FUSED: oldMixedReferences(),
+    API: [reference("Clean API")],
+  });
+  env.prefs.set("autoRefresh", false);
+  let parses = 0;
+  const section = env.section({
+    "../pdf/parser": {
+      parsePDFReferences: async () => {
+        parses++;
+        return pdfReferences();
+      },
+    },
+  });
+  const panel = referencesPanel(env, section);
+  await panel.render(item);
+  await env.fire(350);
+  assert.equal(parses, 0);
+  assert.equal(panel.rows().length, 1);
+  await section.refresh(
+    panel.doc.body,
+    item,
+    section.getState(item),
+    () => {},
+    { useCache: true, fromCurrentPage: false },
+  );
+  assert.equal(parses, 1);
+  assert.equal(panel.rows().length, 20);
+  assert.equal(await store.needsPDFRefresh(item), false);
+});
+
+test("failed local repair clears old displayed refs, preserves cache, and does not loop automatically", async () => {
+  const { env, item, store } = repairFixture({
+    PDF: oldMixedReferences(),
+    FUSED: pdfReferences(16),
+  });
+  let parses = 0;
+  const section = env.section({
+    "../pdf/parser": {
+      parsePDFReferences: async () => {
+        parses++;
+        throw new Error("Local read failed");
+      },
+    },
+  });
+  const state = section.getState(item);
+  state.refs = oldMixedReferences();
+  state.loadedOnce = true;
+  const panel = referencesPanel(env, section);
+  await panel.render(item);
+  assert.equal(panel.rows().length, 0);
+  await env.fire(350);
+  await tick();
+  assert.equal(parses, 1);
+  await panel.render(item);
+  await env.fire(350);
+  assert.equal(parses, 1);
+  assert.equal(panel.rows().length, 0);
+  assert.equal(await store.get(item, "FUSED"), undefined);
+  await store.flush();
+  assert.equal(JSON.parse(env.file.raw).items["1/SHAREDKEY"].PDF.t, 1);
+  await section.refresh(panel.doc.body, item, state, () => {}, {
+    useCache: true,
+    fromCurrentPage: false,
+  });
+  assert.equal(parses, 2, "each user refresh may retry");
+});
+
+test("a new parse that still contains the continuation marker is never displayed or committed", async () => {
+  const { env, item, store } = repairFixture({
+    PDF: oldMixedReferences(),
+    API: [reference("Clean API")],
+  });
+  const section = env.section({
+    "../pdf/parser": { parsePDFReferences: async () => oldMixedReferences() },
+  });
+  const panel = referencesPanel(env, section);
+  await panel.render(item);
+  assert.equal(panel.rows().length, 1);
+  await env.fire(350);
+  await tick();
+  assert.equal(panel.rows().length, 1);
+  assert.equal(panel.rows()[0].ref.title, "Clean API");
+  assert.equal(await store.needsPDFRefresh(item), true);
+  assert.equal(await store.get(item, "PDF"), undefined);
+  await store.flush();
+  assert.equal(JSON.parse(env.file.raw).items["1/SHAREDKEY"].PDF.t, 1);
+});
+
+for (const failure of ["API", "fusion"]) {
+  test(`${failure} failure after PDF success cannot release edited stale FUSED`, async () => {
+    const { env, item, store } = repairFixture({
+      PDF: oldMixedReferences(),
+      FUSED: pdfReferences(16),
+    });
+    const section = env.section({
+      "../pdf/parser": { parsePDFReferences: async () => pdfReferences() },
+      ...(failure === "API"
+        ? {
+            "../sources": {
+              sources: { crossref: {} },
+              getReferencesByAPI: async () => {
+                throw new Error("API failed");
+              },
+            },
+          }
+        : {
+            "../core/fuse": {
+              fuseReferences: async () => {
+                throw new Error("Fusion failed");
+              },
+            },
+          }),
+    });
+    await assert.rejects(
+      section.fetchReferences(item, section.getState(item), {
+        useCache: true,
+        fromCurrentPage: false,
+      }),
+    );
+    assert.equal(await store.get(item, "FUSED"), undefined);
+    assert.equal(await store.needsPDFRefresh(item), true);
+    await store.flush();
+    const raw = JSON.parse(env.file.raw).items["1/SHAREDKEY"];
+    assert.equal(raw.PDF.t, 1);
+    assert.equal(raw.FUSED.t, 1);
+    const reopened = fixture({ raw: env.file.raw }).storage.refStorage;
+    assert.equal(await reopened.get(item, "FUSED"), undefined);
+    assert.equal(await reopened.needsPDFRefresh(item), true);
+  });
+}
+
+test("repair commit obeys save preferences and never alters API or the next host", async () => {
+  for (const save of [
+    { pdf: true, fused: true },
+    { pdf: false, fused: true },
+    { pdf: false, fused: false },
+  ]) {
+    const { env, item, store, identity } = repairFixture({
+      PDF: oldMixedReferences(),
+      FUSED: pdfReferences(16),
+      API: [reference("API intact")],
+    });
+    assert.equal(
+      await store.commitPDFRepair(
+        item,
+        pdfReferences(),
+        pdfReferences(),
+        save,
+        identity,
+      ),
+      true,
+    );
+    assert.equal(await store.needsPDFRefresh(item), false);
+    assert.equal(
+      (await store.get(item, "PDF"))?.length,
+      save.pdf ? 20 : undefined,
+    );
+    assert.equal(
+      (await store.get(item, "FUSED"))?.length,
+      save.fused ? 20 : undefined,
+    );
+    assert.equal((await store.get(item, "API"))[0].title, "API intact");
+    await store.flush();
+    const reopened = fixture({ raw: env.file.raw }).storage.refStorage;
+    assert.equal(await reopened.needsPDFRefresh(item), false);
+    item.fields.DOI = "10.5555/b";
+    assert.equal(await store.needsPDFRefresh(item), false);
+    assert.equal(
+      await store.commitPDFRepair(
+        item,
+        pdfReferences(),
+        pdfReferences(),
+        save,
+        identity,
+      ),
+      false,
+    );
+    assert.equal(await store.get(item, "FUSED"), undefined);
+  }
+});
+
+test("successful repair with persistence off removes the entire same-host stale pair", async () => {
+  const { env, item, store } = repairFixture({
+    PDF: pdfReferences(14),
+    FUSED: oldMixedReferences(),
+  });
+  env.prefs.set("savePDFReferences", false);
+  env.prefs.set("saveAPIReferences", false);
+  const section = env.section({
+    "../pdf/parser": { parsePDFReferences: async () => pdfReferences() },
+  });
+  assert.equal(
+    (
+      await section.fetchReferences(item, section.getState(item), {
+        useCache: true,
+        fromCurrentPage: false,
+      })
+    ).length,
+    20,
+  );
+  await store.flush();
+  const reopened = fixture({ raw: env.file.raw }).storage.refStorage;
+  assert.equal(await reopened.get(item, "PDF"), undefined);
+  assert.equal(await reopened.get(item, "FUSED"), undefined);
+  assert.equal(await reopened.needsPDFRefresh(item), false);
+});
+
+test("repair cleanup preserves another identity's snapshot and delayed repair cannot write the next host", async () => {
+  const original = repairFixture({
+    PDF: oldMixedReferences(),
+    FUSED: pdfReferences(14),
+  });
+  const next = host();
+  next.fields.DOI = "10.5555/b";
+  const otherIdentity = original.env.storage.itemStateKey(next);
+  const raw = JSON.parse(original.env.file.raw);
+  raw.items["1/SHAREDKEY"].FUSED.identity = otherIdentity;
+  const env = fixture({ raw: JSON.stringify(raw) });
+  await env.storage.refStorage.commitPDFRepair(
+    original.item,
+    pdfReferences(),
+    pdfReferences(),
+    { pdf: false, fused: false },
+  );
+  await env.storage.refStorage.flush();
+  assert.equal(
+    JSON.parse(env.file.raw).items["1/SHAREDKEY"].FUSED.identity,
+    otherIdentity,
+  );
+
+  const {
+    env: live,
+    item,
+    store,
+  } = repairFixture({ PDF: oldMixedReferences() });
+  const gate = deferred();
+  let parses = 0;
+  const section = live.section({
+    "../pdf/parser": {
+      parsePDFReferences: () => {
+        parses++;
+        return gate.promise;
+      },
+    },
+  });
+  const state = section.getState(item);
+  const pending = section.fetchReferences(item, state, {
+    useCache: true,
+    fromCurrentPage: false,
+  });
+  await tick();
+  assert.equal(parses, 1);
+  item.fields.DOI = "10.5555/b";
+  await store.set(item, "FUSED", [reference("Current host reference")]);
+  gate.resolve(pdfReferences());
+  assert.deepEqual(await pending, []);
+  assert.equal(await store.needsPDFRefresh(item), false);
+  assert.equal(
+    (await store.get(item, "FUSED"))[0].title,
+    "Current host reference",
+  );
+  await store.flush();
+  assert.equal(JSON.parse(live.file.raw).items["1/SHAREDKEY"].PDF.t, 1);
+});
+
+test("another panel's queued repair does not parse again after successful uncached repair", async () => {
+  const { env, item } = repairFixture({ FUSED: oldMixedReferences() });
+  env.prefs.set("savePDFReferences", false);
+  env.prefs.set("saveAPIReferences", false);
+  let parses = 0;
+  const section = env.section({
+    "../pdf/parser": {
+      parsePDFReferences: async () => {
+        parses++;
+        return pdfReferences();
+      },
+    },
+  });
+  const first = referencesPanel(env, section),
+    second = referencesPanel(env, section);
+  await first.render(item);
+  await second.render(item);
+  const callbacks = [...env.timers.values()].filter(
+    (timer) => timer.ms === 350,
+  );
+  assert.equal(callbacks.length, 2);
+  callbacks[0].fn();
+  await tick();
+  await tick();
+  assert.equal(parses, 1);
+  callbacks[1].fn();
+  await tick();
+  assert.equal(parses, 1);
+  assert.equal(first.rows().length, 20);
+  assert.equal(second.rows().length, 20);
 });
 
 test("references state changes on host edits and old PDF/API completion cannot write or repaint", async () => {

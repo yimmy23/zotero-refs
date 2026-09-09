@@ -149,6 +149,10 @@ class RefStorage {
     Record<string, { t: number; identity?: string; refs: RefItem[] }>
   > = Object.create(null);
   private ready: Promise<void>;
+  private continuationFlags = new WeakMap<
+    RefItem[],
+    { raw: boolean; anchored: boolean }
+  >();
   private writeTimer?: number;
   private writing: Promise<void> = Promise.resolve();
   private path = "";
@@ -210,6 +214,52 @@ class RefStorage {
     }
   }
 
+  /** A leftover page-link at an entry's end identifies the old mixed-page parse.
+   * Inspect only text, never a title or ordinary mentions within a citation. */
+  private continuationFlagsFor(refs: RefItem[]) {
+    let flags = this.continuationFlags.get(refs);
+    if (!flags) {
+      flags = { raw: false, anchored: false };
+      for (const ref of refs) {
+        const text = (ref.text || "").normalize("NFKC").replace(/\s+/g, "");
+        if (!/\((?:上接|下接|下转)第\d{1,5}页\)[.。]*$/.test(text)) continue;
+        flags.raw = true;
+        if (
+          Number.isInteger(ref.page) &&
+          ref.page! >= 0 &&
+          Number.isFinite(ref.x) &&
+          Number.isFinite(ref.y)
+        )
+          flags.anchored = true;
+      }
+      this.continuationFlags.set(refs, flags);
+    }
+    return flags;
+  }
+
+  private pendingPDFRepair(item: Zotero.Item, identity: string) {
+    const slots = this.cache[itemCacheKey(item)];
+    const bad = (slot: string, anchored: boolean) => {
+      const entry = slots?.[slot];
+      return (
+        entry?.identity === identity &&
+        this.continuationFlagsFor(entry.refs)[anchored ? "anchored" : "raw"]
+      );
+    };
+    return !!(bad("PDF", false) || bad("FUSED", true));
+  }
+
+  async needsPDFRefresh(
+    item: Zotero.Item,
+    expectedStateKey = itemStateKey(item),
+  ): Promise<boolean> {
+    await this.ready;
+    return (
+      itemStateKey(item) === expectedStateKey &&
+      this.pendingPDFRepair(item, expectedStateKey)
+    );
+  }
+
   async get(
     item: Zotero.Item,
     slot: string,
@@ -221,6 +271,11 @@ class RefStorage {
     // Legacy entries have no provable host identity. Retain them on disk for
     // recovery, but do not display or fuse them as this paper's references.
     if (entry?.identity !== expectedStateKey) return undefined;
+    if (
+      (slot === "PDF" || slot === "FUSED") &&
+      this.pendingPDFRepair(item, expectedStateKey)
+    )
+      return undefined;
     // Rows may enrich identifiers/bindings: never expose the stored snapshot.
     return entry.refs.map(sanitizeRef).filter((ref): ref is RefItem => !!ref);
   }
@@ -234,6 +289,13 @@ class RefStorage {
     await this.ready;
     // A request started for A must not stamp its result as B after an edit.
     if (itemStateKey(item) !== expectedStateKey) return;
+    // Keep the repair signal until both the PDF and its derived list succeed.
+    // API-only fallback (or an edited old FUSED list) cannot erase it.
+    if (
+      (slot === "PDF" || slot === "FUSED") &&
+      this.pendingPDFRepair(item, expectedStateKey)
+    )
+      return;
     const itemKey = itemCacheKey(item);
     const clean = refs.map(sanitizeRef).filter((r): r is RefItem => !!r);
     (this.cache[itemKey] ??= Object.create(null))[slot] = {
@@ -243,6 +305,43 @@ class RefStorage {
     };
     this.evictIfNeeded();
     this.scheduleWrite();
+  }
+
+  /** Commit a successful local repair without exposing the old derived list
+   * between writes. Failed parsing/fusion never calls this path. */
+  async commitPDFRepair(
+    item: Zotero.Item,
+    pdf: RefItem[],
+    fused: RefItem[],
+    save: { pdf: boolean; fused: boolean },
+    expectedStateKey = itemStateKey(item),
+  ): Promise<boolean> {
+    await this.ready;
+    if (itemStateKey(item) !== expectedStateKey) return false;
+    const cleanPDF = pdf.map(sanitizeRef).filter((r): r is RefItem => !!r);
+    const cleanFused = fused.map(sanitizeRef).filter((r): r is RefItem => !!r);
+    if (
+      !cleanPDF.length ||
+      !cleanFused.length ||
+      this.continuationFlagsFor(cleanPDF).raw ||
+      this.continuationFlagsFor(cleanFused).anchored
+    )
+      return false;
+    const slots = (this.cache[itemCacheKey(item)] ??= Object.create(null));
+    const pending = this.pendingPDFRepair(item, expectedStateKey);
+    const t = Date.now();
+    // No await here: readers must see either the old rejected pair or the new
+    // pair. Disabled persistence only removes the invalid old slot on success.
+    if (save.pdf) slots.PDF = { t, identity: expectedStateKey, refs: cleanPDF };
+    else if (pending && slots.PDF?.identity === expectedStateKey)
+      delete slots.PDF;
+    if (save.fused)
+      slots.FUSED = { t, identity: expectedStateKey, refs: cleanFused };
+    else if (pending && slots.FUSED?.identity === expectedStateKey)
+      delete slots.FUSED;
+    this.evictIfNeeded();
+    this.scheduleWrite();
+    return true;
   }
 
   async remove(item: Zotero.Item, slot?: string) {
