@@ -40,6 +40,10 @@ export function registerStyles(win: Window) {
       --refs-font-secondary: calc(var(--zotero-font-size, 13px) * .923);
     }
     .references-panel { box-sizing: border-box; min-width: 0; padding: 8px 10px 12px 12px; gap: 8px; }
+    /* Native collapsible sections keep their body in the layout while closed.
+       Remove only our panel's vertical inset in that state; the native head,
+       transition and horizontal alignment remain owned by Zotero. */
+    collapsible-section:not([open]) > [data-type="body"].references-panel { padding-block: 0; }
     .references-panel > * { min-width: 0; }
 
     /* ---------- toolbar ---------- */

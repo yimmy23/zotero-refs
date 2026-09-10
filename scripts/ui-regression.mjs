@@ -70,6 +70,9 @@ class Node {
   append(...nodes) {
     for (const node of nodes) this.insertBefore(node, null);
   }
+  appendChild(node) {
+    return this.insertBefore(node, null);
+  }
   prepend(...nodes) {
     for (const node of [...nodes].reverse())
       this.insertBefore(node, this.children[0]);
@@ -183,6 +186,7 @@ function document() {
   };
   doc.root = doc.createElement("root");
   doc.root.connectedRoot = true;
+  doc.documentElement = doc.root;
   doc.defaultView = { document: doc };
   return doc;
 }
@@ -297,6 +301,42 @@ function host() {
     getCollections: () => [],
   };
 }
+
+test("collapsed native panels are scoped to the direct body and retain expanded insets", () => {
+  const env = environment(),
+    doc = document(),
+    win = { document: doc },
+    styles = env.load("src/ui/styles.ts");
+  styles.registerStyles(win);
+  const css = doc.getElementById(`${pkg.config.addonRef}-styles`).textContent;
+
+  // ItemPaneCustomSection.content() creates this exact native hierarchy:
+  // collapsible-section > [data-type="body"].references-panel.
+  assert.match(
+    css,
+    /collapsible-section:not\(\[open\]\)\s*>\s*\[data-type="body"\]\.references-panel\s*\{\s*padding-block:\s*0;\s*\}/,
+  );
+  assert.match(
+    css,
+    /\.references-panel \{ box-sizing: border-box; min-width: 0; padding: 8px 10px 12px 12px; gap: 8px; \}/,
+  );
+  assert.doesNotMatch(
+    css,
+    /collapsible-section:not\(\[open\]\)\s+\.references-panel/,
+    "descendant panels must not inherit the collapsed override",
+  );
+
+  const paths = ["section.ts", "citations.ts", "related.ts", "graphSection.ts"];
+  for (const path of paths) {
+    const source = fs.readFileSync(root + `src/ui/${path}`, "utf8");
+    assert.match(
+      source,
+      /classList\.add\(["']references-panel["']\)/,
+      `${path} must use the scoped panel rule`,
+    );
+  }
+});
+
 function rowsModule(env, match = async () => undefined) {
   return env.load("src/ui/rows.ts", {
     ...env.shared,
