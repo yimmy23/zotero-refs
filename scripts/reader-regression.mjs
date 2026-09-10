@@ -501,6 +501,7 @@ function devFixture(environment = "development") {
         "../graph/build",
         "../graph/view",
         "../pdf/parser",
+        "../pdf/sequenceReader",
         "../sources/openalex",
         "../sources/semanticscholar",
         "../sources/crossref",

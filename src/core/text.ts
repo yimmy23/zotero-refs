@@ -150,6 +150,25 @@ export function isHttpUrl(s?: string): s is string {
   return typeof s === "string" && /^https?:\/\/\S+$/i.test(s);
 }
 
+/**
+ * A normalized identity from an exact DOI resolver URL. Undefined means a
+ * different origin; null means an unusable resolver path. Decoding is only
+ * for comparison: callers retain the original safe URL for navigation.
+ */
+export function doiResolverTarget(url?: string): string | null | undefined {
+  if (!isHttpUrl(url)) return undefined;
+  const path = url.match(/^https?:\/\/(?:dx\.)?doi\.org\/([^?#]*)/i)?.[1];
+  if (path === undefined) return undefined;
+  try {
+    const doi = decodeURIComponent(path);
+    return /^10\.\d{4,9}\/\S+$/.test(doi)
+      ? doi.replace(/[.,;]+$/, "").toLowerCase()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export function isDOI(text?: string): boolean {
   if (!text) return false;
   const res = text.match(REGEX.DOI);
@@ -514,9 +533,14 @@ export function parseRefText(text: string): {
 export function refTextToInfo(text: string): RefItem {
   const identifiers = extractIdentifiers(text);
   const parsed = parseRefText(text);
+  let url = extractURL(text);
+  // Keep normal links and valid DOI URLs in their existing precedence.
+  if (url && identifiers.DOI && doiResolverTarget(url) === null) {
+    url = undefined;
+  }
   return {
     identifiers,
-    url: extractURL(text) || identifiersToURL(identifiers),
+    url: url || identifiersToURL(identifiers),
     authors: parsed.authors || [],
     title: parsed.title,
     year: parsed.year,

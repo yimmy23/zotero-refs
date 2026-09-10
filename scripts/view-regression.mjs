@@ -301,6 +301,69 @@ assert.equal(abstractCard.readableText(body), citation);
 console.log(
   "PASS citation fallback keeps original text without abstract section formatting",
 );
+// Citation formatting is visible only; translation/copy identity stays raw.
+clearPopupTranslations();
+const rawChineseCitation =
+  "李 四．中 文 使用方 法［ J ］．示 例 期 刊，2015，44 ( 2 ) : 419- 427．";
+const displayedChineseCitation =
+  "李四．中文使用方法[J]．示例期刊，2015，44(2):419-427．";
+const citationBody = () => {
+  const node = abstractDoc.createElementNS(
+    "http://www.w3.org/1999/xhtml",
+    "div",
+  );
+  node.dataset = { contentKind: "citation", sourceText: rawChineseCitation };
+  node.closest = () => null;
+  abstractDoc.documentElement.appendChild(node);
+  return node;
+};
+const chineseBody = citationBody(),
+  chineseCard = new PopupCard();
+chineseCard.renderText(chineseBody, rawChineseCitation);
+assert.equal(chineseBody.textContent, displayedChineseCitation);
+assert.equal(chineseBody.dataset.displayText, rawChineseCitation);
+assert.equal(chineseBody.dataset.sourceText, rawChineseCitation);
+assert.equal(chineseCard.readableText(chineseBody), rawChineseCitation);
+assert.equal(chineseBody.getElementsByTagName("p").length, 0);
+let citationCalls = 0;
+Zotero.PDFTranslate.api.translate = async (text) => {
+  citationCalls++;
+  assert.equal(text, rawChineseCitation);
+  return "Example citation with 10 mg / kg and self- protection.";
+};
+await chineseCard.toggleTranslation(chineseBody);
+assert.equal(chineseBody.dataset.showTranslation, "true");
+assert.equal(
+  chineseBody.textContent,
+  "Example citation with 10 mg / kg and self- protection.",
+);
+const revisitedCitation = citationBody(),
+  revisitedCard = new PopupCard();
+revisitedCard.renderText(revisitedCitation, rawChineseCitation);
+revisitedCard.restoreTranslation(revisitedCitation);
+assert.equal(revisitedCitation.dataset.showTranslation, "true");
+assert.equal(citationCalls, 1);
+await revisitedCard.toggleTranslation(revisitedCitation);
+assert.equal(revisitedCitation.textContent, displayedChineseCitation);
+assert.equal(revisitedCard.readableText(revisitedCitation), rawChineseCitation);
+assert.equal(revisitedCitation.dataset.sourceText, rawChineseCitation);
+assert.equal(citationCalls, 1);
+console.log(
+  "PASS citation visible spacing preserves raw copy, translation key and cached view",
+);
+
+const unchangedAbstract =
+  "中 文 摘 要。10 mg / kg; 2015，44 ( 2 ) : 419- 427．";
+body.dataset.contentKind = "abstract";
+abstractCard.renderText(body, unchangedAbstract);
+assert.equal(
+  body.getElementsByTagName("span")[0].textContent,
+  unchangedAbstract,
+);
+body.dataset.contentKind = "title";
+abstractCard.renderText(body, "中 文 标 题");
+assert.equal(body.textContent, "中 文 标 题");
+console.log("PASS citation formatter does not alter abstract or title text");
 // A new card/DOM restores the user's translated view without a second click.
 clearPopupTranslations();
 let revisitCalls = 0;
@@ -364,4 +427,4 @@ console.log(
   "PASS removing the translation provider clears busy state and preserves original content",
 );
 clearPopupTranslations();
-console.log("9 view regressions passed");
+console.log("11 view regressions passed");

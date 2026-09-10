@@ -1,9 +1,11 @@
 import { setListMessage } from "./controls";
+import { formatCitationText } from "./citationText";
 import { getNumPref, getPref } from "../utils/prefs";
 import { getString } from "../utils/locale";
 import { getWin, setTimeout, clearTimeout } from "../utils/window";
 import {
   collapseText,
+  cleanText,
   htmlToText,
   identifiersToURL,
   isChinese,
@@ -631,7 +633,8 @@ export function renderRefRow(
 
   const label = doc.createElement("div");
   label.className = "references-row-label";
-  label.textContent = refText;
+  // Match cache sanitization without rewriting the raw citation used by editing.
+  label.textContent = formatCitationText(cleanText(refText));
   label.tabIndex = 0;
   label.setAttribute("role", "button");
   label.title = getString(ctx.editable ? "row-tip" : "row-tip-readonly");
@@ -892,6 +895,7 @@ export function referenceSearchText(ref: RefItem, index: number): string {
     ref.number || index + 1,
     ref.text,
     ref.title,
+    formatCitationText(cleanText(ref.text || ref.title || "")),
     ...(ref.authors || []),
     ref.year,
     ref.primaryVenue,

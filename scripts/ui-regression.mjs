@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 import { transformSync } from "esbuild";
+import { DOMParser } from "@xmldom/xmldom";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(root + "package.json", "utf8"));
@@ -279,6 +280,7 @@ function environment() {
     "../core/types": types,
     "../core/popupMetadata": popupMetadata,
     "./controls": controls,
+    "./citationText": load("src/ui/citationText.ts"),
     "../core/storage": {
       itemCacheKey: (item) => `${item.libraryID}/${item.key}`,
       itemStateKey: (item) => `${item.libraryID}/${item.key}`,
@@ -547,6 +549,263 @@ test("badge and metadata filters select the same rows for batch import", async (
     assert.deepEqual(imported, [refs[0]], query);
   }
   assert.equal(env.errors.length, 0);
+});
+
+function storageSanitizer(env) {
+  // The browser's inert DOM parser is the only simulated dependency here;
+  // rows, cleanText and the storage sanitizer run their production code.
+  env.globals.ztoolkit.getDOMParser = () => ({
+    parseFromString: (html, type) => ({
+      body: {
+        textContent: new DOMParser({ onError: () => {} }).parseFromString(
+          html,
+          type,
+        ).documentElement.textContent,
+      },
+    }),
+  });
+  return env.load(
+    "src/core/storage.ts",
+    {
+      "../utils/window": env.shared["../utils/window"],
+      "./text": env.shared["../core/text"],
+    },
+    "\nexport { sanitizeRef };\n",
+  ).sanitizeRef;
+}
+
+for (const [name, raw, expected] of [
+  [
+    "ampersand entities",
+    "Alpha &amp; Beta &#38; Gamma",
+    "Alpha & Beta & Gamma",
+  ],
+  [
+    "mathematical comparisons and Unicode",
+    "P &lt; 0.05; Q &gt; 0.1; &#946; ≤ 2; HR 0.5 (95% CI 0.3–0.8)",
+    "P < 0.05; Q > 0.1; β ≤ 2; HR 0.5 (95% CI 0.3–0.8)",
+  ],
+  ["metadata markup", "<i>ALK</i>-positive &amp; EGFR", "ALK-positive & EGFR"],
+]) {
+  test(`fresh and cached rows display the same ${name} without rewriting raw data`, async () => {
+    const env = environment(),
+      doc = document(),
+      list = append(doc.root, "div", "references-list"),
+      sanitizeRef = storageSanitizer(env),
+      rows = rowsModule(env);
+    const fresh = ref("Synthetic title", {
+      text: raw,
+      number: 17,
+      page: 4,
+      x: 40,
+      y: 500,
+    });
+    const before = JSON.parse(JSON.stringify(fresh));
+    const cached = sanitizeRef(fresh);
+    const labels = [fresh, cached].map((reference) => {
+      rows.renderRefRow({ hostItem: host(), list }, [reference], 0);
+      return list.children.at(-1).querySelector(".references-row-label");
+    });
+    assert.deepEqual(
+      labels.map((label) => label.textContent),
+      [`[17] ${expected}`, `[17] ${expected}`],
+    );
+    assert.ok(labels.every((label) => label.childElementCount === 0));
+    assert.deepEqual(fresh, before);
+    assert.deepEqual(
+      [cached.number, cached.page, cached.x, cached.y],
+      [17, 4, 40, 500],
+    );
+    await labels[0].emit("keydown", { key: "Enter" });
+    assert.equal(env.copied.at(-1), raw);
+  });
+}
+
+test("title-only unnumbered rows use the same display cleanup as cached titles", () => {
+  const env = environment(),
+    doc = document(),
+    list = append(doc.root, "div", "references-list"),
+    sanitizeRef = storageSanitizer(env),
+    rows = rowsModule(env),
+    fresh = ref("<i>Alpha</i> &amp; Beta", { text: undefined });
+  for (const reference of [fresh, sanitizeRef(fresh)]) {
+    rows.renderRefRow(
+      { hostItem: host(), list, numbered: false },
+      [reference],
+      0,
+    );
+  }
+  assert.deepEqual(
+    list
+      .querySelectorAll(".references-row-label")
+      .map((label) => label.textContent),
+    ["Alpha & Beta", "Alpha & Beta"],
+  );
+});
+
+test("row display never creates active HTML and editing retains exact source entities", async () => {
+  const env = environment(),
+    doc = document(),
+    list = append(doc.root, "div", "references-list"),
+    rows = rowsModule(env);
+  storageSanitizer(env);
+  const raw = "A &amp; B &lt;img src=x onerror=alert(1)&gt;";
+  const original = ref("Synthetic", { text: raw });
+  rows.renderRefRow({ hostItem: host(), list, editable: true }, [original], 0);
+  const label = list.querySelector(".references-row-label");
+  assert.equal(label.textContent, "[1] A & B <img src=x onerror=alert(1)>");
+  assert.equal(label.childElementCount, 0);
+  await label.emit("keydown", { key: "F2" });
+  assert.equal(list.querySelector("textarea").value, raw);
+  assert.equal(original.text, raw);
+});
+
+for (const [name, raw, expected] of [
+  [
+    "Chinese citation layout and volume/issue/pages",
+    "张 三 ， 李 四 ． 中 文 测 试 题 名 ［ J ］ ． 模 型 期 刊 ， 2015 ， 44 ( 2 ) : 419- 427．",
+    "张三，李四．中文测试题名[J]．模型期刊，2015，44(2):419-427．",
+  ],
+  [
+    "Unicode Han and explicit publication type codes",
+    "中 文 𠀀 𠮷 文 [ J / OL ]，题 名 ［ EB / OL ］",
+    "中文𠀀𠮷文[J/OL]，题名[EB/OL]",
+  ],
+  [
+    "English words, prose hyphens, units and statistics",
+    "Author. self- protection in New York. 10 mg / kg; 95% CI 0.8 - 1.2; P < 0.05; n = 44 ( 2% )",
+    "Author. self- protection in New York. 10 mg / kg; 95% CI 0.8 - 1.2; P < 0.05; n = 44 ( 2% )",
+  ],
+  [
+    "numbers outside a complete bibliographic tail",
+    "Observations 2015, 44 ( 2 ) : 419- 427 mg; [ 12 ] [ m ] [ XYZ ]",
+    "Observations 2015, 44 ( 2 ) : 419- 427 mg; [ 12 ] [ m ] [ XYZ ]",
+  ],
+  [
+    "SICI DOI punctuation and an English bibliographic tail",
+    "Journal. 2020 ; 32 ( 5 - 6 ) : 314- 316. DOI:10.1234/(SICI)1234-1234(20000101)12:1<3::AID-ABC>3.0.CO;2-Z",
+    "Journal. 2020;32(5-6):314-316. DOI:10.1234/(SICI)1234-1234(20000101)12:1<3::AID-ABC>3.0.CO;2-Z",
+  ],
+  [
+    "URL Unicode and query punctuation",
+    "中 文 https://example.test/中文（路径）?a=1，2&b=alpha-beta#section 中 文",
+    "中文 https://example.test/中文（路径）?a=1，2&b=alpha-beta#section 中文",
+  ],
+  [
+    "multiple continuous identifiers",
+    "中 文 10.5555/Ａ（中）-1;2 www.example.test/x[J]?q=alpha-beta 中 文",
+    "中文 10.5555/Ａ（中）-1;2 www.example.test/x[J]?q=alpha-beta 中文",
+  ],
+  [
+    "English fullwidth sentence and type-mark word boundaries",
+    "MANNA A． Compact jammers ［ C ］ / / IEEE Conference",
+    "MANNA A． Compact jammers [C] / / IEEE Conference",
+  ],
+  [
+    "unknown bracket content",
+    "中 文 ［ 中 文 ABC ］ [ m ] [ XYZ ]",
+    "中文 ［ 中 文 ABC ］ [ m ] [ XYZ ]",
+  ],
+  [
+    "statistical assignment at a citation-like tail",
+    "P = 0.05; HR 0.5 (95% CI 0.3–0.8); 5 mg / kg; n = 2024, 12: 20",
+    "P = 0.05; HR 0.5 (95% CI 0.3–0.8); 5 mg / kg; n = 2024, 12: 20",
+  ],
+  [
+    "numeric comparison and variable contexts",
+    "P ≈ 2024, 12 ( 2 ) : 20- 40",
+    "P ≈ 2024, 12 ( 2 ) : 20- 40",
+  ],
+  [
+    "lettered page ranges and fullwidth issue parentheses",
+    "Journal. 2017， 12 （ 4 ） ： S411- S412。",
+    "Journal. 2017，12（4）：S411-S412。",
+  ],
+]) {
+  test(`citation display spacing preserves ${name}`, () => {
+    const format = environment().shared["./citationText"].formatCitationText;
+    assert.equal(format(raw), expected);
+    assert.equal(
+      format(expected),
+      expected,
+      "display formatting is idempotent",
+    );
+  });
+}
+
+test("Chinese row spacing leaves raw citation, copy, F2 and identifiers untouched", async () => {
+  const env = environment(),
+    doc = document(),
+    list = append(doc.root, "div", "references-list"),
+    rows = rowsModule(env);
+  const raw =
+    "李 四．中 文 使用方 法［ J ］．示 例 期 刊，2015，44 ( 2 ) : 419- 427．";
+  const original = ref("Original", {
+    text: raw,
+    number: 8,
+    page: 4,
+    x: 40,
+    y: 500,
+    identifiers: { DOI: "10.5555/synthetic(1)-2" },
+  });
+  const snapshot = JSON.parse(JSON.stringify(original));
+  rows.renderRefRow({ hostItem: host(), list, editable: true }, [original], 0);
+  const label = list.querySelector(".references-row-label");
+  assert.equal(
+    label.textContent,
+    "[8] 李四．中文使用方法[J]．示例期刊，2015，44(2):419-427．",
+  );
+  await label.emit("keydown", { key: "Enter" });
+  assert.equal(env.copied.at(-1), `DOI: ${original.identifiers.DOI}\n${raw}`);
+  await label.emit("keydown", { key: "F2" });
+  assert.equal(list.querySelector("textarea").value, raw);
+  assert.deepEqual(original, snapshot);
+});
+
+test("formatted and raw Chinese searches use the same row and batch-import key", async () => {
+  const env = environment(),
+    doc = document(),
+    rows = rowsModule(env);
+  const body = append(doc.root, "div", "body");
+  const refs = [ref("使用方 法的示 例"), ref("Another study")];
+  let imported;
+  const section = env.load(
+    "src/ui/section.ts",
+    {
+      ...env.shared,
+      "../core/fuse": {},
+      "../sources": {},
+      "../pdf/parser": {},
+      "./rows": rows,
+      "./batchImport": {
+        runBatchImport: async (_host, targets) => {
+          imported = targets;
+          return null;
+        },
+      },
+    },
+    "\nexport { buildToolbar };\n",
+  );
+  section.buildToolbar(body, host(), { refs, importing: false }, () => {});
+  const list = append(body, "div", "references-list");
+  refs.forEach((_, index) =>
+    rows.renderRefRow({ hostItem: host(), list }, refs, index),
+  );
+  const searchKey = list.children[0].dataset.searchText;
+  assert.ok(searchKey.includes(refs[0].text));
+  assert.ok(searchKey.includes("使用方法的示例"));
+  const input = body.querySelector(".references-search input");
+  const button = body.querySelector(".references-icon-import").parentElement;
+  for (const query of ["使用方法", "使用方 法"]) {
+    input.value = query;
+    await input.emit("input");
+    await button.emit("click");
+    assert.deepEqual(
+      list.querySelectorAll(".references-row").map((row) => row.hidden),
+      [false, true],
+    );
+    assert.deepEqual(imported, [refs[0]]);
+  }
 });
 
 test("editing replaces old identity and relation state while retaining printed position", async () => {

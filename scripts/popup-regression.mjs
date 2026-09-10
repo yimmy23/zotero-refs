@@ -122,6 +122,7 @@ function environment() {
       "src/ui/rows.ts",
       {
         "./controls": {},
+        "./citationText": load("src/ui/citationText.ts"),
         "../utils/prefs": {},
         "../utils/locale": { getString },
         "../utils/window": windowTools,

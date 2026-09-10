@@ -1,4 +1,5 @@
 import { isHttpUrl } from "../core/text";
+import { formatCitationText } from "./citationText";
 import { abstractParagraphs } from "../core/abstractText";
 import {
   openTranslation,
@@ -648,7 +649,10 @@ export class PopupCard {
   private renderText(node: HTMLElement, text: string) {
     node.dataset.displayText = text;
     if (node.dataset.contentKind !== "abstract") {
-      node.textContent = text;
+      node.textContent =
+        node.dataset.contentKind === "citation"
+          ? formatCitationText(text)
+          : text;
       return;
     }
     const doc = node.ownerDocument!;

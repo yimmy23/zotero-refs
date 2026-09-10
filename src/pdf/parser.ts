@@ -1,5 +1,16 @@
-import { refTextToInfo, isHttpUrl } from "../core/text";
+import {
+  refTextToInfo,
+  isHttpUrl,
+  extractIdentifiers,
+  doiResolverTarget,
+} from "../core/text";
 import type { RefItem } from "../core/types";
+import { mergeFlatAuthorYearReferences } from "./groupedReferences";
+import {
+  segmentGroupedStudyReferences,
+  type GroupedStudyDecision,
+  type GroupedStudyEntry,
+} from "./groupedStudyReferences";
 import { getPref } from "../utils/prefs";
 import { getString } from "../utils/locale";
 
@@ -37,6 +48,9 @@ interface PDFItem {
   /** attached link-annotation URL (filled by updateItemsAnnotions) */
   url?: string;
 }
+
+/** Successful line-number probes retained only until consumed in this parse. */
+type ProbeTextCache = Map<any, { items: PDFItem[] }>;
 
 /** merged visual line */
 interface PDFLine {
@@ -112,11 +126,13 @@ function abs(v: number): number {
  * whitespace stripped (OCR'd PDFs often break "[ 12 ]").
  */
 function getRefType(text: string): number {
+  const prefixNormalized = compactLeadingDigits(text.trim());
   for (let i = 0; i < refRegex.length; i++) {
     const flags = new Set(
       refRegex[i].map(
         (regex) =>
-          regex.test(text.trim()) || regex.test(text.replace(/\s+/g, "")),
+          regex.test(prefixNormalized) ||
+          regex.test(prefixNormalized.replace(/\s+/g, "")),
       ),
     );
     if (flags.has(true)) {
@@ -264,22 +280,37 @@ function numAtStart(text: string): number {
   // some PDFs emit every digit of the number as its own glyph run, which
   // mergeSameLine joins with spaces ("1 0 . Hosny A") — close them up
   const m = compactLeadingDigits(text.trim()).match(
-    /^[[(]?(\d{1,3})(?:\s*[\].)．）]\s*(?=[^\d\s.])|\s+(?=[\p{L}“"']))/u,
+    /^(?:[[(](\d{1,3})[\])](?:\s*[.．])?\s*(?=[^\d０-９\s.．])|(\d{1,3})\s*[.)．）]\s*(?=[^\d０-９\s.．])|(\d{1,3})\s+(?=[\p{L}“"']))/u,
   );
-  return m ? Number(m[1]) : 0;
+  return m ? Number(m[1] || m[2] || m[3]) : 0;
 }
 
 /**
- * "1 0 . Hosny" → "10 . Hosny"; "[ 1 2 ]" → "[12]". Only before the
- * number's punctuation — a bare "1 7 insight.jci.org" is a spaced page
- * number in a running footer, and closing it up once turned it into entry
- * 17 of a list that was waiting for 17.
+ * Normalize only a punctuated bibliography-number prefix, including full-width
+ * brackets/digits and separately drawn digit glyphs. The citation body retains
+ * its original typography. Bare "1 7 insight.jci.org" remains unchanged: closing
+ * that running footer once made it look like the next reference number 17.
  */
 function compactLeadingDigits(t: string): string {
-  return t.replace(
-    /^([[(]?)(\d)(?:\s(\d))?(?:\s(\d))?(?=\s?[\].)．）])/,
-    (_, b, a, c, d) => `${b}${a}${c ?? ""}${d ?? ""}`,
-  );
+  const digits = (value: string) =>
+    value
+      .replace(/\s+/g, "")
+      .replace(/[０-９]/g, (digit) =>
+        String(digit.charCodeAt(0) - "０".charCodeAt(0)),
+      );
+  return t
+    .replace(
+      /^([[(［（])\s*([0-9０-９](?:\s*[0-9０-９]){0,2})\s*([\])］）])/,
+      (prefix, open, value, close) => {
+        const square = open === "[" || open === "［";
+        if (square ? !/[\]］]/.test(close) : !/[)）]/.test(close))
+          return prefix;
+        return `${square ? "[" : "("}${digits(value)}${square ? "]" : ")"}`;
+      },
+    )
+    .replace(/^([0-9０-９](?:\s*[0-9０-９]){0,2})(?=\s*[.)．）])/, (_, value) =>
+      digits(value),
+    );
 }
 
 /**
@@ -373,7 +404,7 @@ const TAIL_BOILER_COMPACT = new RegExp(
 
 type TailKind = "heading" | "boilerplate" | null;
 function tailNoiseKind(text: string): TailKind {
-  const t = text.trim();
+  const t = text.trim().replace(/[‘’]/g, "'");
   const c = t.replace(/\s+/g, "");
   if (TAIL_HEADING.test(t) || TAIL_HEADING_COMPACT.test(c)) return "heading";
   if (TAIL_BOILER.test(t) || TAIL_BOILER_COMPACT.test(c)) return "boilerplate";
@@ -389,7 +420,7 @@ function tailNoiseKind(text: string): TailKind {
  * those ("Cancer statistics, 2019", "RECIST 1.1", "COVID-19").
  */
 const ENTRY_END =
-  /(\d[-–‒]\d+\.?|;\s*\d+(?:\s*\(\d+\))?\s*:\s*\d+\.?|\[\s*(?:PubMed\b|PMC\d*\b|Crossref\b|Web of Science\b|Google Scholar\b)[^\]]*\]\.?|\bdoi[:\s]*\S+|https?:\/\/\S+|\bPMID:?\s*\d+\.?|\bPMC\d+\.?|\be\d{4,}\.?|print\]\.?)\s*$/i;
+  /(\d\s*[-–‒]\s*\d+(?:\.e\d+)?\.?|;\s*\d+(?:\s*\(\d+\))?\s*:\s*\d+\.?|\[\s*(?:PubMed\b|PMC\d*\b|Crossref\b|Web of Science\b|Google Scholar\b)[^\]]*\]\.?|\bdoi[:\s]*\S+|https?:\/\/\S+|\bPMID:?\s*\d+\.?|\bPMC\d+\.?|\be\d{4,}\.?|print\]\.?)\s*$/i;
 
 /** A year or range alone also occurs in tables; require citation syntax. */
 function hasCitationEvidence(text: string): boolean {
@@ -402,6 +433,53 @@ function hasCitationEvidence(text: string): boolean {
       text,
     )
   );
+}
+
+/** Place/publisher/year syntax, used only inside the guarded title look-ahead. */
+function hasBookPublicationEvidence(text: string): boolean {
+  return /(?:^|[.!?]\s+)[\p{L}][\p{L}\s,.'’()-]{1,60}:\s*[\p{L}][\p{L}\d\s&,'’().-]{1,90}[;,]\s*(?:1\d|20)\d{2}[a-z]?[.。]?\s*$/u.test(
+    text,
+  );
+}
+
+/** Preserve literal ranges/identifiers while repairing ordinary word wraps. */
+function joinReferenceText(
+  left: string,
+  right: string,
+  leftURL?: string,
+  rightURL?: string,
+): string {
+  const a = left.trimEnd();
+  const b = right.trim();
+  if (!a) return b;
+  if (!a.endsWith("-")) return `${a} ${b}`;
+  const urlToken = a.match(/https?:\/\/\S*$/i)?.[0];
+  const doiToken = a.match(/\b10\.\d{4,9}\/\S*[a-z]-$/)?.[0];
+  if (
+    doiToken &&
+    /^[a-z]/.test(b) &&
+    (!urlToken ||
+      (!/[?#]/.test(urlToken) && doiResolverTarget(urlToken) !== undefined))
+  ) {
+    // A lower-case DOI word wrap is ambiguous. Retain the printed hyphen
+    // only when a neighboring resolver annotation supports exactly that
+    // candidate; unrelated or conflicting links cannot choose its identity.
+    const joined = extractIdentifiers(
+      doiToken.slice(0, -1) + b,
+    ).DOI?.toLowerCase();
+    const retained = extractIdentifiers(doiToken + b).DOI?.toLowerCase();
+    const targets = [doiResolverTarget(leftURL), doiResolverTarget(rightURL)];
+    const keep =
+      retained !== undefined &&
+      joined !== retained &&
+      targets.includes(retained) &&
+      !targets.includes(joined);
+    return (keep ? a : a.slice(0, -1)) + b;
+  }
+  const literal =
+    (/\d-$/.test(a) && /^\d/.test(b)) ||
+    /(?:https?:\/\/|\b10\.\d{4,9}\/)\S*-$/.test(a);
+  return (literal ? a : a.slice(0, -1)) + b;
 }
 
 const STANDALONE_TAIL_HEADING =
@@ -438,6 +516,27 @@ function absX(l: PDFLine): number {
 
 type Verdict = "accept" | "stray" | "end";
 
+/** A separately drawn continuation remains in its justified text row. */
+function sameBaselineTail(
+  prev: PDFLine,
+  line: PDFLine,
+  columnRight: number,
+): boolean {
+  const h = Math.max(prev.height, line.height, 6);
+  return (
+    line.pageNum === prev.pageNum &&
+    (!ENTRY_END.test(prev.text) ||
+      /^(?:doi|pmid|pmcid|url|available|accessed|retrieved|epub|published|cited|updated|online)\s*:?$/i.test(
+        line.text.trim(),
+      ) ||
+      /^(?:https?:\/\/\S+|10\.\d{4,9}\/\S+)/i.test(line.text.trim())) &&
+    Math.abs(line.y - prev.y) <= 0.2 * h &&
+    absX(line) >= absX(prev) + prev.width - 1 &&
+    absX(line) - (absX(prev) + prev.width) < 8 * h &&
+    absX(line) + line.width <= columnRight + h
+  );
+}
+
 /**
  * May `line` continue the entry whose most recent accepted line is `prev`?
  *
@@ -466,7 +565,13 @@ type Verdict = "accept" | "stray" | "end";
 function continuationVerdict(
   prev: PDFLine,
   line: PDFLine,
-  ctx: { isLast: boolean; strayed: boolean; firstWidth: number },
+  ctx: {
+    isLast: boolean;
+    strayed: boolean;
+    firstWidth: number;
+    columnRight: number;
+    row?: PDFLine;
+  },
 ): Verdict {
   const pp = prev.pageNum ?? 0;
   const lp = line.pageNum ?? 0;
@@ -493,6 +598,14 @@ function continuationVerdict(
   const h = Math.max(prev.height, line.height, 6);
   const px = absX(prev);
   const lx = absX(line);
+  // Widely justified rows may draw their final word separately. A shared
+  // baseline inside the already-established column is not a column jump.
+  if (sameBaselineTail(prev, line, ctx.columnRight)) {
+    return closes ? "end" : "accept";
+  }
+  // A rejected fragment of this composite row cannot become a column
+  // jump: its gap, column bound and complete-citation guards still apply.
+  if (ctx.row === prev && Math.abs(line.y - prev.y) <= 0.2 * h) return "stray";
   if (line.y < prev.y) {
     if (abs(lx - px) < 5 * h && prev.y - line.y < 4.5 * h) {
       return closes ? "end" : "accept";
@@ -500,12 +613,18 @@ function continuationVerdict(
     return "stray";
   }
   if (lx > px + 4 * h) {
+    // Moving upward within the known column is another block, not a jump
+    // to a new column (for example, an appendix table label above the tail).
+    if (lx < ctx.columnRight - h) return "stray";
     // a one- or two-letter run up there is a logo ("ll"), not a column
-    if (line.text.replace(/\s+/g, "").length < 4) return "stray";
+    const compact = line.text.replace(/\s+/g, "");
+    const rangeTail =
+      /\d[-–‒]\s*$/.test(prev.text) && /^\d+[.,;]?$/.test(compact);
+    if (compact.length < 4 && !rangeTail) return "stray";
     if (!ctx.isLast) return "accept";
-    if (ctx.strayed) return "stray";
+    if (ctx.strayed && !rangeTail) return "stray";
     const w = ctx.firstWidth;
-    if (w > 0 && (line.width < 0.5 * w || line.width > 1.3 * w)) {
+    if (!rangeTail && w > 0 && (line.width < 0.5 * w || line.width > 1.3 * w)) {
       return "stray";
     }
     return "accept";
@@ -545,6 +664,9 @@ function mergeNumberedRefs(input: PDFLine[]): PDFLine[] | null {
   let entryLines: PDFLine[] = [];
   // the line most recently merged into `cur` (geometry of the entry's tail)
   let last: PDFLine | undefined;
+  // Composite row geometry advances its right edge without moving the
+  // left-hand anchor needed by the next wrapped line. Raw lines stay intact.
+  let row: { line: PDFLine; columnRight?: number } | undefined;
   // The last line known to sit in the entry's own column flow (the entry
   // start, or a line found directly below one). Lines accepted through the
   // page-change / column-jump rules are only PROVISIONAL: the first line
@@ -564,11 +686,10 @@ function mergeNumberedRefs(input: PDFLine[]): PDFLine[] | null {
   let strayCount = 0;
   let endedAt = "";
   const joinLines = (lines: PDFLine[]) =>
-    lines.reduce((acc, l) => {
-      const t = l.text.trim();
-      if (!acc) return t;
-      return acc.replace(/-$/, "") + (acc.endsWith("-") ? "" : " ") + t;
-    }, "");
+    lines.reduce(
+      (acc, l, i) => joinReferenceText(acc, l.text, lines[i - 1]?.url, l.url),
+      "",
+    );
   const closeEntry = () => {
     if (!cur) return;
     cur.text = joinLines(entryLines);
@@ -583,6 +704,7 @@ function mergeNumberedRefs(input: PDFLine[]): PDFLine[] | null {
       provisional.push(line);
     }
     last = line;
+    row = { line };
     tailLines++;
   };
   for (let i = 0; i < input.length; i++) {
@@ -593,12 +715,16 @@ function mergeNumberedRefs(input: PDFLine[]): PDFLine[] | null {
       n === expected ||
       // one entry lost to OCR/layout: accept a single skip once the
       // current entry already has real content
-      (n === expected + 1 && cur && joinLines(entryLines).length >= 40)
+      (n === expected + 1 &&
+        cur &&
+        joinLines(entryLines).length >= 40 &&
+        (lastIdx.get(expected) ?? -1) < i)
     ) {
       closeEntry();
       cur = { ...line, text: text.trim() };
       entryLines = [line];
       last = line;
+      row = { line };
       anchor = line;
       provisional = [];
       out.push(cur);
@@ -611,8 +737,26 @@ function mergeNumberedRefs(input: PDFLine[]): PDFLine[] | null {
     if (!cur || !last || !anchor) continue; // leading noise before entry 1
     if (skipping) continue;
     const isLast = !moreToCome(i, expected);
-    const ctx = { isLast, strayed, firstWidth: cur.width };
-    let verdict: Verdict = continuationVerdict(last, line, ctx);
+    const bandWidth = 5 * Math.max(last.height, 6);
+    let columnRight = absX(last) + last.width;
+    for (const candidate of entryLines) {
+      if (
+        candidate.pageNum === last.pageNum &&
+        Math.abs(absX(candidate) - absX(last)) < bandWidth
+      ) {
+        columnRight = Math.max(columnRight, absX(candidate) + candidate.width);
+      }
+    }
+    const currentRow = row?.line ?? last;
+    columnRight = row?.columnRight ?? columnRight;
+    const ctx = {
+      isLast,
+      strayed,
+      firstWidth: cur.width,
+      columnRight,
+      row: currentRow === last ? undefined : currentRow,
+    };
+    let verdict: Verdict = continuationVerdict(currentRow, line, ctx);
     if (verdict === "stray") {
       // does it follow the anchor instead, as a real column line?
       if (
@@ -669,7 +813,11 @@ function mergeNumberedRefs(input: PDFLine[]): PDFLine[] | null {
           break;
         continuation.push(input[j]);
       }
-      if (hasCitationEvidence(joinLines(continuation))) noise = null;
+      if (
+        hasCitationEvidence(joinLines(continuation)) ||
+        hasBookPublicationEvidence(joinLines(continuation))
+      )
+        noise = null;
     }
     if (noise) {
       const lp = line.pageNum ?? 0;
@@ -684,7 +832,7 @@ function mergeNumberedRefs(input: PDFLine[]): PDFLine[] | null {
       if (
         noise === "heading" ||
         (below && (isLast || blockFollows)) ||
-        (lp > pp && ENTRY_END.test(last.text))
+        (lp > pp && ENTRY_END.test(currentRow.text))
       ) {
         skipping = true;
         endedAt ||= `tail noise "${text.trim().slice(0, 40)}"`;
@@ -699,6 +847,28 @@ function mergeNumberedRefs(input: PDFLine[]): PDFLine[] | null {
     if (verdict === "end") {
       skipping = true;
       endedAt ||= `#${out.length} closed before "${text.trim().slice(0, 40)}"`;
+      continue;
+    }
+    if (sameBaselineTail(currentRow, line, columnRight)) {
+      // Advance only the accepted row edge/text, with its original column
+      // bound fixed; keep last/anchor at the row's left for wrapped lines.
+      row = {
+        columnRight,
+        line: {
+          ...currentRow,
+          text: joinReferenceText(
+            currentRow.text,
+            line.text,
+            currentRow.url,
+            line.url,
+          ),
+          width: absX(line) + line.width - absX(currentRow),
+          url: line.url ?? currentRow.url,
+        },
+      };
+      entryLines.push(line);
+      if (provisional.length) provisional.push(line);
+      tailLines++;
       continue;
     }
     // solid = directly below a line of the entry's own flow
@@ -731,6 +901,39 @@ function mergeNumberedRefs(input: PDFLine[]): PDFLine[] | null {
   return out.length >= 3 ? out : null;
 }
 
+/** Index the existing indentation predicate; do not change layout decisions. */
+function createIndentMatcher(lines: PDFLine[], indent: number) {
+  const width = abs(indent);
+  const xs = [
+    ...new Set(lines.map((line) => line.x).filter(Number.isFinite)),
+  ].sort((a, b) => a - b);
+  const matches = (x: number, line: PDFLine) =>
+    (line.x - x) * indent > 0 &&
+    abs(line.x - x) >= width &&
+    abs(abs(line.x - x) - width) < 2 * line.height;
+  return (line: PDFLine): boolean => {
+    // Keep unusual floating-point inputs on the original predicate, including
+    // the possibility of multiplication underflow at subnormal indentation.
+    if (
+      !Number.isFinite(line.x) ||
+      !Number.isFinite(line.height) ||
+      !Number.isFinite(indent) ||
+      width < 1e-6
+    )
+      return lines.some((other) => other !== line && matches(other.x, line));
+    let low = 0,
+      high = xs.length;
+    while (low < high) {
+      const mid = low + Math.floor((high - low) / 2);
+      if (indent < 0 ? xs[mid] - line.x < width : line.x - xs[mid] >= width)
+        low = mid + 1;
+      else high = mid;
+    }
+    const index = indent < 0 ? low : low - 1;
+    return index >= 0 && index < xs.length && matches(xs[index], line);
+  };
+}
+
 function mergeSameRef(input: PDFLine[]): PDFLine[] {
   if (!input.length) return [];
   const numbered = mergeNumberedRefs(input);
@@ -738,6 +941,12 @@ function mergeSameRef(input: PDFLine[]): PDFLine[] {
     ztoolkit.log(`[pdfparser] numbered merge -> ${numbered.length}`);
     return numbered;
   }
+  const flatAuthorYear = mergeFlatAuthorYearReferences(
+    input,
+    joinReferenceText,
+  );
+  if (flatAuthorYear) return flatAuthorYear;
+
   const _refLines = [...input];
   let refLines: (PDFLine | false)[] = input;
   const firstLine = input[0];
@@ -750,21 +959,115 @@ function mergeSameRef(input: PDFLine[]): PDFLine[] {
         line.x != firstX && abs(line.x - firstX) < 10 * firstLine.height,
     );
   const indent = secondLine ? firstX - secondLine.x : 0;
+  const hasIndentCompanion =
+    indent !== 0 ? createIndentMatcher(_refLines, indent) : () => false;
   ztoolkit.log("[pdfparser] mergeSameRef indent", indent);
   const refType = getRefType(firstLine.text);
+  // A year-first book/software citation and its following author-first entries
+  // share a hanging margin, not a lexical start type. Do not let the first
+  // entry's typography glue the entire unnumbered bibliography together.
+  const unnumberedHanging = indent < 0 && numAtStart(firstLine.text) === 0;
+  const groupKey = (line: PDFLine) =>
+    `${line.pageNum ?? 0}/${line.column ?? 0}/${line._offset ?? 0}`;
+  const groupIndents = new Map<string, number>();
+  if (unnumberedHanging)
+    for (const line of input)
+      groupIndents.set(
+        groupKey(line),
+        Math.max(groupIndents.get(groupKey(line)) ?? 0, line.x - firstX),
+      );
+  const knownMargins: number[] = [];
+  const continuationGroups = new Set<string>();
   let ref: PDFLine | undefined;
   let entryCount = 0;
   for (let i = 0; i < refLines.length; i++) {
     const line = refLines[i] as PDFLine;
     const text = line.text;
     const lineRefType = getRefType(text);
+    const group = groupKey(line);
+    // A new, larger section heading followed by its own numbered subsection
+    // is structural evidence for an appendix, even without the word Appendix.
+    const sectionLabel = text.match(/^([A-Z])\s+[A-Z\s]+$/)?.[1];
+    const next = _refLines[i + 1];
+    const appendedSection =
+      !!ref &&
+      !!sectionLabel &&
+      (line.pageNum ?? 0) > (ref.pageNum ?? 0) &&
+      line.height > 1.15 * ref.height &&
+      (ENTRY_END.test(ref.text) ||
+        /\d[-–‒]\d+[,;]?\s+(?:1\d|20)\d{2}\.?$/.test(ref.text)) &&
+      !!next &&
+      next.pageNum === line.pageNum &&
+      next.y < line.y &&
+      line.y - next.y < 4 * line.height &&
+      Math.abs(absX(next) - absX(line)) < line.height &&
+      next.text.startsWith(`${sectionLabel}.1 `);
+    const biographyLines: PDFLine[] = [];
+    if (
+      unnumberedHanging &&
+      ref &&
+      ENTRY_END.test(ref.text.replace(/(\d)\s*([-–‒])\s*(?=\d)/g, "$1$2"))
+    ) {
+      for (const candidate of _refLines.slice(i, i + 6)) {
+        if (
+          candidate.pageNum !== line.pageNum ||
+          candidate.column !== line.column ||
+          Math.abs(absX(candidate) - absX(line)) >=
+            Math.max(1, line.height * 0.2)
+        )
+          break;
+        biographyLines.push(candidate);
+      }
+    }
+    // Author profiles replace the bibliography's hanging indent with a prose
+    // block. A title such as "Dr. ..." alone is not evidence of a biography.
+    const authorBiography =
+      biographyLines.length >= 3 &&
+      !/\b(?:1\d|20)\d{2}\b/.test(text) &&
+      !biographyLines.some((candidate) =>
+        hasCitationEvidence(candidate.text),
+      ) &&
+      /\b(?:his|her|their)\s+research\s+(?:interests?|areas?|focuses)|\b(?:he|she)\s+(?:is|has|completed)\b/i.test(
+        biographyLines.map((candidate) => candidate.text).join(" "),
+      );
+    const publisherNotice =
+      !!ref &&
+      tailNoiseKind(text) === "boilerplate" &&
+      /^(?:publisher['’]?s\s*note|springer nature remains)/i.test(
+        text.trim(),
+      ) &&
+      (ENTRY_END.test(ref.text.replace(/(\d)\s*([-–‒])\s*(?=\d)/g, "$1$2")) ||
+        hasCitationEvidence(ref.text));
+    // A final column may contain only wrapped author/title lines. Its local
+    // minimum was normalized to zero by donePart; restore its continuation
+    // role when it matches an already observed hanging margin and the preceding
+    // citation is unfinished. A shifted column with its own hanging entries
+    // has a nonzero indent range and must establish its own fresh margin.
+    if (
+      unnumberedHanging &&
+      ref &&
+      !ENTRY_END.test(ref.text) &&
+      !hasCitationEvidence(line.text) &&
+      !ENTRY_END.test(line.text) &&
+      groupKey(ref) !== group &&
+      (groupIndents.get(group) ?? 0) < Math.abs(indent) * 0.5 &&
+      knownMargins.some(
+        (margin) =>
+          Math.abs(absX(line) - margin + indent) <=
+          Math.max(1, line.height * 0.2),
+      )
+    )
+      continuationGroups.add(group);
     // Unnumbered bibliographies need the same explicit end markers as
     // numbered ones. The old indent fallback classified "APPENDIX" and
     // its paragraphs as author names. Publication-history dates are a
     // separate, narrow pattern so "Received doses..." can remain a title.
     if (
       entryCount >= 2 &&
-      (STANDALONE_TAIL_HEADING.test(text.trim()) ||
+      (appendedSection ||
+        authorBiography ||
+        publisherNotice ||
+        STANDALONE_TAIL_HEADING.test(text.trim()) ||
         /^received(?:(?:january|february|march|april|may|june|july|august|september|october|november|december)\d{4}|\d{1,2}[a-z]+\d{4})(?=[;,.]|revised|accepted|$)/i.test(
           text.replace(/\s+/g, ""),
         ))
@@ -773,24 +1076,21 @@ function mergeSameRef(input: PDFLine[]): PDFLine[] {
       break;
     }
     if (
+      !continuationGroups.has(group) &&
       // numbered types are reliable — skip other checks, carefully
-      (lineRefType == refType && refType <= 2) ||
-      (indent == 0 &&
-        lineRefType != -1 &&
-        lineRefType == refType &&
-        abs(firstX - line.x) < (abs(indent) || line.height) * 0.5) ||
-      (indent != 0 &&
-        lineRefType == refType &&
-        _refLines.find(
-          (_line) =>
-            line != _line &&
-            (line.x - _line.x) * indent > 0 &&
-            abs(line.x - _line.x) >= abs(indent) &&
-            abs(abs(line.x - _line.x) - abs(indent)) < 2 * line.height,
-        ) !== undefined)
+      ((lineRefType == refType && refType >= 0 && refType <= 2) ||
+        (indent == 0 &&
+          lineRefType != -1 &&
+          lineRefType == refType &&
+          abs(firstX - line.x) < (abs(indent) || line.height) * 0.5) ||
+        (indent != 0 &&
+          (lineRefType == refType || unnumberedHanging) &&
+          hasIndentCompanion(line)))
     ) {
       ref = line;
       entryCount++;
+      if (unnumberedHanging && !knownMargins.includes(absX(line)))
+        knownMargins.push(absX(line));
     } else if (ref) {
       // cut off tail noise that followed the bibliography into refLines,
       // usually the last few lines
@@ -805,8 +1105,7 @@ function mergeSameRef(input: PDFLine[]): PDFLine[] {
       // Poly-
       // gon
       // -> Polygon
-      ref.text =
-        ref.text.replace(/-$/, "") + (ref.text.endsWith("-") ? "" : " ") + text;
+      ref.text = joinReferenceText(ref.text, text, ref.url, line.url);
       if (line.url) {
         ref.url = line.url;
       }
@@ -820,17 +1119,14 @@ function mergeSameRef(input: PDFLine[]): PDFLine[] {
 /* link annotations                                                    */
 /* ------------------------------------------------------------------ */
 
-/** do rectangles A and B geometrically intersect */
+/** Require substantial glyph overlap: touching a neighboring row is not a link. */
 function isIntersect(A: Box, B: Box): boolean {
-  if (
-    B.right < A.left ||
-    B.left > A.right ||
-    B.bottom > A.top ||
-    B.top < A.bottom
-  ) {
-    return false;
-  }
-  return true;
+  const width = Math.min(A.right - A.left, B.right - B.left);
+  const height = Math.min(A.top - A.bottom, B.top - B.bottom);
+  if (!(width > 0 && height > 0)) return false;
+  const overlapX = Math.min(A.right, B.right) - Math.max(A.left, B.left);
+  const overlapY = Math.min(A.top, B.top) - Math.max(A.bottom, B.bottom);
+  return overlapX >= width * 0.5 && overlapY >= height * 0.5;
 }
 
 /** attach each link annotation's URL to every text item its rect touches */
@@ -937,7 +1233,10 @@ function findLineNumbers(items: PDFItem[]): Set<PDFItem> {
  * the margin looks exactly like a line-numbered page, but its body pages
  * do not. Manuscripts number every page.
  */
-async function hasLineNumbers(pages: any[]): Promise<boolean> {
+async function hasLineNumbers(
+  pages: any[],
+  probeText?: ProbeTextCache,
+): Promise<boolean> {
   // a handful of body pages from the first third of the document: the
   // title page has none, a pre-proof cover sheet has no text, and pages
   // further in may already be the bibliography (a review's one-line
@@ -951,7 +1250,10 @@ async function hasLineNumbers(pages: any[]): Promise<boolean> {
   for (const i of probes) {
     try {
       const tc = await pages[i].pdfPage.getTextContent();
-      if (findLineNumbers(tc.items).size) return true;
+      const found = findLineNumbers(tc.items).size > 0;
+      // Only these at-most-five successful body-page probes enter the cache.
+      probeText?.set(pages[i].pdfPage, tc);
+      if (found) return true;
     } catch {
       // unreadable page — no evidence
     }
@@ -959,17 +1261,196 @@ async function hasLineNumbers(pages: any[]): Promise<boolean> {
   return false;
 }
 
+/** Restore only a proven numbered margin drawn after its citation text. */
+function restoreGutterNumberItems(items: PDFItem[]): PDFItem[] {
+  const number = (item: PDFItem) => {
+    const m = compactLeadingDigits(item.str.trim()).match(
+      /^(?:\[(\d{1,3})\]|(\d{1,3})[.)])$/,
+    );
+    return m ? Number(m[1] || m[2]) : 0;
+  };
+  const numbered = items
+    .map((item, index) => ({ item, index, n: number(item) }))
+    .filter(
+      ({ item, n }) => n > 0 && item.width <= 4 * Math.max(item.height, 6),
+    );
+  if (numbered.length < 2) return items;
+  const body = items
+    .map((item, index) => ({ item, index }))
+    .filter(
+      ({ item }) =>
+        /^[\p{L}“"']/u.test(item.str.trim()) &&
+        item.width >= 3 * Math.max(item.height, 6),
+    );
+  const groups: (typeof numbered)[] = [];
+  for (const entry of numbered) {
+    const group = groups.find(
+      (g) => Math.abs(g[0].item.transform[4] - entry.item.transform[4]) < 2,
+    );
+    if (group) group.push(entry);
+    else groups.push([entry]);
+  }
+  const before = new Map<number, PDFItem>();
+  const moved = new Set<PDFItem>();
+  for (const group of groups) {
+    const bracketedPair =
+      group.length === 2 &&
+      group.every((entry) =>
+        /^\[\d{1,3}\]$/.test(compactLeadingDigits(entry.item.str.trim())),
+      );
+    const minimum = bracketedPair ? 2 : 3;
+    if (group.length < minimum) continue;
+    group.sort((a, b) => b.item.transform[5] - a.item.transform[5]);
+    if (
+      group.filter((entry, i) => i > 0 && entry.n === group[i - 1].n + 1)
+        .length < (bracketedPair ? 1 : Math.max(2, group.length - 2))
+    )
+      continue;
+    const targets = group.map((entry) => {
+      const n = entry.item,
+        h = Math.max(n.height, 6);
+      const target = body
+        .filter(
+          ({ item }) =>
+            Math.abs(item.transform[5] - n.transform[5]) <
+              0.35 * Math.max(item.height, h) &&
+            item.transform[4] >= n.transform[4] + n.width - 1 &&
+            item.transform[4] - (n.transform[4] + n.width) < 5 * h,
+        )
+        .sort((a, b) => a.item.transform[4] - b.item.transform[4])[0];
+      return { entry, target };
+    });
+    if (
+      targets.filter((x) => x.target).length <
+      Math.max(minimum, 0.8 * group.length)
+    )
+      continue;
+    const min = Math.min(
+      ...targets.flatMap((x) =>
+        x.target ? [x.target.index, x.entry.index] : [],
+      ),
+    );
+    const max = Math.max(
+      ...targets.flatMap((x) =>
+        x.target ? [x.target.index, x.entry.index] : [],
+      ),
+    );
+    if (
+      items.slice(min, max + 1).filter((item) => hasCitationEvidence(item.str))
+        .length < (bracketedPair ? 1 : 2)
+    )
+      continue;
+    for (const { entry, target } of targets)
+      if (target && entry.index > target.index && !before.has(target.index)) {
+        before.set(target.index, entry.item);
+        moved.add(entry.item);
+      }
+  }
+  if (!moved.size) return items;
+  return items.flatMap((item, index) =>
+    moved.has(item)
+      ? []
+      : before.has(index)
+        ? [before.get(index)!, item]
+        : [item],
+  );
+}
+
 /** read one pdf.js page into merged PDFLine objects */
 async function readPdfPage(
   pdfPage: any,
   stripLineNumbers = false,
+  probeText?: ProbeTextCache,
 ): Promise<PDFLine[]> {
-  const textContent = await pdfPage.getTextContent();
+  const probed = probeText?.get(pdfPage);
+  // Consume before annotation/text processing, including its failure paths.
+  probeText?.delete(pdfPage);
+  const textContent = probed ?? (await pdfPage.getTextContent());
   let items: PDFItem[] = textContent.items.filter(
     (item: PDFItem) => item.str.trim().length,
   );
   if (items.length == 0) {
     return [];
+  }
+  // Very large diagonal watermarks are a different typographic layer.
+  // Establish normal horizontal body type before excluding such a layer;
+  // a rotated or vertical document must retain its actual text.
+  const angleOf = (item: PDFItem) => {
+    const degrees = Math.abs(
+      (Math.atan2(item.transform[1], item.transform[0]) * 180) / Math.PI,
+    );
+    return Math.min(degrees, 180 - degrees);
+  };
+  const horizontalItems = items.filter(
+    (item) => angleOf(item) < 5 && /\p{L}/u.test(item.str),
+  );
+  const horizontalHeights = horizontalItems
+    .map((item) => item.height)
+    .sort((a, b) => a - b);
+  const bodyHeight =
+    horizontalHeights[Math.floor(horizontalHeights.length / 2)];
+  if (
+    bodyHeight > 0 &&
+    horizontalHeights.length >= 8 &&
+    items.some((item) => {
+      if (item.height <= 2.5 * bodyHeight) return false;
+      const angle = angleOf(item);
+      return angle > 15 && angle < 75;
+    })
+  ) {
+    const horizontalBands = new Map<number, PDFItem[]>();
+    for (const item of horizontalItems) {
+      const y = Math.round(item.transform[5]);
+      if (!horizontalBands.has(y)) horizontalBands.set(y, []);
+      horizontalBands.get(y)!.push(item);
+    }
+    const pageView = pdfPage._pageInfo?.view;
+    const pageWidth =
+      pageView?.length >= 4 ? pageView[2] - pageView[0] : Infinity;
+    const pageHeight =
+      pageView?.length >= 4 ? pageView[3] - pageView[1] : Infinity;
+    // PDF text runs may be individual words. Measure connected horizontal
+    // rows, and require long rows inside the body rather than a few header
+    // fragments above genuinely slanted main text. This also admits a short
+    // final bibliography whose entire height is below 15% of the page.
+    let wideBodyRows = 0;
+    for (const [y, band] of horizontalBands) {
+      const height = Math.max(...band.map((item) => item.height));
+      if (
+        !pageView ||
+        y <= pageView[1] + 0.1 * pageHeight ||
+        y + height >= pageView[3] - 0.1 * pageHeight
+      )
+        continue;
+      const ordered = band
+        .slice()
+        .sort((a, b) => a.transform[4] - b.transform[4]);
+      let left = Infinity,
+        right = -Infinity,
+        width = 0;
+      for (const item of ordered) {
+        const x = item.transform[4];
+        if (x - right > 2 * height) left = x;
+        right = Math.max(right, x + item.width);
+        width = Math.max(width, right - left);
+      }
+      if (width >= 0.2 * pageWidth) wideBodyRows++;
+    }
+    if (
+      horizontalHeights.length >= 8 &&
+      horizontalBands.size >= 4 &&
+      wideBodyRows >= 2
+    ) {
+      items = items.filter((item) => {
+        const angle = angleOf(item);
+        return !(
+          bodyHeight > 0 &&
+          angle > 15 &&
+          angle < 75 &&
+          item.height > 2.5 * bodyHeight
+        );
+      });
+    }
   }
   if (stripLineNumbers) {
     const drop = findLineNumbers(items);
@@ -982,7 +1463,7 @@ async function readPdfPage(
   }
   const annotations: PDFAnnotation[] = await pdfPage.getAnnotations();
   updateItemsAnnotions(items, annotations);
-  const lines = mergeSameLine(items);
+  const lines = mergeSameLine(restoreGutterNumberItems(items));
   const view = pdfPage._pageInfo?.view;
   if (view?.length >= 4) {
     const pageHeight = view[3] - view[1];
@@ -1062,12 +1543,6 @@ function continuationMarkers(lines: PDFLine[]): ContinuationMarker[] {
   });
 }
 
-/** Normalize only the list prefix in the explicitly marked path. PDF fonts
- * commonly expose full-width brackets and spaces inside the printed number. */
-function continuationNumberText(text: string): string {
-  return text.replace(/^\s*[［[]\s*(\d{1,3})\s*[］\]]\s*/, "[$1] ");
-}
-
 function continuationEvidence(text: string): boolean {
   return hasCitationEvidence(
     text
@@ -1095,7 +1570,7 @@ function bibliographyMarker(marker: ContinuationMarker, lines: PDFLine[]) {
   const center = marker.line.x + marker.line.width / 2;
   return nearby.some(
     (start) =>
-      numAtStart(continuationNumberText(start.text)) > 0 &&
+      numAtStart(compactLeadingDigits(start.text)) > 0 &&
       center >= start.x - h &&
       center <= start.x + Math.max(start.width, 4 * h) + h &&
       continuationEvidence(
@@ -1131,7 +1606,7 @@ function continuationSegment(
   );
   const starts = band.filter(
     (line) =>
-      numAtStart(continuationNumberText(line.text)) === first &&
+      numAtStart(compactLeadingDigits(line.text)) === first &&
       top.y - line.y < 6 * h &&
       top.x + top.width / 2 >= line.x - h &&
       top.x + top.width / 2 <= line.x + Math.max(line.width, 4 * h) + h,
@@ -1140,7 +1615,7 @@ function continuationSegment(
   const left = starts[0].x;
   const relevant = band.filter((line) => line.x >= left - h);
   const numbered = relevant.filter(
-    (line) => numAtStart(continuationNumberText(line.text)) > 0,
+    (line) => numAtStart(compactLeadingDigits(line.text)) > 0,
   );
   const columns: number[] = [];
   for (const line of [...numbered].sort((a, b) => a.x - b.x))
@@ -1150,18 +1625,18 @@ function continuationSegment(
   const ordered = relevant
     .map((line) => ({
       ...line,
-      text: continuationNumberText(line.text),
+      text: compactLeadingDigits(line.text),
       _x: line.x,
       pageNum,
       column: Math.max(0, columns.filter((x) => line.x >= x - h).length - 1),
     }))
     .sort((a, b) => a.column - b.column || b.y - a.y);
   const firstIndex = ordered.findIndex(
-    (line) => numAtStart(continuationNumberText(line.text)) === first,
+    (line) => numAtStart(compactLeadingDigits(line.text)) === first,
   );
   const selected = ordered.slice(firstIndex);
   const numbers = selected
-    .map((line) => numAtStart(continuationNumberText(line.text)))
+    .map((line) => numAtStart(compactLeadingDigits(line.text)))
     .filter(Boolean);
   if (numbers.length < 2 || numbers.some((n, i) => n !== first + i))
     return null;
@@ -1179,6 +1654,9 @@ async function markedContinuation(
   pageLines: Record<number, PDFLine[]>,
   totalPageNum: number,
   lineNumbered: boolean,
+  probeText?: ProbeTextCache,
+  preloadedEmptyPages?: Set<number>,
+  diagnostics?: PDFParseDiagnostics,
 ): Promise<PDFLine[] | null> {
   const relevantMarkers = () =>
     Object.entries(pageLines).flatMap(([page, lines]) =>
@@ -1225,6 +1703,14 @@ async function markedContinuation(
   const failedPages = new Set<number>();
   const LIMIT = 64;
   const read = async (index: number) => {
+    // Empty preload reads used to consume this lookup budget on reread.
+    // Keep that search boundary while reusing their already-known empty lines.
+    if (preloadedEmptyPages?.has(index)) {
+      if (reads >= LIMIT) return false;
+      reads++;
+      preloadedEmptyPages.delete(index);
+      return true;
+    }
     if (!(index in pageLines)) {
       if (reads >= LIMIT || failedPages.has(index)) return false;
       reads++;
@@ -1232,6 +1718,7 @@ async function markedContinuation(
         pageLines[index] = await readPdfPage(
           pages[index].pdfPage,
           lineNumbered,
+          probeText,
         );
       } catch {
         failedPages.add(index);
@@ -1278,28 +1765,45 @@ async function markedContinuation(
         return [{ marker, segment, folios }];
       });
     });
-  if (sources.length !== 1) return [];
+  if (sources.length !== 1) {
+    if (diagnostics) {
+      diagnostics.status = "ambiguous";
+      diagnostics.warnings.push("continuation-source-ambiguous");
+    }
+    return [];
+  }
   const source = sources[0];
+  const partial = () => {
+    if (diagnostics) {
+      diagnostics.status = "partial";
+      diagnostics.warnings.push("continuation-target-unverified");
+    }
+    return source.segment;
+  };
   // No reliable source folio means we can keep its local bibliography,
   // but cannot prove that a continuation belongs to this article.
-  if (source.folios.length !== 1) return source.segment;
+  if (source.folios.length !== 1) return partial();
   for (let i = totalPageNum; i < pages.length && reads < LIMIT; i++)
     await read(i);
   // Do not call a partially searched document unique when the lookup cap
   // prevented ruling out another page carrying the same printed folio.
-  if (Object.keys(pageLines).length < pages.length) return source.segment;
+  if (
+    Object.keys(pageLines).length - (preloadedEmptyPages?.size || 0) <
+    pages.length
+  )
+    return partial();
   const targets = Object.entries(pageLines).filter(([, lines]) =>
     lines.some((line) => line._folio === source.marker.folio),
   );
   if (targets.length !== 1 || Number(targets[0][0]) <= source.marker.page)
-    return source.segment;
+    return partial();
   const [targetPage, targetLines] = targets[0];
-  if (pageFolios(targetLines).length !== 1) return source.segment;
+  if (pageFolios(targetLines).length !== 1) return partial();
   const backs = continuationMarkers(targetLines).filter(
     (marker) =>
       marker.direction === "back" && marker.folio === source.folios[0],
   );
-  if (backs.length !== 1) return source.segment;
+  if (backs.length !== 1) return partial();
   // More continuation notices in the target region are not an unambiguous
   // two-part bibliography; leave that unresolved rather than follow cycles.
   if (
@@ -1310,7 +1814,7 @@ async function markedContinuation(
         marker.line.y < backs[0].line.y,
     )
   )
-    return source.segment;
+    return partial();
   const next =
     Math.max(...source.segment.map((line) => numAtStart(line.text))) + 1;
   const tail = continuationSegment(
@@ -1320,7 +1824,7 @@ async function markedContinuation(
     null,
     next,
   );
-  if (!tail) return source.segment;
+  if (!tail) return partial();
   const merged = mergeSameRef(
     [...source.segment, ...tail].map((line) => ({ ...line })),
   );
@@ -1328,11 +1832,27 @@ async function markedContinuation(
     merged.length !==
     next - 1 + tail.filter((line) => numAtStart(line.text) > 0).length
   )
-    return source.segment;
+    return partial();
   ztoolkit.log(
     `[pdfparser] verified continuation p${source.marker.page} -> p${targetPage}, ${merged.length} references`,
   );
   return [...source.segment, ...tail];
+}
+
+/** Repeated study-status labels distinguish a grouped bibliography category. */
+function isGroupedStudyBibliography(lines: PDFLine[]): boolean {
+  return (
+    lines.filter((line) =>
+      /\{(?:published(?: and unpublished)?|unpublished) data(?: only)?\}/i.test(
+        line.text,
+      ),
+    ).length >= 3 &&
+    lines.some((line) =>
+      /^references to (?:studies included in this review|studies excluded from this review|studies awaiting assessment|ongoing studies|other published versions of this review)$/i.test(
+        line.text.trim().replace(/\s+/g, " "),
+      ),
+    )
+  );
 }
 
 /**
@@ -1343,6 +1863,8 @@ async function getRefLines(
   app: any,
   fromCurrentPage: boolean,
   onProgress: ParseProgress,
+  probeText: ProbeTextCache,
+  diagnostics?: PDFParseDiagnostics,
 ): Promise<PDFLine[]> {
   await app.pdfLoadingTask.promise;
   await app.pdfViewer.pagesPromise;
@@ -1352,9 +1874,11 @@ async function getRefLines(
     return [];
   }
   const pageLines: Record<number, PDFLine[]> = {};
+  // Track only which empty preloads would previously have been reread.
+  const preloadedEmptyPages = new Set<number>();
   let maxWidth = 0;
   let maxHeight = 0;
-  const lineNumbered = await hasLineNumbers(pages);
+  const lineNumbered = await hasLineNumbers(pages, probeText);
   if (lineNumbered)
     ztoolkit.log("[pdfparser] manuscript line numbers detected");
   // Ctrl+refresh support for theses: treat the current page as the last
@@ -1364,6 +1888,10 @@ async function getRefLines(
     offset = pages.length - app.page;
   }
   const totalPageNum = pages.length - offset;
+  if (diagnostics) {
+    diagnostics.pageCount = pages.length;
+    diagnostics.searchEndPage = totalPageNum - 1;
+  }
   const prefNum = Number(getPref("preLoadingPageNum"));
   const minPreLoadPageNum =
     Number.isFinite(prefNum) && prefNum > 0 ? Math.floor(prefNum) : 4;
@@ -1383,11 +1911,13 @@ async function getRefLines(
     const pdfPage = pages[pageNum].pdfPage;
     maxWidth = pdfPage._pageInfo.view[2];
     maxHeight = pdfPage._pageInfo.view[3];
-    const lines = await readPdfPage(pdfPage, lineNumbered);
+    const lines = await readPdfPage(pdfPage, lineNumbered, probeText);
+    // An empty text layer is a completed read, not a cache miss.
+    pageLines[pageNum] = lines;
     if (lines.length == 0) {
+      preloadedEmptyPages.add(pageNum);
       continue;
     }
-    pageLines[pageNum] = lines;
     const pct = ((totalPageNum - pageNum) / preLoadPageNum) * 100;
     onProgress(
       `${getString("parser-read-text")} ${totalPageNum - pageNum}/${preLoadPageNum}`,
@@ -1400,6 +1930,9 @@ async function getRefLines(
     pageLines,
     totalPageNum,
     lineNumbered,
+    probeText,
+    preloadedEmptyPages,
+    diagnostics,
   );
   if (marked !== null) {
     onProgress(getString("parser-done"), 100);
@@ -1422,7 +1955,14 @@ async function getRefLines(
   // is tiny, keep walking and prefer an earlier plain "References" list
   // (a plain one over a qualified one, or one at least twice as long).
   const PLAIN_HEADING =
-    /^(\d+[.．]?)?(references?|referencelist|bibliography|参考文献|literaturecited|workscited|references?andnotes|notesandreferences)$/i;
+    /^(\d+[.．]?)?(references?|referencelist|bibliography|参考文献|literaturecited|workscited|references?(?:and|&)notes|notesandreferences|sourcesandcredits)[.:：．]?$/i;
+  const headingTextOf = (text: string) =>
+    text
+      .trim()
+      .replace(/^\[(.+)\]$/, "$1")
+      .replace(/^(?:[A-Z]\.)?\d+(?:\.\d+)*(?:[.．]|\s*[-–—])?\s+/i, "")
+      .replace(/^(?:[A-Z]|[IVX]{2,4})[.．]\s*/i, "")
+      .replace(/\s+/g, "");
   let stash: {
     lines: PDFLine[];
     heading?: PDFLine;
@@ -1433,10 +1973,17 @@ async function getRefLines(
     maxWidth = pdfPage._pageInfo.view[2];
     maxHeight = pdfPage._pageInfo.view[3];
     let lines: PDFLine[];
+    // The normal backward walk has now consumed the old empty-page miss.
+    const emptyPreload = preloadedEmptyPages.delete(pageNum);
     if (pageNum in pageLines) {
       lines = [...pageLines[pageNum]];
+      if (emptyPreload) {
+        // Preserve progress notifications while avoiding the duplicate IO.
+        const p = totalPageNum - pageNum;
+        onProgress(`${getString("parser-read-text")} ${p}/${p}`, 90);
+      }
     } else {
-      lines = await readPdfPage(pdfPage, lineNumbered);
+      lines = await readPdfPage(pdfPage, lineNumbered, probeText);
       pageLines[pageNum] = [...lines];
       if (
         continuationMarkers(lines).some((marker) =>
@@ -1448,6 +1995,9 @@ async function getRefLines(
           pageLines,
           totalPageNum,
           lineNumbered,
+          probeText,
+          preloadedEmptyPages,
+          diagnostics,
         );
         if (linked !== null) {
           onProgress(getString("parser-done"), 100);
@@ -1461,10 +2011,60 @@ async function getRefLines(
       continue;
     }
 
-    // remove repeated journal headers / footers / page numbers:
-    // same text (page numbers normalized away) at the same position on a
-    // different page. Lines fully inside the central 100% body area
-    // (20%..80% both axes) are protected and never removed.
+    // Only page-edge material can be a running header/footer. References
+    // in either body column may differ only by year/volume/page digits.
+    const atPageEdge = (line: PDFLine, pg: number) => {
+      const view = pages[pg].pdfPage._pageInfo.view;
+      const height = view[3] - view[1];
+      const width = view[2] - view[0];
+      return (
+        line.y <= view[1] + 0.12 * height ||
+        line.y + line.height >= view[3] - 0.12 * height ||
+        line.x >= view[2] - 0.12 * width ||
+        line.x + line.width <= view[0] + 0.12 * width
+      );
+    };
+    const folioRow = new Set<PDFLine>();
+    for (const folio of lines.filter(
+      (line) => line._folio && atPageEdge(line, pageNum),
+    )) {
+      const headers = lines.filter(
+        (line) =>
+          line !== folio &&
+          /\p{L}/u.test(line.text) &&
+          Math.abs(line.y - folio.y) <
+            0.2 * Math.min(line.height, folio.height) &&
+          Math.max(line.height, folio.height) <
+            1.5 * Math.min(line.height, folio.height) &&
+          Math.max(
+            line.x - folio.x - folio.width,
+            folio.x - line.x - line.width,
+          ) >
+            5 * Math.max(line.height, folio.height),
+      );
+      if (!headers.length) continue;
+      // A folio must advance with the physical pages already read. A
+      // bibliography number beside its text is not enough to drop a row.
+      const corroborated = Object.entries(pageLines).some(
+        ([pg, page]) =>
+          Number(pg) !== pageNum &&
+          page.some(
+            (other) =>
+              other._folio !== undefined &&
+              other._folio - Number(pg) === folio._folio! - pageNum &&
+              atPageEdge(other, Number(pg)) &&
+              Math.abs(other.y - folio.y) <
+                2 * Math.max(other.height, folio.height),
+          ),
+      );
+      if (corroborated) {
+        folioRow.add(folio);
+        headers.forEach((header) => folioRow.add(header));
+      }
+    }
+    lines = lines.filter((line) => !folioRow.has(line));
+
+    // Match normalized running matter only after the page-edge check.
     const normCache = new Map<string, string>();
     const removeNumber = (text: string) => {
       const hit = normCache.get(text);
@@ -1490,15 +2090,23 @@ async function getRefLines(
     };
     const isSameText = (lineA: PDFLine, lineB: PDFLine) =>
       removeNumber(lineA.text) == removeNumber(lineB.text);
+    const wrappedRanges = new Set(
+      lines.filter(
+        (line) =>
+          /^\s*\d+\s*[-–‒]\s*\d+[.,;]?\s*$/.test(line.text) &&
+          lines.some(
+            (previous) =>
+              /\p{L}/u.test(previous.text) &&
+              previous.y > line.y &&
+              previous.y - line.y <
+                3 * Math.max(previous.height, line.height, 6) &&
+              Math.abs(absX(previous) - absX(line)) <
+                5 * Math.max(previous.height, line.height, 6),
+          ),
+      ),
+    );
     lines.forEach((line) => {
-      // body-area protection
-      if (
-        (line.x / maxWidth > 0.2 &&
-          line.y / maxHeight > 0.2 &&
-          (line.x + line.width) / maxWidth < 0.8 &&
-          (line.y + line.height) / maxHeight < 0.8) ||
-        line.same
-      ) {
+      if (!atPageEdge(line, pageNum) || wrappedRanges.has(line) || line.same) {
         return;
       }
       for (const _pageIndex in pageLines) {
@@ -1510,7 +2118,11 @@ async function getRefLines(
         }
         pageLines[Number(_pageIndex)].find((_line) => {
           // cheap geometry reject first, regex-normalized text second
-          if (isSamePosition(line, _line) && isSameText(line, _line)) {
+          if (
+            atPageEdge(_line, Number(_pageIndex)) &&
+            isSamePosition(line, _line) &&
+            isSameText(line, _line)
+          ) {
             line.same = _line;
             return true;
           }
@@ -1526,7 +2138,12 @@ async function getRefLines(
     // skip figure/table captions so they don't break column detection
     const isFigureOrTable = (text: string) => {
       text = text.replace(/\s+/g, "");
-      return /^(Table|Fig|Figure).*\d/i.test(text);
+      return (
+        /^(Table|Fig|Figure).*\d/i.test(text) ||
+        /^(?:Supplementary|Supplemental)(?:Tables?|Fig(?:ure)?s?)[.:]?[sS]?\d/i.test(
+          text,
+        )
+      );
     };
     lines = lines.filter((e) => !isFigureOrTable(e.text));
     if (lines.length == 0) {
@@ -1598,12 +2215,16 @@ async function getRefLines(
     };
     // a bibliography heading: 参考文献 / References / Bibliography, short
     const isRefBreak = (text: string) => {
-      text = text.replace(/\s+/g, "");
-      return (
-        /(参考文献|reference|bibliography)/i.test(text) &&
-        text.length < 20 &&
-        // "References (160–200)" in a supplementary-materials list
-        !/reference[s]?\(?\d/i.test(text)
+      text = headingTextOf(text);
+      if (
+        text.toLowerCase() === "additionalreferences" &&
+        isGroupedStudyBibliography(lines)
+      )
+        return false;
+      // A whole heading, not a table's "1 [Reference]" or a sentence fragment
+      // containing that word. Qualified lists retain the existing stash rules.
+      return /^(?:\d+[.．]?)?(?:(?:supplementary|supplemental|methods?|additional|selected|electronic|e))?(?:参考文献|references?|referencelist|bibliography|literaturecited|workscited|references?(?:and|&)notes|notesandreferences|sourcesandcredits)[.:：．]?$/i.test(
+        text,
       );
     };
     // finish a bibliography part; the bibliography is complete when its
@@ -1616,21 +2237,42 @@ async function getRefLines(
         return;
       }
       part = donePart(part);
+      // A bibliography may have an explanatory preface. Keep the verified
+      // numbered sequence, without borrowing paragraphs preceding entry 1.
+      const numberedStart = findNumberedStart(part, part.length);
+      if (numberedStart > 0) part = part.slice(numberedStart);
       // false heading (Science's supplementary list says "References
       // (160–200)", box titles mention "reference"…): the block under a
       // real heading looks like references
       const refLike =
         part.filter((l) => getRefType(l.text) != -1).length / part.length;
       const startsAtOne = part.some((l) => numAtStart(l.text) === 1);
-      if ((part.length < 3 && !startsAtOne) || refLike < 0.25) {
+      const dated = part.some((line) =>
+        /\b(?:1\d|20)\d{2}\b/.test(
+          line.text
+            .replace(/https?:\/\/\S+/gi, "")
+            .normalize("NFKC")
+            .replace(/(\d)\s+(?=\d)/g, "$1"),
+        ),
+      );
+      const linkedUndated =
+        part.some((line) => /\bn\s*\.\s*d\s*\./i.test(line.text)) &&
+        part.some((line) => /https?:\/\/\S+|\b10\.\d{4,9}\//i.test(line.text));
+      const shortNumberedStart =
+        part.length < 3 && numAtStart(part[0].text) === 1;
+      if (
+        (part.length < 3 && !startsAtOne) ||
+        refLike < 0.25 ||
+        (!dated && !linkedUndated && numberedStart < 0 && !shortNumberedStart)
+      ) {
         ztoolkit.log(
-          `[pdfparser] ignoring heading: block below is not references (n=${part.length}, refLike=${refLike.toFixed(2)})`,
+          `[pdfparser] ignoring heading: block below is not references (n=${part.length}, refLike=${refLike.toFixed(2)}, dated=${dated})`,
         );
         return;
       }
       _refPart.parts.push(part);
-      const res = part[0].text.trim().match(/^\d+/);
-      _refPart.done = !(res && res[0] != "1");
+      const firstNumber = numAtStart(part[0].text);
+      _refPart.done = firstNumber === 0 || firstNumber === 1;
       ztoolkit.log(
         `[pdfparser] refPart p${part[0].pageNum} n=${part.length} done=${_refPart.done}`,
       );
@@ -1731,7 +2373,7 @@ async function getRefLines(
       _refPart.parts.reverse().forEach((p) => {
         lines = [...lines, ...p];
       });
-      const headingText = (_refPart.heading?.text ?? "").replace(/\s+/g, "");
+      const headingText = headingTextOf(_refPart.heading?.text ?? "");
       const qualified = !!_refPart.heading && !PLAIN_HEADING.test(headingText);
       const starts = lines.filter((l) => numAtStart(l.text) > 0).length;
       const dated = lines.filter((l) =>
@@ -1810,7 +2452,57 @@ async function getRefLines(
     // number ("11." on page N → a line starting "12." / "[12]" on N+1)
     // strict form (a real entry start, not a stray "839." page fragment)
     const numOf = (t: string) => numAtStart(t);
-    let lastNum = Math.max(0, ...refPart.map((l) => numOf(l.text)));
+    // A lone numbered footnote beside an author-year bibliography does not
+    // turn its next page into a numbered continuation starting at footnote+1.
+    let numberedBibliography = findNumberedStart(refPart, refPart.length) >= 0;
+    const bibliographyHeight = refPart[0].height;
+    const smallNumberedFootnote = (line: PDFLine) =>
+      !numberedBibliography &&
+      /^\d{1,3}\s+https?:\/\/\S+\s*$/i.test(line.text.trim()) &&
+      !refPart.some(
+        (other) =>
+          other.pageNum === line.pageNum &&
+          other.y < line.y &&
+          other.height >= 0.85 * bibliographyHeight &&
+          /\p{L}/u.test(other.text),
+      ) &&
+      line.height < 0.85 * bibliographyHeight;
+    refPart = refPart.filter((line) => !smallNumberedFootnote(line));
+    // A bare number may open a wrapped title or a volume fragment. Advance
+    // only the established entry sequence, rather than taking its maximum.
+    const sequenceEnd = (lines: PDFLine[], first = 0) => {
+      const nums = lines.map((line) => numOf(line.text));
+      const positions = new Map<number, number>();
+      nums.forEach((n, i) => {
+        if (n) positions.set(n, i);
+      });
+      const citationAt = (start: number) => {
+        let text = lines[start].text;
+        for (
+          let i = start + 1;
+          i < Math.min(lines.length, start + MAX_TAIL_LINES + 1);
+          i++
+        ) {
+          if (nums[i] || tailNoiseKind(lines[i].text)) break;
+          text += " " + lines[i].text;
+        }
+        return hasCitationEvidence(text);
+      };
+      let current = first;
+      nums.forEach((n, i) => {
+        if (
+          n === current + 1 ||
+          (current > 0 &&
+            n > current + 1 &&
+            (positions.get(current + 1) ?? -1) < i &&
+            (n === current + 2 ||
+              ((positions.get(n + 1) ?? -1) > i && citationAt(i))))
+        )
+          current = n;
+      });
+      return current;
+    };
+    let lastNum = numberedBibliography ? sequenceEnd(refPart) : 0;
     const numberedCount = (p: PDFLine[]) =>
       p.filter((l) => numOf(l.text) > 0).length;
     const picksUp = (p: PDFLine[]) =>
@@ -1880,6 +2572,7 @@ async function getRefLines(
         .sort((a, b) => b.y - a.y);
       for (const l of below) {
         if (floorY - l.y > 5 * Math.max(l.height, hh)) break;
+        if (smallNumberedFootnote(l)) continue;
         extra.push(l);
         floorY = Math.min(floorY, l.y);
       }
@@ -1931,7 +2624,9 @@ async function getRefLines(
         ztoolkit.log(
           `[pdfparser] heading page completed with ${extra.length} more lines`,
         );
-        lastNum = Math.max(0, ...refPart.map((l) => numOf(l.text)));
+        numberedBibliography ||=
+          findNumberedStart(refPart, refPart.length) >= 0;
+        if (numberedBibliography) lastNum = sequenceEnd(refPart);
       }
     }
 
@@ -1963,7 +2658,7 @@ async function getRefLines(
         // the next page must pick up where THIS page ends, not where the
         // heading page ended — double-spaced manuscripts split every page
         // into parts, so nothing but this step carries the count forward
-        lastNum = Math.max(lastNum, ...lines.map((l) => numOf(l.text)));
+        if (numberedBibliography) lastNum = sequenceEnd(lines, lastNum);
       } else if (continuation.length) {
         break; // the list ended on the previous page
       }
@@ -1980,6 +2675,74 @@ async function getRefLines(
       );
       refPart = [...refPart, ...p];
     }
+    // Earlier continuation pages can be recovered after a later page was
+    // already carried into refPart. Preserve each page's existing line order.
+    refPart.sort((a, b) => (a.pageNum ?? 0) - (b.pageNum ?? 0));
+  }
+
+  // A child-category recovery must stop at the next major study section.
+  if (isGroupedStudyBibliography(refPart)) {
+    const heights = refPart
+      .map((line) => line.height)
+      .filter((height) => height > 0)
+      .sort((a, b) => a - b);
+    const bodyHeight = heights[Math.floor(heights.length / 2)] ?? 0;
+    const end = refPart.findIndex((line, index) => {
+      if (
+        !/^characteristicsofstudies$/i.test(line.text.replace(/\s+/g, "")) ||
+        !(bodyHeight > 0 && line.height >= bodyHeight * 1.2)
+      )
+        return false;
+      // Ignore smaller structural legends, but never skip an open author/title line.
+      const previous = refPart
+        .slice(0, index)
+        .reverse()
+        .find((prior) => prior.height >= bodyHeight * 0.85);
+      if (!previous || !ENTRY_END.test(previous.text)) return false;
+      // A title alone can also be an authorless publication. Confirm the
+      // following study-table structure in the already-read page, even when
+      // the bibliography block contains only its major heading.
+      const following = (pageLines[line.pageNum ?? -1] ?? [])
+        .filter(
+          (next) =>
+            next.y < line.y &&
+            line.y - next.y <= 30 * bodyHeight &&
+            Math.abs(absX(next) - absX(line)) <= 2 * bodyHeight,
+        )
+        .sort((a, b) => b.y - a.y)
+        .slice(0, 32);
+      const subheading = following.find((next) =>
+        /^characteristicsof(?:included|excluded)studies(?:\[orderedbystudyid\])?$/i.test(
+          next.text.replace(/\s+/g, ""),
+        ),
+      );
+      if (!subheading) return false;
+      const fields = following.filter(
+        (next) =>
+          next.y < subheading.y &&
+          /^(?:methods|participants|interventions|outcomes|notes)$/i.test(
+            next.text.trim(),
+          ),
+      );
+      const alignedFields = fields.some(
+        (first) =>
+          new Set(
+            fields
+              .filter(
+                (next) => Math.abs(absX(next) - absX(first)) <= bodyHeight,
+              )
+              .map((next) => next.text.trim().toLowerCase()),
+          ).size >= 2,
+      );
+      if (!alignedFields) return false;
+      return (
+        (line.pageNum ?? 0) > (previous.pageNum ?? 0) ||
+        (line.pageNum === previous.pageNum &&
+          line.column === previous.column &&
+          previous.y - line.y > 3 * bodyHeight)
+      );
+    });
+    if (end >= 0) refPart = refPart.slice(0, end);
   }
 
   onProgress(getString("parser-analyze"), 95);
@@ -2060,14 +2823,17 @@ async function getRefLines(
  * @param options.onProgress progress callback, e.g. ("Read text 3/4", 45)
  * @returns parsed references; [] when nothing can be extracted (logged)
  */
-export async function parsePDFReferences(
+async function parsePDFReferencesImpl(
   reader: any,
-  options: { fromCurrentPage?: boolean; onProgress?: ParseProgress } = {},
+  options: PDFParseOptions = {},
+  diagnostics?: PDFParseDiagnostics,
 ): Promise<RefItem[]> {
   const onProgress: ParseProgress = options.onProgress || (() => {});
+  const probeText: ProbeTextCache = new Map();
   try {
     const app = await getViewerApp(reader);
     if (!app) {
+      if (diagnostics) diagnostics.status = "unavailable";
       ztoolkit.log("[pdfparser] PDFViewerApplication unavailable");
       return [];
     }
@@ -2075,18 +2841,57 @@ export async function parsePDFReferences(
       app,
       !!options.fromCurrentPage,
       onProgress,
+      probeText,
+      diagnostics,
     );
     if (refLines.length == 0) {
       ztoolkit.log("[pdfparser] getRefLines: 0 refLines");
       return [];
     }
-    const merged = mergeSameRef(refLines);
+    // Region selection/probes retain their established merger. Only the final
+    // confirmed block may use the conservative grouped-study sequence path.
+    const grouped = segmentGroupedStudyReferences(refLines);
+    const merged = grouped?.refs ?? mergeSameRef(refLines);
+    if (diagnostics) {
+      diagnostics.segmentation = {
+        strategy: grouped ? "grouped-study" : "legacy-merge",
+        sourceLineCount: refLines.length,
+        ...(grouped
+          ? {
+              entries: grouped.entries,
+              decisions: grouped.decisions,
+              sourceLines: refLines.map((line, lineIndex) => ({
+                lineIndex,
+                page: line.pageNum!,
+                column: line.column!,
+                x: line._x ?? line.x,
+                y: line.y,
+              })),
+            }
+          : {}),
+      };
+    }
     ztoolkit.log(`[pdfparser] ${merged.length} references`);
     if (merged.length == 0) {
       ztoolkit.log("[pdfparser] mergeSameRef: 0 references");
       return [];
     }
     const references: RefItem[] = [];
+    // Year-first citations can be numbered ("1. 2018. ..."). Keep the
+    // general number detector strict around decimals/DOIs; allow stripping
+    // this form only when the complete output independently proves 1..N.
+    const yearFirstNumber = (text: string) =>
+      Number(
+        compactLeadingDigits(text.trim()).match(
+          /^[[(]?(\d{1,3})(?:[\])][.．]?|[.)．])\s+(?=(?:1\d|20)\d{2}[.\s])/,
+        )?.[1] ?? 0,
+      );
+    const sequentialNumbers =
+      merged.length >= 3 &&
+      merged.every(
+        (line, i) =>
+          (numAtStart(line.text) || yearFirstNumber(line.text)) === i + 1,
+      );
     for (let i = 0; i < merged.length; i++) {
       const line = merged[i];
       const raw = compactLeadingDigits(line.text.trim());
@@ -2094,11 +2899,13 @@ export async function parsePDFReferences(
       // ({1,3} so a leading year is never mistaken for a number)
       const numMatch = raw.match(/^[^0-9a-zA-Z]?\s*(\d{1,3})\s*[^0-9a-zA-Z]/);
       const text = (
-        numAtStart(raw) > 0
-          ? raw.replace(/^[[(]?\d{1,3}(?:\s*[\].)．）]\s*|\s+)/, "")
+        numAtStart(raw) > 0 ||
+        (sequentialNumbers && yearFirstNumber(raw) === i + 1)
+          ? raw.replace(
+              /^(?:[[(]\d{1,3}[\])](?:\s*[.．])?\s*|\d{1,3}(?:\s*[.)．）]\s*|\s+))/,
+              "",
+            )
           : raw
-              .replace(/^[^0-9a-zA-Z]\s*\d+\s*[^0-9a-zA-Z]/, "")
-              .replace(/^\d+[.\s]?/, "")
       ).trim();
       const item: RefItem = {
         text,
@@ -2108,15 +2915,166 @@ export async function parsePDFReferences(
         page: line.pageNum,
         number: numMatch ? Number(numMatch[1]) : i + 1,
       };
-      // a link annotation on the line beats the URL parsed from the text
-      if (line.url) {
-        item.url = line.url;
-      }
+      // Keep the source link: merged text can contain a partial DOI or a
+      // stray page-footer DOI, so its parsed field cannot veto the annotation.
+      if (isHttpUrl(line.url)) item.url = line.url;
       references.push(item);
+      if (diagnostics) {
+        const printedNumber =
+          numAtStart(raw) || (sequentialNumbers ? yearFirstNumber(raw) : 0);
+        const sourceStart = {
+          page: Number.isInteger(line.pageNum) ? line.pageNum! : null,
+          x: Number.isFinite(line._x) ? line._x! : null,
+          y: Number.isFinite(item.y) ? item.y! : null,
+        };
+        diagnostics.entries.push({
+          ordinal: i + 1,
+          printedNumber: printedNumber || null,
+          displayNumber: item.number!,
+          sourceStart,
+        });
+        if (Object.values(sourceStart).some((value) => value === null))
+          diagnostics.warnings.push("missing-source-start-anchor");
+      }
     }
     return references;
   } catch (e) {
     ztoolkit.log("[pdfparser] parse failed", e);
+    if (diagnostics) {
+      diagnostics.status = "error";
+      diagnostics.entries = [];
+      diagnostics.segmentation = undefined;
+      diagnostics.warnings.push("parser-error");
+    }
     return [];
+  } finally {
+    // Release unconsumed probes on every success, early return and failure.
+    probeText.clear();
   }
+}
+
+/** Observations about extraction, never a certificate of completeness. */
+export interface PDFParseDiagnostics {
+  status:
+    | "extracted"
+    | "not-found"
+    | "unavailable"
+    | "partial"
+    | "ambiguous"
+    | "error";
+  /** The existing parser does not establish complete source-line coverage. */
+  completeness: "not-assessed";
+  pageCount: number | null;
+  searchEndPage: number | null;
+  warnings: string[];
+  entries: {
+    ordinal: number;
+    printedNumber: number | null;
+    displayNumber: number;
+    /** Start anchor only; not the full extent of a citation. */
+    sourceStart: { page: number | null; x: number | null; y: number | null };
+  }[];
+  /** Attribution over selected, preprocessed lines, not raw glyph spans or
+   * proof that the selector found every source bibliography line. */
+  segmentation?: {
+    strategy: "legacy-merge" | "grouped-study";
+    sourceLineCount: number;
+    entries?: GroupedStudyEntry[];
+    decisions?: GroupedStudyDecision[];
+    sourceLines?: {
+      lineIndex: number;
+      page: number;
+      column: number;
+      x: number;
+      y: number;
+    }[];
+  };
+  numbering: {
+    kind: "none" | "numbered" | "unnumbered" | "mixed";
+    missing: number[];
+    duplicates: number[];
+    startsAtOne: boolean | null;
+    consecutive: boolean | null;
+  };
+}
+
+type PDFParseOptions = {
+  fromCurrentPage?: boolean;
+  onProgress?: ParseProgress;
+};
+
+function diagnoseNumbering(
+  entries: PDFParseDiagnostics["entries"],
+): PDFParseDiagnostics["numbering"] {
+  const printed = entries.flatMap((entry) =>
+    entry.printedNumber === null ? [] : [entry.printedNumber],
+  );
+  const seen = new Set<number>(),
+    duplicates = new Set<number>();
+  for (const number of printed) {
+    if (seen.has(number)) duplicates.add(number);
+    seen.add(number);
+  }
+  const sorted = [...seen].sort((a, b) => a - b),
+    missing: number[] = [];
+  // numAtStart accepts at most three digits, bounding this gap enumeration.
+  for (let i = 1; i < sorted.length; i++) {
+    for (let n = sorted[i - 1] + 1; n < sorted[i] && n <= 999; n++)
+      missing.push(n);
+  }
+  return {
+    kind: !entries.length
+      ? "none"
+      : !printed.length
+        ? "unnumbered"
+        : printed.length === entries.length
+          ? "numbered"
+          : "mixed",
+    missing,
+    duplicates: [...duplicates],
+    startsAtOne: printed.length ? printed[0] === 1 : null,
+    consecutive: printed.length
+      ? printed.every((n, i) => !i || n === printed[i - 1] + 1)
+      : null,
+  };
+}
+
+/** Backwards-compatible production route without the optional diagnostic report. */
+export async function parsePDFReferences(
+  reader: any,
+  options: PDFParseOptions = {},
+): Promise<RefItem[]> {
+  return parsePDFReferencesImpl(reader, options);
+}
+
+/** Explicit diagnostic route using the same parser and same reference output. */
+export async function parsePDFReferencesDetailed(
+  reader: any,
+  options: PDFParseOptions = {},
+): Promise<{ refs: RefItem[]; diagnostics: PDFParseDiagnostics }> {
+  const diagnostics: PDFParseDiagnostics = {
+    status: "not-found",
+    completeness: "not-assessed",
+    pageCount: null,
+    searchEndPage: null,
+    warnings: [],
+    entries: [],
+    numbering: diagnoseNumbering([]),
+  };
+  const refs = await parsePDFReferencesImpl(reader, options, diagnostics);
+  if (refs.length && diagnostics.status === "not-found")
+    diagnostics.status = "extracted";
+  diagnostics.numbering = diagnoseNumbering(diagnostics.entries);
+  if (diagnostics.numbering.missing.length)
+    diagnostics.warnings.push("printed-number-gap");
+  if (diagnostics.numbering.duplicates.length)
+    diagnostics.warnings.push("duplicate-printed-number");
+  if (diagnostics.numbering.startsAtOne === false)
+    diagnostics.warnings.push("printed-sequence-not-from-one");
+  if (diagnostics.numbering.consecutive === false)
+    diagnostics.warnings.push("nonconsecutive-printed-sequence");
+  if (diagnostics.numbering.kind === "mixed")
+    diagnostics.warnings.push("mixed-numbering-evidence");
+  diagnostics.warnings = [...new Set(diagnostics.warnings)];
+  return { refs, diagnostics };
 }

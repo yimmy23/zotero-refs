@@ -14,7 +14,8 @@ import { refStorage } from "../core/storage";
 import { buildGraph } from "../graph/build";
 import { GraphView } from "../graph/view";
 import { semanticscholar } from "../sources/semanticscholar";
-import { parsePDFReferences } from "../pdf/parser";
+import { parsePDFReferences, parsePDFReferencesDetailed } from "../pdf/parser";
+import { parseSequencePDFReferences } from "../pdf/sequenceReader";
 import { openalex } from "../sources/openalex";
 import { crossref } from "../sources/crossref";
 import { attachReader, readerLinkState } from "../pdf/readerHook";
@@ -133,6 +134,8 @@ async function registerWhenReady(generation: number) {
             GraphView,
             semanticscholar,
             parsePDFReferences,
+            parsePDFReferencesDetailed,
+            parseSequencePDFReferences,
             openalex,
             crossref,
             attachReader,
