@@ -364,6 +364,20 @@ body.dataset.contentKind = "title";
 abstractCard.renderText(body, "中 文 标 题");
 assert.equal(body.textContent, "中 文 标 题");
 console.log("PASS citation formatter does not alter abstract or title text");
+body.dataset.citationTitle = "true";
+const rawFallbackTitle =
+  "Smith A． Example paper ［ C ］ / / Conference． ［ S． l． ］ : Press, 2022 : 1-2．";
+abstractCard.renderText(body, rawFallbackTitle);
+assert.equal(
+  body.textContent,
+  "Smith A. Example paper [C]// Conference. [S.l.]: Press, 2022: 1-2.",
+);
+assert.equal(abstractCard.readableText(body), rawFallbackTitle);
+assert.equal(body.dataset.contentKind, "title", "translation kind is retained");
+delete body.dataset.citationTitle;
+console.log(
+  "PASS raw-citation title fallback keeps original copy and translation kind",
+);
 // A new card/DOM restores the user's translated view without a second click.
 clearPopupTranslations();
 let revisitCalls = 0;
@@ -427,4 +441,4 @@ console.log(
   "PASS removing the translation provider clears busy state and preserves original content",
 );
 clearPopupTranslations();
-console.log("11 view regressions passed");
+console.log("12 view regressions passed");

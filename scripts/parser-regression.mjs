@@ -127,6 +127,36 @@ await check("standard heading bibliography", async () =>
 await check("unbroken no-heading block is committed", async () =>
   expectRefs(await parse([oneColumn(3, false)]), 3),
 );
+await check(
+  "a larger invalid no-heading table does not mask a smaller bibliography",
+  async () => {
+    const invalidTable = Array.from({ length: 5 }, (_, i) =>
+      item(
+        `${i + 1}. Treatment group ${i + 1}: sample size thirty.`,
+        100,
+        650 - i * 30,
+        20,
+      ),
+    );
+    const refs = await parse([oneColumn(3, false), invalidTable]);
+    expectRefs(refs, 3);
+    assert.ok(refs.every((ref) => ref.page === 0));
+  },
+);
+await check("all ranked no-heading blocks can remain invalid", async () => {
+  const numberedTable = Array.from({ length: 5 }, (_, i) =>
+    item(
+      `${i + 1}. Treatment group ${i + 1}: sample size thirty.`,
+      100,
+      650 - i * 30,
+      20,
+    ),
+  );
+  const numberedSteps = Array.from({ length: 3 }, (_, i) =>
+    item(`${i + 1}. Complete workflow step ${i + 1}.`, 100, 650 - i * 20),
+  );
+  assert.equal((await parse([numberedSteps, numberedTable])).length, 0);
+});
 await check("no-heading numbered table still fails year gate", async () => {
   assert.equal(
     (
@@ -987,6 +1017,315 @@ await check(
     const pages = linkedBibliography();
     pages[4].push(item("110", 80, 40, 10, 20));
     expectRefs(await parse(pages, { fromCurrentPage: true }, 4), 14);
+  },
+);
+
+await check(
+  "a restarted bibliography cannot donate the expected continuation number",
+  async () => {
+    const refs = await parse([
+      oneColumn(6),
+      [
+        item("Supplementary References", 100, 700, 12, 180),
+        item(
+          "1. AppendixAuthor1 A. Separate appendix citation with a wrapped",
+          100,
+          675,
+        ),
+        item(
+          "title and publication details. Journal. 2021; 2:22-32.",
+          112,
+          660,
+        ),
+        ...Array.from({ length: 6 }, (_, i) =>
+          item(
+            `${i + 2}. AppendixAuthor${i + 2} A. Separate appendix citation. Journal. 2021; 2:22-32.`,
+            100,
+            635 - i * 25,
+          ),
+        ),
+      ],
+    ]);
+    expectRefs(refs, 6);
+    assert.ok(refs.every((ref) => !ref.text.includes("Separate appendix")));
+    assert.deepEqual(
+      refs.map((ref) => ref.identifiers.DOI),
+      Array.from({ length: 6 }, (_, i) => `10.1000/ref${i + 1}`),
+    );
+  },
+);
+
+const boundaryPrefix = [7, 8, 9].map((n, i) =>
+  item(reference(n), 100, 710 - i * 25),
+);
+const boundaryHeading = [item("Supplementary References", 100, 600, 12, 180)];
+const boundaryRestart = Array.from({ length: 10 }, (_, i) =>
+  item(
+    `${i + 1}. LaterAuthor${i + 1} A. Separate later citation. Journal. 2021; 2:22-32.`,
+    100,
+    575 - i * 22,
+  ),
+);
+for (const [order, laterPage] of [
+  ["PHS", [...boundaryPrefix, ...boundaryHeading, ...boundaryRestart]],
+  ["PSH", [...boundaryPrefix, ...boundaryRestart, ...boundaryHeading]],
+  ["HPS", [...boundaryHeading, ...boundaryPrefix, ...boundaryRestart]],
+  ["HSP", [...boundaryHeading, ...boundaryRestart, ...boundaryPrefix]],
+  ["SPH", [...boundaryRestart, ...boundaryPrefix, ...boundaryHeading]],
+  ["SHP", [...boundaryRestart, ...boundaryHeading, ...boundaryPrefix]],
+]) {
+  await check(
+    `same-page ownership uses physical geometry for ${order}`,
+    async () => {
+      const refs = await parse([oneColumn(6), laterPage]);
+      expectRefs(refs, 9);
+      assert.deepEqual(
+        refs.map((ref) => ref.identifiers.DOI),
+        Array.from({ length: 9 }, (_, i) => `10.1000/ref${i + 1}`),
+      );
+      assert.deepEqual(
+        refs.slice(6).map(({ x, y, page }) => ({ x, y, page })),
+        [
+          { x: 100, y: 720, page: 1 },
+          { x: 100, y: 695, page: 1 },
+          { x: 100, y: 670, page: 1 },
+        ],
+      );
+      assert.ok(refs.every((ref) => !ref.text.includes("Separate later")));
+    },
+  );
+}
+
+for (const [order, assemble] of [
+  ["PHS", (prefix, heading, restart) => [...prefix, ...heading, ...restart]],
+  ["SHP", (prefix, heading, restart) => [...restart, ...heading, ...prefix]],
+]) {
+  await check(
+    `same-page recovery follows an accepted ordinary page for ${order}`,
+    async () => {
+      const prefix = [10, 11, 12].map((n, i) =>
+        item(reference(n), 100, 710 - i * 25),
+      );
+      const restart = Array.from({ length: 14 }, (_, i) =>
+        item(
+          `${i + 1}. Foreign${i + 1} A. Separate citation. Journal. 2021; 2:22-32.`,
+          100,
+          575 - i * 20,
+        ),
+      );
+      const refs = await parse([
+        oneColumn(6),
+        [7, 8, 9].map((n, i) => item(reference(n), 100, 710 - i * 25)),
+        assemble(prefix, boundaryHeading, restart),
+      ]);
+      expectRefs(refs, 12);
+      assert.deepEqual(
+        refs.map((ref) => ref.identifiers.DOI),
+        Array.from({ length: 12 }, (_, i) => `10.1000/ref${i + 1}`),
+      );
+      assert.ok(refs.every((ref) => !ref.text.includes("Separate citation")));
+    },
+  );
+}
+
+await check(
+  "same-page recovery starts after split heading-page completion",
+  async () => {
+    const splitHeadingPage = [
+      item("References", 100, 760, 12, 120),
+      ...Array.from({ length: 9 }, (_, i) =>
+        item(reference(i + 1), 100, 720 - i * 40),
+      ),
+    ];
+    const refs = await parse([
+      splitHeadingPage,
+      [
+        ...[10, 11, 12].map((n, i) => item(reference(n), 100, 710 - i * 25)),
+        ...boundaryHeading,
+        ...Array.from({ length: 14 }, (_, i) =>
+          item(
+            `${i + 1}. Foreign${i + 1} A. Separate citation. Journal. 2021; 2:22-32.`,
+            100,
+            575 - i * 20,
+          ),
+        ),
+      ],
+    ]);
+    expectRefs(refs, 12);
+    assert.deepEqual(
+      refs.map((ref) => ref.identifiers.DOI),
+      Array.from({ length: 12 }, (_, i) => `10.1000/ref${i + 1}`),
+    );
+  },
+);
+
+await check(
+  "same-page ownership keeps a wrapped preceding tail and stops later pages",
+  async () => {
+    const first = oneColumn(6);
+    first[first.length - 1] = item(
+      "6. AuthorF A. Clinical study with a wrapped",
+      100,
+      550,
+    );
+    const refs = await parse([
+      first,
+      [
+        item("title. Journal. 2020; 1:11-21. doi:10.1000/ref6", 112, 740),
+        ...boundaryPrefix,
+        ...boundaryHeading,
+        ...boundaryRestart,
+      ],
+      [10, 11, 12].map((n, i) => item(reference(n), 100, 700 - i * 25)),
+    ]);
+    expectRefs(refs, 9);
+    assert.equal(refs[5].identifiers.DOI, "10.1000/ref6");
+    assert.ok(refs[5].text.includes("with a wrapped title"));
+    assert.deepEqual(
+      refs.map((ref) => ref.identifiers.DOI),
+      Array.from({ length: 9 }, (_, i) => `10.1000/ref${i + 1}`),
+    );
+  },
+);
+
+await check(
+  "same-page ownership accepts one complete expected citation",
+  async () => {
+    const refs = await parse([
+      oneColumn(6),
+      [item(reference(7), 100, 710), ...boundaryHeading, ...boundaryRestart],
+    ]);
+    expectRefs(refs, 7);
+    assert.equal(refs[6].identifiers.DOI, "10.1000/ref7");
+    assert.deepEqual(
+      { x: refs[6].x, y: refs[6].y, page: refs[6].page },
+      { x: 100, y: 720, page: 1 },
+    );
+  },
+);
+
+await check("a gapped prefix is not partially recovered", async () => {
+  const refs = await parse([
+    oneColumn(6),
+    [
+      item(reference(7), 100, 710),
+      item(reference(9), 100, 685),
+      ...boundaryHeading,
+      ...boundaryRestart,
+    ],
+  ]);
+  expectRefs(refs, 6);
+  assert.deepEqual(
+    refs.map((ref) => ref.identifiers.DOI),
+    Array.from({ length: 6 }, (_, i) => `10.1000/ref${i + 1}`),
+  );
+});
+
+await check(
+  "a competing numbered x lane retains the conservative baseline",
+  async () => {
+    const refs = await parse([
+      oneColumn(6),
+      [
+        ...boundaryPrefix,
+        item(
+          "20. OtherLane A. Complete competing citation. Journal. 2022; 3:33-43.",
+          360,
+          650,
+          10,
+          180,
+        ),
+        item("Supplementary References", 80, 600, 12, 450),
+        ...boundaryRestart,
+      ],
+    ]);
+    expectRefs(refs, 6);
+    assert.deepEqual(
+      refs.map((ref) => ref.identifiers.DOI),
+      Array.from({ length: 6 }, (_, i) => `10.1000/ref${i + 1}`),
+    );
+  },
+);
+
+await check(
+  "a supplement-only attachment retains its own bibliography",
+  async () => {
+    const refs = await parse([
+      [
+        item("Supplementary References", 100, 700, 12, 180),
+        ...Array.from({ length: 7 }, (_, i) =>
+          item(
+            `${i + 1}. AppendixAuthor${i + 1} A. Appendix citation. Journal. 2021; 2:22-32. doi:10.2000/app${i + 1}`,
+            100,
+            675 - i * 25,
+          ),
+        ),
+      ],
+    ]);
+    expectRefs(refs, 7);
+    assert.deepEqual(
+      refs.map((ref) => ref.identifiers.DOI),
+      Array.from({ length: 7 }, (_, i) => `10.2000/app${i + 1}`),
+    );
+  },
+);
+
+await check(
+  "a qualified repeated heading followed by the expected number still continues",
+  async () => {
+    const refs = await parse([
+      oneColumn(6),
+      [
+        item("Supplementary References", 100, 720, 12, 180),
+        item("7. AuthorG A. A wrapped continuation citation.", 100, 695),
+        item("Journal. 2020; 7:71-81. doi:10.1000/ref7", 112, 678),
+        item(reference(8), 100, 645),
+        item(reference(9), 100, 615),
+      ],
+    ]);
+    expectRefs(refs, 9);
+    assert.ok(refs[6].text.includes("wrapped continuation citation"));
+    assert.equal(refs[6].identifiers.DOI, "10.1000/ref7");
+    assert.deepEqual(
+      refs.slice(6).map((ref) => ref.page),
+      [1, 1, 1],
+    );
+  },
+);
+
+await check(
+  "a false range heading does not stop the expected continuation",
+  async () => {
+    const refs = await parse([
+      oneColumn(6),
+      [
+        item("References (7–9)", 100, 720, 12, 180),
+        ...[7, 8, 9].map((n, i) => item(reference(n), 100, 695 - i * 30)),
+      ],
+    ]);
+    expectRefs(refs, 9);
+    assert.deepEqual(
+      refs.slice(6).map((ref) => ref.identifiers.DOI),
+      ["10.1000/ref7", "10.1000/ref8", "10.1000/ref9"],
+    );
+  },
+);
+
+await check(
+  "a heading and numbered table rows do not invent a competing bibliography",
+  async () => {
+    const refs = await parse([
+      oneColumn(6),
+      [
+        item("Supplementary References", 100, 720, 12, 180),
+        item("1. Treatment group: sample size thirty.", 100, 695),
+        item("2. Control group: sample size forty.", 100, 670),
+        item(reference(7), 100, 640),
+        item(reference(8), 100, 610),
+      ],
+    ]);
+    assert.ok(refs.some((ref) => ref.identifiers.DOI === "10.1000/ref7"));
+    assert.ok(refs.some((ref) => ref.identifiers.DOI === "10.1000/ref8"));
   },
 );
 
@@ -2159,6 +2498,76 @@ function readFixture(templates, options = {}) {
     },
   };
 }
+await check(
+  "manual page is frozen at viewer readiness before loading completes",
+  async () => {
+    let finishLoading;
+    const loading = new Promise((resolve) => {
+      finishLoading = resolve;
+    });
+    const fixture = readFixture([
+      [item("Earlier chapter body.", 70, 650)],
+      oneColumn(6),
+      oneColumn(8),
+    ]);
+    const app =
+      fixture.reader._internalReader._primaryView._iframeWindow
+        .PDFViewerApplication;
+    app.page = 2;
+    app.pdfLoadingTask.promise = loading;
+    const parsing = parser.parsePDFReferences(fixture.reader, {
+      fromCurrentPage: true,
+    });
+    app.page = 3;
+    finishLoading();
+    const refs = await parsing;
+    expectRefs(refs, 6);
+    assert.ok(refs.every((ref) => ref.page === 1));
+  },
+);
+await check("invalid manual pages stop before text probes", async () => {
+  const pages = [oneColumn(3), oneColumn(8)];
+  for (const page of [NaN, Infinity, -4, 0, 1.5, "2", 99]) {
+    const fixture = readFixture(pages, { page });
+    const result = await parser.parsePDFReferencesDetailed(fixture.reader, {
+      fromCurrentPage: true,
+    });
+    assert.deepEqual(result.refs, []);
+    assert.equal(result.diagnostics.status, "unavailable");
+    assert.equal(result.diagnostics.searchEndPage, null);
+    assert.ok(result.diagnostics.warnings.includes("manual-page-unavailable"));
+    assert.deepEqual(fixture.reads, []);
+    assert.deepEqual(fixture.annotations, []);
+  }
+  for (const [page, count] of [
+    [1, 3],
+    [2, 8],
+  ])
+    expectRefs(
+      await parser.parsePDFReferences(readFixture(pages, { page }).reader, {
+        fromCurrentPage: true,
+      }),
+      count,
+    );
+});
+await check("an unreadable manual page getter is unavailable", async () => {
+  const fixture = readFixture([oneColumn(3)]);
+  const app =
+    fixture.reader._internalReader._primaryView._iframeWindow
+      .PDFViewerApplication;
+  Object.defineProperty(app, "page", {
+    get() {
+      throw Error("Viewer page unavailable");
+    },
+  });
+  const result = await parser.parsePDFReferencesDetailed(fixture.reader, {
+    fromCurrentPage: true,
+  });
+  assert.deepEqual(result.refs, []);
+  assert.equal(result.diagnostics.status, "unavailable");
+  assert.ok(result.diagnostics.warnings.includes("manual-page-unavailable"));
+  assert.deepEqual(fixture.reads, []);
+});
 await check(
   "successful body probes and empty preloads are read once per parse",
   async () => {

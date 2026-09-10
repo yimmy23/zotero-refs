@@ -739,7 +739,7 @@ for (const [name, raw, expected] of [
   [
     "English fullwidth sentence and type-mark word boundaries",
     "MANNA A． Compact jammers ［ C ］ / / IEEE Conference",
-    "MANNA A． Compact jammers [C] / / IEEE Conference",
+    "MANNA A. Compact jammers [C]// IEEE Conference",
   ],
   [
     "unknown bracket content",

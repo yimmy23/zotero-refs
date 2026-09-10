@@ -1498,7 +1498,10 @@ async function readPdfPage(
  * Get the pdf.js PDFViewerApplication from a Zotero 7 reader, polling for
  * up to ~5s while the internal view boots. Resolves null when unavailable.
  */
-async function getViewerApp(reader: any): Promise<any | null> {
+async function getViewerApp(
+  reader: any,
+  captureManualPage: boolean,
+): Promise<{ app: any; manualPage?: unknown } | null> {
   for (let i = 0; i < 25; i++) {
     try {
       const internal = (reader as any)?._internalReader;
@@ -1506,7 +1509,12 @@ async function getViewerApp(reader: any): Promise<any | null> {
         internal?._primaryView ?? internal?._lastView ?? internal?._views?.[0];
       const app = view?._iframeWindow?.PDFViewerApplication;
       if (app?.pdfLoadingTask && app?.pdfViewer) {
-        return app;
+        if (!captureManualPage) return { app };
+        try {
+          return { app, manualPage: app.page };
+        } catch {
+          return { app, manualPage: undefined };
+        }
       }
     } catch {
       // reader still initializing
@@ -1862,6 +1870,7 @@ function isGroupedStudyBibliography(lines: PDFLine[]): boolean {
 async function getRefLines(
   app: any,
   fromCurrentPage: boolean,
+  manualCurrentPage: unknown,
   onProgress: ParseProgress,
   probeText: ProbeTextCache,
   diagnostics?: PDFParseDiagnostics,
@@ -1873,6 +1882,29 @@ async function getRefLines(
     ztoolkit.log("[pdfparser] no pages");
     return [];
   }
+  // Ctrl+refresh support for theses: treat the invocation's captured page as
+  // the last page, so an asynchronous viewer page change cannot move the
+  // chapter boundary while loading or probing body pages.
+  let totalPageNum = pages.length;
+  if (fromCurrentPage) {
+    if (
+      typeof manualCurrentPage !== "number" ||
+      !Number.isFinite(manualCurrentPage) ||
+      !Number.isInteger(manualCurrentPage) ||
+      manualCurrentPage < 1 ||
+      manualCurrentPage > pages.length
+    ) {
+      if (diagnostics) {
+        diagnostics.status = "unavailable";
+        diagnostics.pageCount = pages.length;
+        diagnostics.searchEndPage = null;
+        diagnostics.warnings.push("manual-page-unavailable");
+      }
+      ztoolkit.log("[pdfparser] manual current page unavailable");
+      return [];
+    }
+    totalPageNum = manualCurrentPage;
+  }
   const pageLines: Record<number, PDFLine[]> = {};
   // Track only which empty preloads would previously have been reread.
   const preloadedEmptyPages = new Set<number>();
@@ -1881,13 +1913,6 @@ async function getRefLines(
   const lineNumbered = await hasLineNumbers(pages, probeText);
   if (lineNumbered)
     ztoolkit.log("[pdfparser] manuscript line numbers detected");
-  // Ctrl+refresh support for theses: treat the current page as the last
-  // page, so the bibliography of the current chapter is found
-  let offset = 0;
-  if (fromCurrentPage) {
-    offset = pages.length - app.page;
-  }
-  const totalPageNum = pages.length - offset;
   if (diagnostics) {
     diagnostics.pageCount = pages.length;
     diagnostics.searchEndPage = totalPageNum - 1;
@@ -1944,6 +1969,11 @@ async function getRefLines(
   const parts: PDFLine[][] = [];
   let part: PDFLine[] = [];
   let refPart: PDFLine[] = [];
+  const standaloneRefHeadings: PDFLine[] = [];
+  const standaloneHeadingPages = new Map<
+    number,
+    { lines: PDFLine[]; headings: PDFLine[] }
+  >();
   const _refPart: { done: boolean; parts: PDFLine[][]; heading?: PDFLine } = {
     done: false,
     parts: [],
@@ -2227,6 +2257,22 @@ async function getRefLines(
         text,
       );
     };
+    const headingIndexes = lines
+      .map((line, index) => (isRefBreak(line.text) ? index : -1))
+      .filter((index) => index >= 0);
+    if (headingIndexes.length) {
+      // The reverse walk normalizes line coordinates while committing parts.
+      // Keep one filtered, immutable source snapshot for a later ownership
+      // decision that must use physical geometry rather than stream columns.
+      const snapshot = lines.map((line) => ({
+        ...line,
+        _height: [...line._height],
+      }));
+      standaloneHeadingPages.set(pageNum, {
+        lines: snapshot,
+        headings: headingIndexes.map((index) => snapshot[index]),
+      });
+    }
     // finish a bibliography part; the bibliography is complete when its
     // first entry starts with number 1 (otherwise it continues on an
     // earlier page — keep collecting)
@@ -2336,6 +2382,8 @@ async function getRefLines(
       }
       // check before pushing
       if (isRefBreak(line.text)) {
+        if (!standaloneRefHeadings.includes(line))
+          standaloneRefHeadings.push(line);
         _refPart.heading = line;
         doneRefPart(part);
         part = [];
@@ -2353,6 +2401,8 @@ async function getRefLines(
             abs(line.y - lines[i - 1].y) > line.height * 3))
       ) {
         if (isRefBreak(lines[i - 1].text)) {
+          if (!standaloneRefHeadings.includes(lines[i - 1]))
+            standaloneRefHeadings.push(lines[i - 1]);
           _refPart.heading = lines[i - 1];
           doneRefPart(part);
           part = [];
@@ -2630,6 +2680,28 @@ async function getRefLines(
       }
     }
 
+    // The recovery cursor starts after heading-page completion, which can add
+    // lines that the reverse walk committed separately. It advances only
+    // through supported, orderly pages before a prospective ownership page.
+    const recoveryBaseLastNum = numberedBibliography
+      ? sequenceEnd(refPart.filter((line) => line.pageNum === lastRefPage))
+      : 0;
+    const advanceRecoveryCursor = (cursor: number, lines: PDFLine[]) => {
+      if (cursor < 1 || !lines.some((line) => numOf(line.text) === cursor + 1))
+        return cursor;
+      const end = sequenceEnd(lines, cursor);
+      if (end <= cursor) return cursor;
+      const entries = mergeSameRef(lines.map((line) => ({ ...line })));
+      const entriesByNumber = new Map(
+        entries.map((line) => [numOf(line.text), line]),
+      );
+      for (let number = cursor + 1; number <= end; number++) {
+        const entry = entriesByNumber.get(number);
+        if (!entry || !hasCitationEvidence(entry.text)) return cursor;
+      }
+      return end;
+    };
+
     // Parts may straddle pages (the walk carries an unbroken block from
     // page N+1 into page N) and double-spaced manuscripts split every
     // entry into its own part — so judge per PAGE: the union of all lines
@@ -2645,10 +2717,208 @@ async function getRefLines(
       }
     }
     const continuation: PDFLine[][] = [];
-    for (const pg of [...byPage.keys()].sort((a, b) => a - b)) {
-      const lines = byPage
-        .get(pg)!
-        .sort((a, b) => (a.column ?? 0) - (b.column ?? 0) || b.y - a.y);
+    const supportedRestart = (lines: PDFLine[]) => {
+      if (sequenceEnd(lines) < 2) return false;
+      const entries = mergeSameRef(lines.map((line) => ({ ...line })));
+      const supported = entries.filter((entry) =>
+        hasCitationEvidence(entry.text),
+      ).length;
+      return supported >= 2 && supported >= entries.length * 0.5;
+    };
+    const restartedBibliography = (page: number, pageLines: PDFLine[]) => {
+      if (!numberedBibliography || lastNum < 1) return false;
+      const headings = standaloneRefHeadings.filter(
+        (heading) => heading.pageNum === page,
+      );
+      if (!headings.length) return false;
+      const ordered = [...new Set([...pageLines, ...headings])].sort(
+        (a, b) => (a.column ?? 0) - (b.column ?? 0) || b.y - a.y,
+      );
+      const headingSet = new Set(headings);
+      const expected = lastNum + 1;
+      const expectedIndex = ordered.findIndex(
+        (line) => numOf(line.text) === expected,
+      );
+      if (expectedIndex < 0) return false;
+      for (const heading of headings) {
+        const headingIndex = ordered.indexOf(heading);
+        // A later restarted bibliography cannot invalidate a valid
+        // continuation prefix that already supplied the expected number.
+        if (headingIndex < 0 || headingIndex >= expectedIndex) continue;
+        const freshIndex = ordered.findIndex(
+          (line, index) =>
+            index > headingIndex &&
+            index < expectedIndex &&
+            numOf(line.text) === 1,
+        );
+        if (freshIndex < 0) continue;
+        const restarted = ordered
+          .slice(freshIndex, expectedIndex)
+          .filter((line) => !headingSet.has(line));
+        // A heading word and numbered table rows are not ownership evidence.
+        // Require a fresh sequence plus multiple complete citations before
+        // treating the expected number as part of another bibliography.
+        if (supportedRestart(restarted)) return true;
+      }
+      return false;
+    };
+    const recoverSamePagePrefix = (page: number) => {
+      const snapshot = standaloneHeadingPages.get(page);
+      if (!snapshot) return null;
+      const priorByPage = new Map<number, PDFLine[]>();
+      for (const line of refPart) {
+        const priorPage = line.pageNum ?? -1;
+        if (priorPage <= lastRefPage || priorPage >= page) continue;
+        if (!priorByPage.has(priorPage)) priorByPage.set(priorPage, []);
+        priorByPage.get(priorPage)!.push(line);
+      }
+      // Accepted ordinary continuations supersede stray carried lines from
+      // the same page, matching the final append behavior below.
+      for (const accepted of continuation) {
+        const priorPage = accepted[0]?.pageNum ?? -1;
+        if (priorPage > lastRefPage && priorPage < page)
+          priorByPage.set(priorPage, accepted);
+      }
+      let recoveryLastNum = recoveryBaseLastNum;
+      for (const priorPage of [...priorByPage.keys()].sort((a, b) => a - b)) {
+        const prior = priorByPage
+          .get(priorPage)!
+          .slice()
+          .sort((a, b) => (a.column ?? 0) - (b.column ?? 0) || b.y - a.y);
+        recoveryLastNum = advanceRecoveryCursor(recoveryLastNum, prior);
+      }
+      if (!numberedBibliography || recoveryLastNum < 1) return null;
+      const headingSet = new Set(snapshot.headings);
+      const expected = recoveryLastNum + 1;
+      for (const heading of [...snapshot.headings].sort((a, b) => b.y - a.y)) {
+        const tolerance = 3 * Math.max(heading.height, 6);
+        const headingX = absX(heading);
+        const sameLane = (line: PDFLine) =>
+          Math.abs(absX(line) - headingX) <=
+          Math.max(tolerance, 3 * Math.max(line.height, 6));
+        const above = snapshot.lines.filter(
+          (line) => !headingSet.has(line) && line.y > heading.y,
+        );
+        const expectedLines = above.filter(
+          (line) => numOf(line.text) === expected,
+        );
+        // More than one physical candidate, or a candidate in another x lane,
+        // is not an ownership boundary we can resolve conservatively.
+        if (expectedLines.length !== 1 || !sameLane(expectedLines[0])) continue;
+        if (
+          snapshot.lines.some((line) => numOf(line.text) > 0 && !sameLane(line))
+        )
+          continue;
+
+        const below = snapshot.lines
+          .filter(
+            (line) =>
+              !headingSet.has(line) && line.y < heading.y && sameLane(line),
+          )
+          .sort((a, b) => b.y - a.y);
+        const freshIndex = below.findIndex((line) => numOf(line.text) === 1);
+        if (freshIndex !== 0 || !supportedRestart(below)) continue;
+
+        const laneAbove = above.filter(sameLane).sort((a, b) => b.y - a.y);
+        const expectedIndex = laneAbove.indexOf(expectedLines[0]);
+        if (
+          expectedIndex < 0 ||
+          laneAbove.slice(0, expectedIndex).some((line) => numOf(line.text) > 0)
+        )
+          continue;
+        let start = expectedIndex;
+        while (start > 0 && numOf(laneAbove[start - 1].text) === 0) {
+          const previous = laneAbove[start - 1];
+          const current = laneAbove[start];
+          if (
+            previous.y - current.y >
+            3 * Math.max(previous.height, current.height, 6)
+          )
+            break;
+          start--;
+        }
+
+        let next = expected;
+        let acceptedEnd = -1;
+        for (let index = expectedIndex; index < laneAbove.length;) {
+          if (numOf(laneAbove[index].text) !== next) break;
+          let following = index + 1;
+          while (
+            following < laneAbove.length &&
+            numOf(laneAbove[following].text) === 0
+          )
+            following++;
+          const entryText = laneAbove
+            .slice(index, following)
+            .map((line) => line.text.trim())
+            .join(" ");
+          if (!hasCitationEvidence(entryText)) break;
+          acceptedEnd = following;
+          next++;
+          if (following >= laneAbove.length) break;
+          index = following;
+        }
+        if (
+          acceptedEnd < 0 ||
+          laneAbove.slice(acceptedEnd).some((line) => numOf(line.text) > 0)
+        )
+          continue;
+        const recovered = laneAbove.slice(start, acceptedEnd);
+        const numbered = recovered.slice(expectedIndex - start);
+        if (next === expected + 1) {
+          if (recoveryLastNum < 3 || numberedCount(numbered) !== 1) continue;
+          const text = numbered.map((line) => line.text.trim()).join(" ");
+          if (
+            !/\b(1[89]|20)\d{2}\b/.test(text) ||
+            !ENTRY_END.test(text) ||
+            !hasCitationEvidence(text)
+          )
+            continue;
+        } else if (next <= expected + 1) continue;
+
+        const laneOffset = Math.min(...recovered.map(absX));
+        const normalized = recovered.map((line) => ({
+          ...line,
+          _height: [...line._height],
+        }));
+        normalized.forEach((line) => {
+          line._x = absX(line);
+          line._offset = laneOffset;
+          line.x = parseInt((line._x - laneOffset).toFixed(1));
+          line.column = 0;
+        });
+        return normalized;
+      }
+      return null;
+    };
+    const continuationPages = new Set([
+      ...byPage.keys(),
+      ...[...standaloneHeadingPages.keys()].filter(
+        (page) => page > lastRefPage,
+      ),
+    ]);
+    let ownershipBoundaryPage: number | null = null;
+    for (const pg of [...continuationPages].sort((a, b) => a - b)) {
+      const recovered = recoverSamePagePrefix(pg);
+      if (recovered) {
+        continuation.push(recovered);
+        ownershipBoundaryPage = pg;
+        ztoolkit.log(
+          `[pdfparser] recovered continuation prefix before restarted bibliography p${pg} n=${recovered.length}`,
+        );
+        break;
+      }
+      const pageParts = byPage.get(pg);
+      if (!pageParts) continue;
+      const lines = pageParts.sort(
+        (a, b) => (a.column ?? 0) - (b.column ?? 0) || b.y - a.y,
+      );
+      if (restartedBibliography(pg, lines)) {
+        ztoolkit.log(
+          `[pdfparser] ordinary continuation stopped at restarted bibliography p${pg}`,
+        );
+        break;
+      }
       if (
         (lines.length >= 3 &&
           (lastNum > 0 ? picksUp(lines) : unnumberedContinuation(lines))) ||
@@ -2658,7 +2928,9 @@ async function getRefLines(
         // the next page must pick up where THIS page ends, not where the
         // heading page ended — double-spaced manuscripts split every page
         // into parts, so nothing but this step carries the count forward
-        if (numberedBibliography) lastNum = sequenceEnd(lines, lastNum);
+        if (numberedBibliography) {
+          lastNum = sequenceEnd(lines, lastNum);
+        }
       } else if (continuation.length) {
         break; // the list ended on the previous page
       }
@@ -2667,7 +2939,12 @@ async function getRefLines(
       // the carried-over stray lines from those pages are superseded by
       // the complete blocks (they were the running head / a fragment)
       const contPages = new Set(continuation.map((p) => p[0].pageNum));
-      refPart = refPart.filter((l) => !contPages.has(l.pageNum));
+      refPart = refPart.filter(
+        (line) =>
+          !contPages.has(line.pageNum) &&
+          (ownershipBoundaryPage === null ||
+            (line.pageNum ?? -1) < ownershipBoundaryPage),
+      );
     }
     for (const p of continuation) {
       ztoolkit.log(
@@ -2767,42 +3044,52 @@ async function getRefLines(
       partRefNum.push([i, numbered, isRefs]);
     }
     partRefNum.sort((a, b) => b[1] - a[1] || b[2] - a[2]);
-    const [best, bestNumbered, bestRefLike] = partRefNum[0];
-    // nothing that looks like a bibliography anywhere (conference
-    // abstract, poster, letter): return empty rather than one junk entry
-    if (
-      bestNumbered < 3 &&
-      (parts[best].length < 3 || bestRefLike / parts[best].length < 0.5)
-    ) {
-      ztoolkit.log("[pdfparser] no heading and no reference-like block");
-      return [];
-    }
-    refPart = parts[best];
-    if (bestNumbered >= 3) {
-      const start = findNumberedStart(refPart, refPart.length);
-      if (start > 0) refPart = refPart.slice(start);
-    }
-    ztoolkit.log(
-      `[pdfparser] no heading — fallback part p${refPart[0]?.pageNum} n=${refPart.length} numbered=${bestNumbered}`,
-    );
-    // A numbered block is not automatically a bibliography: author
-    // affiliation lists, statistics tables, search strategies and section
-    // headings all number their lines too. With no heading to trust,
-    // demand the one thing every real reference carries — a publication
-    // year. (mergeSameRef mutates the lines it merges, so score a copy.)
-    const probe = mergeSameRef(refPart.map((l) => ({ ...l })));
-    const dated = probe.filter((e) =>
-      /\b(1[89]|20)\d{2}\b/.test(e.text),
-    ).length;
-    const supported = probe.filter((e) => hasCitationEvidence(e.text)).length;
-    if (
-      !probe.length ||
-      dated / probe.length < 0.5 ||
-      supported / probe.length < 0.5
-    ) {
+    let foundFallback = false;
+    for (const [index, numbered, refLike] of partRefNum) {
+      const rawPart = parts[index];
+      // Conference abstracts, posters and letters may contain isolated
+      // reference-like lines. Keep the existing eligibility gate, but let a
+      // higher-ranked junk block yield to the next candidate.
+      if (
+        numbered < 3 &&
+        (rawPart.length < 3 || refLike / rawPart.length < 0.5)
+      )
+        continue;
+      let candidate = rawPart;
+      if (numbered >= 3) {
+        const start = findNumberedStart(candidate, candidate.length);
+        if (start > 0) candidate = candidate.slice(start);
+      }
+      // A numbered block is not automatically a bibliography: author
+      // affiliation lists, statistics tables, search strategies and section
+      // headings all number their lines too. Apply the established merged
+      // entry gates once per candidate, in the established rank order.
+      const probe = mergeSameRef(candidate.map((line) => ({ ...line })));
+      const dated = probe.filter((entry) =>
+        /\b(1[89]|20)\d{2}\b/.test(entry.text),
+      ).length;
+      const supported = probe.filter((entry) =>
+        hasCitationEvidence(entry.text),
+      ).length;
+      if (
+        !probe.length ||
+        dated / probe.length < 0.5 ||
+        supported / probe.length < 0.5
+      ) {
+        ztoolkit.log(
+          `[pdfparser] fallback block lacks citation evidence (dated=${dated}/${probe.length}, supported=${supported}/${probe.length}) — trying next candidate`,
+        );
+        continue;
+      }
+      refPart = candidate;
+      foundFallback = true;
       ztoolkit.log(
-        `[pdfparser] fallback block lacks citation evidence (dated=${dated}/${probe.length}, supported=${supported}/${probe.length}) — not a bibliography`,
+        `[pdfparser] no heading — fallback part p${refPart[0]?.pageNum} n=${refPart.length} numbered=${numbered}`,
       );
+      break;
+    }
+    if (!foundFallback) {
+      ztoolkit.log("[pdfparser] no heading and no valid reference-like block");
       return [];
     }
   }
@@ -2831,15 +3118,16 @@ async function parsePDFReferencesImpl(
   const onProgress: ParseProgress = options.onProgress || (() => {});
   const probeText: ProbeTextCache = new Map();
   try {
-    const app = await getViewerApp(reader);
-    if (!app) {
+    const viewer = await getViewerApp(reader, !!options.fromCurrentPage);
+    if (!viewer) {
       if (diagnostics) diagnostics.status = "unavailable";
       ztoolkit.log("[pdfparser] PDFViewerApplication unavailable");
       return [];
     }
     const refLines = await getRefLines(
-      app,
+      viewer.app,
       !!options.fromCurrentPage,
+      viewer.manualPage,
       onProgress,
       probeText,
       diagnostics,

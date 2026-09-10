@@ -1,7 +1,7 @@
 {
   "name": "zotero-refs",
   "type": "module",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "description": "Refs — references, citations, related papers and a citation graph for every Zotero item",
   "config": {
     "addonName": "Refs",
@@ -28,7 +28,7 @@
     "release": "zotero-plugin release",
     "test": "zotero-plugin test",
     "update-deps": "npm update --save",
-    "test:offline": "node scripts/core-regression.mjs && node scripts/text-regression.mjs && node scripts/abstract-regression.mjs && node scripts/abstract-source-regression.mjs && node scripts/translation-regression.mjs && node scripts/author-display-regression.mjs && node scripts/author-identity-regression.mjs && node scripts/host-identity-regression.mjs && node scripts/parser-regression.mjs && node scripts/reader-regression.mjs && node scripts/ui-regression.mjs && node scripts/popup-regression.mjs && node scripts/view-regression.mjs && node scripts/pubmed-regression.mjs && node scripts/source-regression.mjs && node scripts/graph-builder-regression.mjs && node scripts/related-regression.mjs && npm run test:sequence && node scripts/legacy-grouped-regression.mjs && node scripts/legacy-diagnostics-regression.mjs && node scripts/grouped-study-regression.mjs",
+    "test:offline": "node scripts/core-regression.mjs && node scripts/text-regression.mjs && node scripts/abstract-regression.mjs && node scripts/abstract-source-regression.mjs && node scripts/translation-regression.mjs && node scripts/author-display-regression.mjs && node scripts/author-identity-regression.mjs && node scripts/host-identity-regression.mjs && node scripts/parser-regression.mjs && node scripts/reader-regression.mjs && node scripts/ui-regression.mjs && node scripts/popup-regression.mjs && node scripts/view-regression.mjs && node scripts/citation-format-regression.mjs && node scripts/pubmed-regression.mjs && node scripts/source-regression.mjs && node scripts/graph-builder-regression.mjs && node scripts/related-regression.mjs && npm run test:sequence && node scripts/legacy-grouped-regression.mjs && node scripts/legacy-diagnostics-regression.mjs && node scripts/grouped-study-regression.mjs",
     "check": "npm run build && npm run test:offline",
     "test:sequence": "node scripts/sequence-layout-regression.mjs && node scripts/sequence-decoder-regression.mjs && node scripts/sequence-regression.mjs && node scripts/sequence-reader-regression.mjs",
     "benchmark:sequence": "node scripts/sequence-benchmark.mjs"

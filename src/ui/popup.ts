@@ -1,5 +1,5 @@
 import { isHttpUrl } from "../core/text";
-import { formatCitationText } from "./citationText";
+import { formatCitationText, isEnglishGBCitation } from "./citationText";
 import { abstractParagraphs } from "../core/abstractText";
 import {
   openTranslation,
@@ -431,7 +431,25 @@ export class PopupCard {
       this.renderText(newBody, content);
     }
     const titleNode = contentNode.querySelector(".title") as HTMLElement | null;
-    if (titleNode) titleNode.dataset.sourceText = title;
+    if (titleNode) {
+      titleNode.dataset.sourceText = title;
+      // Local parsing may retain the entire citation as its title. Format
+      // that fallback too, while keeping real titles and translation keys.
+      const comparable = (text: string) =>
+        text.normalize("NFKC").replace(/\s+/g, "");
+      if (
+        details.contentKind === "citation" &&
+        title.trim() &&
+        (isEnglishGBCitation(content) || /\p{Script=Han}/u.test(content)) &&
+        /\b(?:1[6-9]|20)\d{2}\b/.test(content) &&
+        /\[(?:[JMCGNDRSPAZ]|DB|CP|EB)(?:\/(?:OL|CD|DK|MT))?\]/.test(
+          comparable(content),
+        ) &&
+        comparable(title) === comparable(content)
+      )
+        titleNode.dataset.citationTitle = "true";
+      this.renderText(titleNode, title);
+    }
     readingArea.replaceChildren(contentNode);
     if (newBody) this.restoreTranslation(newBody);
     if (titleNode) this.restoreTranslation(titleNode);
@@ -650,7 +668,8 @@ export class PopupCard {
     node.dataset.displayText = text;
     if (node.dataset.contentKind !== "abstract") {
       node.textContent =
-        node.dataset.contentKind === "citation"
+        node.dataset.contentKind === "citation" ||
+        node.dataset.citationTitle === "true"
           ? formatCitationText(text)
           : text;
       return;
