@@ -1,3 +1,4 @@
+import { setTimeout, clearTimeout } from "node:timers";
 import console from "node:console";
 import process from "node:process";
 import assert from "node:assert/strict";
@@ -48,11 +49,13 @@ async function load(file, zotero = {}, stubs = {}, globals = {}) {
     URL,
     console,
     Zotero: {
+      getMainWindow: () => ({ closed: false, setTimeout, clearTimeout }),
       Prefs: { get: () => undefined },
       Libraries: { userLibraryID: 1 },
       Promise: { delay: async () => {} },
       ...zotero,
     },
+    Components: { utils: { isDeadWrapper: () => false } },
     addon: { data: {} },
     ztoolkit: { log: () => {} },
     ...globals,
@@ -338,7 +341,28 @@ const chineseRef = (identifiers = {}) => ({
 const hostItem = { libraryID: 7, getCollections: () => [23] };
 
 async function importerFixture(overrides = {}) {
-  const calls = { identifiers: [], options: [], metadata: 0, cnki: 0, doi: 0 };
+  const calls = {
+    identifiers: [],
+    options: [],
+    metadata: 0,
+    cnki: 0,
+    doi: 0,
+    collections: [],
+  };
+  const importedItems = new Map();
+  const prepare = (item) => {
+    if (!item) return item;
+    Object.assign(item, {
+      libraryID: 7,
+      isRegularItem: () => true,
+      getField: () => "",
+      getCollections: () => [],
+      addToCollection: (id) => calls.collections.push(id),
+      saveTx: async () => {},
+    });
+    importedItems.set(item.id, item);
+    return item;
+  };
   const mocks = {
     search: async () => {
       calls.cnki++;
@@ -353,9 +377,12 @@ async function importerFixture(overrides = {}) {
     translated: { id: 123 },
     ...overrides,
   };
+  const cnkiImport = mocks.cnkiImport;
+  mocks.cnkiImport = async (...args) => prepare(await cnkiImport(...args));
   const { importReference } = await load(
     "src/core/importer.ts",
     {
+      Items: { get: (id) => importedItems.get(id) },
       Translate: {
         Search: class {
           setIdentifier(ids) {
@@ -367,7 +394,7 @@ async function importerFixture(overrides = {}) {
           setTranslator() {}
           async translate(options) {
             calls.options.push({ ...options });
-            return mocks.translated ? [mocks.translated] : [];
+            return mocks.translated ? [prepare(mocks.translated)] : [];
           }
         },
       },
@@ -380,7 +407,7 @@ async function importerFixture(overrides = {}) {
     },
     {
       "./libmatch":
-        "export const libraryIndex={match:async()=>undefined}; export const isRelated=()=>false;",
+        "export const libraryIndex={match:async()=>undefined,invalidate:()=>{}}; export const isRelated=()=>false;",
       "../utils/locale": "export const getString=(key)=>key;",
       "../sources":
         "export const sources={cnki:{getInfoByTitle:(...args)=>mocks.cnkiInfo(...args)}}; export const resolveDOIByTitle=(...args)=>mocks.resolveDOI(...args);",
@@ -403,7 +430,8 @@ test("Chinese CNKI misses still import existing DOI, PMID and arXiv identifiers"
     assert.equal(calls.cnki, 1, "Fixture must reach the Chinese CNKI path");
     assert.deepEqual(calls.identifiers, [ids]);
     assert.equal(calls.options[0].libraryID, 7);
-    assert.deepEqual(calls.options[0].collections, [23]);
+    assert.deepEqual(Array.from(calls.options[0].collections), []);
+    assert.deepEqual(calls.collections, [23]);
     assert.equal(calls.options[0].saveAttachments, true);
     assert.equal(calls.metadata, 0);
   }

@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import console from "node:console";
 import fs from "node:fs";
+import { setTimeout, clearTimeout } from "node:timers";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
@@ -73,6 +74,9 @@ if (process.argv.includes("--adversarial-worker")) {
   );
   process.exit(0);
 }
+const session = compile("src/pdf/parserSession.ts", {
+  "../utils/window": { setTimeout, clearTimeout },
+});
 const parser = compile(
   "src/pdf/parser.ts",
   {
@@ -81,6 +85,7 @@ const parser = compile(
     "./groupedStudyReferences": compile("src/pdf/groupedStudyReferences.ts"),
     "../utils/prefs": { getPref: () => 4 },
     "../utils/locale": { getString: (key) => key },
+    "./parserSession": session,
   },
   "\nexport {mergeSameRef};",
 );

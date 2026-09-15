@@ -10,6 +10,7 @@ import type {
   PagedRefs,
   RefItem,
   RefTag,
+  SourceRequestOptions,
 } from "../core/types";
 
 /**
@@ -45,12 +46,12 @@ const TYPE_MAP: Record<string, string> = {
 };
 
 /** Keep API keys in a header, out of URLs and URL-based debug messages. */
-function getJSON(url: string) {
+function getJSON(url: string, options: SourceRequestOptions = {}) {
   const key = String(getPref("openAlexApiKey") || "").trim();
-  return http.getJSON<any>(
-    url,
-    key ? { headers: { Authorization: `Bearer ${key}` } } : {},
-  );
+  return http.getJSON<any>(url, {
+    ...options,
+    ...(key ? { headers: { Authorization: `Bearer ${key}` } } : {}),
+  });
 }
 
 /** "https://openalex.org/W123..." -> "W123..." (also passes bare ids through) */
@@ -176,11 +177,14 @@ export interface OAWork {
 }
 
 /** Fetch a work (by openAlex/DOI/PMID id) with its full graph edges. */
-export async function getWorkFull(ids: Identifiers): Promise<OAWork | null> {
+export async function getWorkFull(
+  ids: Identifiers,
+  options: SourceRequestOptions = {},
+): Promise<OAWork | null> {
   const path = workPathFromIds(ids);
   if (!path) return null;
   const url = `${path}?select=${FULL_SELECT}`;
-  const w = await getJSON(url);
+  const w = await getJSON(url, options);
   if (!w || !w.id) return null;
   return {
     ref: mapWork(w),
@@ -204,7 +208,7 @@ export async function getWorkFull(ids: Identifiers): Promise<OAWork | null> {
 export async function getWorksBatch(
   wids: string[],
   withRefs = false,
-  opts: { lean?: boolean } = {},
+  opts: { lean?: boolean } & SourceRequestOptions = {},
 ): Promise<Map<string, { ref: RefItem; referencedWorks: string[] }>> {
   const result = new Map<string, { ref: RefItem; referencedWorks: string[] }>();
   const base = opts.lean ? GRAPH_SELECT : SELECT;
@@ -220,7 +224,7 @@ export async function getWorksBatch(
     );
   }
   // pages in parallel — the per-host gate already bounds concurrency
-  const pages = await Promise.all(urls.map((u) => getJSON(u)));
+  const pages = await Promise.all(urls.map((u) => getJSON(u, opts)));
   for (const res of pages) {
     const results: any[] = res?.results;
     if (!Array.isArray(results)) continue;
@@ -242,52 +246,82 @@ export async function getWorksBatch(
 }
 
 export const openalex: MetaSource & {
-  getInfoByDOI(doi: string): Promise<RefItem | null>;
-  getInfoByPMID(pmid: string): Promise<RefItem | null>;
-  getInfoByTitle(title: string, refText?: string): Promise<RefItem | null>;
-  getReferences(ids: Identifiers): Promise<RefItem[] | null>;
+  getInfoByDOI(
+    doi: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem | null>;
+  getInfoByPMID(
+    pmid: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem | null>;
+  getInfoByTitle(
+    title: string,
+    refText?: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem | null>;
+  getReferences(
+    ids: Identifiers,
+    title?: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem[] | null>;
   getCitations(
     ids: Identifiers,
     offset?: number,
     limit?: number,
+    options?: SourceRequestOptions,
   ): Promise<PagedRefs | null>;
   getRelated(
     ids: Identifiers,
     limit?: number,
-    shouldContinue?: () => boolean,
+    optionsOrContinue?: SourceRequestOptions | (() => boolean),
+    options?: SourceRequestOptions,
   ): Promise<RefItem[] | null>;
 } = {
   id: "openalex",
 
-  async getInfoByDOI(doi: string): Promise<RefItem | null> {
+  async getInfoByDOI(
+    doi: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem | null> {
     const url = `${BASE}/works/https://doi.org/${encodeURIComponent(doi)}?select=${SELECT}`;
-    const w = await getJSON(url);
+    const w = await getJSON(url, options);
     if (!w || !w.id) return null;
     return mapWork(w);
   },
 
-  async getInfoByPMID(pmid: string): Promise<RefItem | null> {
+  async getInfoByPMID(
+    pmid: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem | null> {
     const url = `${BASE}/works/pmid:${encodeURIComponent(pmid)}?select=${SELECT}`;
-    const w = await getJSON(url);
+    const w = await getJSON(url, options);
     if (!w || !w.id) return null;
     return mapWork(w);
   },
 
-  async getInfoByTitle(title: string): Promise<RefItem | null> {
+  async getInfoByTitle(
+    title: string,
+    _refText?: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem | null> {
     const cleaned = title.replace(/,/g, "");
     const url = `${BASE}/works?filter=title.search:${encodeURIComponent(
       cleaned,
     )}&per-page=3&select=${SELECT}`;
-    const res = await getJSON(url);
+    const res = await getJSON(url, options);
     const results: any[] = res?.results;
     if (!Array.isArray(results) || !results.length) return null;
     return mapWork(results[0]);
   },
 
-  async getReferences(ids: Identifiers): Promise<RefItem[] | null> {
-    const full = await getWorkFull(ids);
+  async getReferences(
+    ids: Identifiers,
+    _title?: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem[] | null> {
+    const full = await getWorkFull(ids, options);
     if (!full || !full.referencedWorks.length) return null;
-    const batch = await getWorksBatch(full.referencedWorks);
+    const batch = await getWorksBatch(full.referencedWorks, false, options);
     const refs: RefItem[] = full.referencedWorks.map((wid, index) => {
       const hit = batch.get(wid);
       const ref: RefItem = hit
@@ -307,10 +341,11 @@ export const openalex: MetaSource & {
     ids: Identifiers,
     offset = 0,
     limit = 25,
+    options: SourceRequestOptions = {},
   ): Promise<PagedRefs | null> {
     let wid = ids.openAlex;
     if (!wid) {
-      const full = await getWorkFull(ids);
+      const full = await getWorkFull(ids, options);
       wid = full?.ref.identifiers.openAlex;
     }
     if (!wid) return null;
@@ -318,7 +353,7 @@ export const openalex: MetaSource & {
     const url =
       `${BASE}/works?filter=cites:${wid}&per-page=${limit}&page=${page}` +
       `&sort=cited_by_count:desc&select=${SELECT}`;
-    const res = await getJSON(url);
+    const res = await getJSON(url, options);
     const results: any[] = res?.results;
     if (!Array.isArray(results)) return null;
     const items = results.map((w) => mapWork(w));
@@ -332,13 +367,17 @@ export const openalex: MetaSource & {
   async getRelated(
     ids: Identifiers,
     limit = 40,
-    shouldContinue: () => boolean = () => true,
+    optionsOrContinue: SourceRequestOptions | (() => boolean) = {},
+    options: SourceRequestOptions = {},
   ): Promise<RefItem[] | null> {
+    const shouldContinue =
+      typeof optionsOrContinue === "function" ? optionsOrContinue : () => true;
+    if (typeof optionsOrContinue !== "function") options = optionsOrContinue;
     const path = workPathFromIds(ids);
     if (!path || !shouldContinue()) return null;
     const bounded = relatedLimit(limit);
     // Keep the raw list: hydrating fewer works must not renumber later ranks.
-    const full = await getJSON(`${path}?select=id,related_works`);
+    const full = await getJSON(`${path}?select=id,related_works`, options);
     if (!shouldContinue() || !full?.id || !Array.isArray(full.related_works))
       return null;
     const ranked = full.related_works
@@ -357,6 +396,7 @@ export const openalex: MetaSource & {
     ];
     const result = await getJSON(
       `${BASE}/works?filter=openalex_id:${wids.join("|")}&per-page=${bounded}&select=${SELECT}`,
+      options,
     );
     if (!shouldContinue() || !Array.isArray(result?.results)) return null;
     const batch = new Map<string, RefItem>();

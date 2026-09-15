@@ -875,6 +875,10 @@ function importFixture() {
       return this.fields[key] || "";
     },
     getCollections: () => [],
+    isRegularItem: () => true,
+    getRelations() {
+      return { related: [...this.relatedItems] };
+    },
     addRelatedItem(other) {
       this.relatedItems.push(other.key);
     },
@@ -882,9 +886,17 @@ function importFixture() {
     async saveTx() {
       this.saves++;
     },
+    async save() {
+      this.saves++;
+    },
   });
   const host = item(1),
     imported = item(2);
+  imported.fields.DOI = "10.5555/synthetic";
+  env.items.set(host.id, host);
+  env.items.set(imported.id, imported);
+  env.libraryIndex.invalidate = () => {};
+  env.Zotero.DB = { executeTransaction: (callback) => callback() };
   const windows = [];
   env.ztoolkit.ProgressWindow = class {
     constructor() {

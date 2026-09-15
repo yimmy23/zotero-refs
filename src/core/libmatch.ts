@@ -5,6 +5,7 @@ import {
   REGEX,
 } from "./text";
 import type { RefItem } from "./types";
+import { authorFamilyName } from "./authorNames";
 
 /**
  * Fast in-library matching of references.
@@ -231,7 +232,8 @@ class LibraryIndex {
     if (!id) {
       const title = normalizeTitle(ref.title || ref.text);
       const refYear = Number(ref.year) || 0;
-      const negativeKey = `${title}/${refYear}`;
+      const refAuthor = normalizeTitle(authorFamilyName(ref.authors?.[0]));
+      const negativeKey = JSON.stringify([title, refYear, refAuthor]);
       const hasIdentifiers = Object.values(ref.identifiers).some(Boolean);
       const accepts = (
         candidateID: number,
@@ -239,15 +241,19 @@ class LibraryIndex {
         prefix = false,
       ) => {
         if (prefix && (!refYear || !itemYear)) return false;
-        if (refYear && itemYear && Math.abs(refYear - itemYear) > 1)
-          return false;
+        if (refYear && itemYear && refYear !== itemYear) return false;
         try {
           const candidate = Zotero.Items.get(candidateID) as
             Zotero.Item | undefined;
+          const creator = candidate
+            ?.getCreatorsJSON?.()
+            .find((creator) => creator.creatorType === "author");
+          const itemAuthor = normalizeTitle(creator?.lastName || creator?.name);
           return (
             !!candidate &&
             candidate.libraryID === lib &&
             !candidate.deleted &&
+            !(refAuthor && itemAuthor && refAuthor !== itemAuthor) &&
             !identifiersConflict(ref.identifiers, hostIdentifiers(candidate))
           );
         } catch {
@@ -327,5 +333,8 @@ export const libraryIndex = new LibraryIndex();
 /** Is refItem already a "related item" of item? */
 export function isRelated(item: Zotero.Item, refItem?: Zotero.Item): boolean {
   if (!item || !refItem) return false;
-  return item.relatedItems.includes(refItem.key);
+  return (
+    item.relatedItems.includes(refItem.key) &&
+    refItem.relatedItems.includes(item.key)
+  );
 }

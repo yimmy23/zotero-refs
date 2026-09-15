@@ -1,3 +1,4 @@
+import type { SourceRequestOptions } from "../core/types";
 import {
   isChinese,
   isHttpUrl,
@@ -259,6 +260,7 @@ function parseSearchRows(html: string, overseaHost: boolean): CNKISearchRow[] {
 export async function searchCNKI(
   title: string,
   author?: string,
+  options: SourceRequestOptions = {},
 ): Promise<CNKISearchRow[] | null> {
   for (const [build, oversea] of [
     [mainlandOptions, false],
@@ -266,6 +268,7 @@ export async function searchCNKI(
   ] as const) {
     const opt = build(title, author);
     const html = await http.postForm<string>(opt.url, opt.body, {
+      ...options,
       credentials: true,
       responseType: "text",
       headers: opt.headers,
@@ -412,10 +415,11 @@ export async function importCNKIItem(
 async function getInfoByTitle(
   title: string,
   refText?: string,
+  options: SourceRequestOptions = {},
 ): Promise<RefItem | null> {
   if (!isChinese(refText || title)) return null;
 
-  const rows = await searchCNKI(title);
+  const rows = await searchCNKI(title, undefined, options);
   const row = rows?.find((candidate) => titlesMatch(candidate.title, title));
   if (!row) return null;
 
@@ -442,6 +446,7 @@ async function getInfoByTitle(
 
   // enrich with abstract/keywords from the detail page, best effort
   const html = await http.getText(row.url, {
+    ...options,
     credentials: true,
     headers: { "User-Agent": USER_AGENT },
   });
@@ -492,13 +497,14 @@ function randomIP(): string {
 async function updateToken(
   username: string,
   password: string,
+  options: SourceRequestOptions = {},
 ): Promise<string | null> {
   const res = await http.postJSON<{ Content?: string }>(
     "https://apix.cnki.net/databusapi/api/v1.0/credential/namepasswithcleartext/personalaccount",
     { Username: username, Password: password, Clientip: randomIP() },
     // Zotero's debug-log redaction only matches lowercase `password":"` —
     // this body must never reach the log users paste into bug reports
-    { logBodyLength: 0, ttl: 0 },
+    { ...options, logBodyLength: 0, ttl: 0 },
   );
   const token = res?.Content;
   if (!token) return null;
@@ -513,6 +519,7 @@ async function fetchFileInfo(
   username: string,
   password: string,
   attempt = 0,
+  options: SourceRequestOptions = {},
 ): Promise<RefItem[] | null> {
   const token = (getPref("CNKI.token") as string) || "";
   const infoApi =
@@ -524,19 +531,21 @@ async function fetchFileInfo(
   const headers = { token, "user-agent": USER_AGENT };
 
   const infoData = await http.getJSON<any>(infoApi, {
+    ...options,
     headers,
     noCache: true,
   });
   const refData = await http.getJSON<any>(refApi, {
+    ...options,
     headers,
     noCache: true,
   });
 
   if (!refData || String(refData.code) !== "200") {
     if (attempt < 3) {
-      const newToken = await updateToken(username, password);
+      const newToken = await updateToken(username, password, options);
       if (!newToken) return null;
-      return fetchFileInfo(fileName, username, password, attempt + 1);
+      return fetchFileInfo(fileName, username, password, attempt + 1, options);
     }
     ztoolkit.log(
       `[cnki] references failed: ${refData?.code} ${refData?.promptMessage}`,
@@ -617,6 +626,7 @@ async function fetchFileInfo(
 async function getReferences(
   ids: Identifiers,
   title?: string,
+  options: SourceRequestOptions = {},
 ): Promise<RefItem[] | null> {
   const username = ((getPref("CNKI.username") as string) || "").trim();
   const password = ((getPref("CNKI.password") as string) || "").trim();
@@ -626,14 +636,14 @@ async function getReferences(
 
   let fileName = parseCNKIURL(ids.CNKI)?.fileName;
   if (!fileName && title) {
-    const rows = await searchCNKI(title);
+    const rows = await searchCNKI(title, undefined, options);
     const row = rows?.find((candidate) => titlesMatch(candidate.title, title));
     fileName = row?.filename || parseCNKIURL(row?.url)?.fileName;
   }
   if (!fileName) return null;
 
   try {
-    return await fetchFileInfo(fileName, username, password);
+    return await fetchFileInfo(fileName, username, password, 0, options);
   } catch (e) {
     ztoolkit.log("[cnki] getReferences failed", e);
     return null;

@@ -304,6 +304,7 @@ export function registerRelatedSection() {
                     if (owns()) paint(partial);
                   },
                   owns,
+                  { cachePolicy: useCache ? "default" : "refresh" },
                 );
             if (!owns()) return;
             if (

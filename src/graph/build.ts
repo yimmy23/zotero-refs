@@ -7,6 +7,7 @@ import type {
   GraphNodeRole,
   Identifiers,
   RefItem,
+  SourceRequestOptions,
 } from "../core/types";
 import { getWorkFull, getWorksBatch, openalex } from "../sources/openalex";
 
@@ -28,10 +29,20 @@ const COUPLING_MAX_EDGES = 200;
 
 export async function buildGraph(
   center: { ids: Identifiers; libraryID: number },
-  opts: { maxNodes: number; onStatus?: (msg: string) => void },
+  opts: SourceRequestOptions & {
+    maxNodes: number;
+    onStatus?: (msg: string) => void;
+    shouldContinue?: () => boolean;
+  },
 ): Promise<GraphData | null> {
   const onStatus = opts.onStatus;
+  const current = () => opts.shouldContinue?.() !== false;
+  const request: SourceRequestOptions = {
+    cachePolicy: opts.cachePolicy,
+    deadline: opts.deadline ?? Date.now() + 45_000,
+  };
   try {
+    if (!current()) return null;
     const hostIds = center.ids;
     if (!hostIds.DOI && !hostIds.PMID && !hostIds.openAlex) {
       ztoolkit.log("[graph] no DOI/PMID/OpenAlex id, cannot build graph");
@@ -39,7 +50,8 @@ export async function buildGraph(
     }
 
     onStatus?.(getString("graph-status-lookup"));
-    const origin = await getWorkFull(hostIds);
+    const origin = await getWorkFull(hostIds, request);
+    if (!current()) return null;
     if (!origin) {
       ztoolkit.log(`[graph] OpenAlex work not found for`, hostIds);
       return null;
@@ -86,7 +98,9 @@ export async function buildGraph(
     );
     const refMap = await getWorksBatch(origin.referencedWorks, true, {
       lean: true,
+      ...request,
     });
+    if (!current()) return null;
     for (const [wid, work] of refMap) {
       if (wid === originId) continue;
       addNode(wid, work.ref, "reference");
@@ -98,7 +112,9 @@ export async function buildGraph(
       { openAlex: originId },
       0,
       CITATION_LIMIT,
+      request,
     );
+    if (!current()) return null;
     for (const ref of cites?.items || []) {
       const wid = ref.identifiers.openAlex;
       if (wid) addNode(wid, ref, "citation");
@@ -108,8 +124,9 @@ export async function buildGraph(
     const relMap = await getWorksBatch(
       origin.relatedWorks.slice(0, RELATED_LIMIT),
       false,
-      { lean: true },
+      { lean: true, ...request },
     );
+    if (!current()) return null;
     for (const [wid, work] of relMap) {
       addNode(wid, work.ref, "related");
     }
@@ -127,6 +144,7 @@ export async function buildGraph(
 
     onStatus?.(getString("graph-status-match"));
     for (const node of kept) {
+      if (!current()) return null;
       try {
         node.inLibrary = !!(await libraryIndex.match(
           node.ref,

@@ -1,3 +1,4 @@
+import type { SourceRequestOptions } from "../core/types";
 import { cleanText } from "../core/text";
 import { normalizeAbstractText } from "../core/abstractText";
 import { http } from "../core/http";
@@ -157,16 +158,26 @@ export function extractAbstractRecord(
 }
 
 export const pubmed: MetaSource & {
-  getInfoByPMID(pmid: string): Promise<RefItem | null>;
-  getInfoByTitle(title: string, refText?: string): Promise<RefItem | null>;
+  getInfoByPMID(
+    pmid: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem | null>;
+  getInfoByTitle(
+    title: string,
+    refText?: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem | null>;
 } = {
   id: "pubmed",
 
-  async getInfoByPMID(pmid: string): Promise<RefItem | null> {
+  async getInfoByPMID(
+    pmid: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem | null> {
     const summaryUrl =
       `${BASE}/esummary.fcgi?db=pubmed&id=${encodeURIComponent(pmid)}` +
       `&retmode=json`;
-    const summaryRes = await http.getJSON(summaryUrl);
+    const summaryRes = await http.getJSON(summaryUrl, options);
     const result = summaryRes?.result?.[pmid];
     if (!result || result.error) return null;
 
@@ -186,7 +197,7 @@ export const pubmed: MetaSource & {
     const abstractUrl =
       `${BASE}/efetch.fcgi?db=pubmed&id=${encodeURIComponent(pmid)}` +
       `&retmode=xml`;
-    const raw = await http.getText(abstractUrl);
+    const raw = await http.getText(abstractUrl, options);
     const full = raw ? extractAbstractRecord(raw, pmid) : null;
     const abstract = full?.abstract;
 
@@ -210,17 +221,21 @@ export const pubmed: MetaSource & {
     };
   },
 
-  async getInfoByTitle(title: string): Promise<RefItem | null> {
+  async getInfoByTitle(
+    title: string,
+    _refText?: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem | null> {
     // default esearch order is most-recent-first, which ranks "Author
     // Correction: X" above X — ask for relevance and skip errata
     const searchUrl =
       `${BASE}/esearch.fcgi?db=pubmed&term=${encodeURIComponent(title)}` +
       `[Title]&retmode=json&retmax=3&sort=relevance`;
-    const res = await http.getJSON(searchUrl);
+    const res = await http.getJSON(searchUrl, options);
     const ids: string[] = res?.esearchresult?.idlist;
     if (!Array.isArray(ids) || !ids.length) return null;
     for (const id of ids) {
-      const info = await pubmed.getInfoByPMID(id);
+      const info = await pubmed.getInfoByPMID(id, options);
       if (!info) continue;
       if (
         /^(author correction|correction|erratum|retraction)/i.test(

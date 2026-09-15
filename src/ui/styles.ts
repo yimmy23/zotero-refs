@@ -211,6 +211,13 @@ export function registerStyles(win: Window) {
     }
     /* + / − affordance: quiet grey glyph, coloured only on hover (native
        rows reveal actions on hover; a permanent red minus reads as delete) */
+    .references-row-details {
+      flex: 0 0 auto;
+      align-self: flex-start;
+      font-size: var(--refs-font-secondary);
+      padding: 2px 5px;
+      color: var(--fill-secondary);
+    }
     .references-row-action {
       flex: 0 0 26px;
       width: 26px;

@@ -2047,3 +2047,574 @@ test("an already opened graph context menu cannot import after a host edit", asy
     assert.equal(imports, changed ? 0 : 1);
   }
 });
+
+test("citations unsubscribe old bodies on item switch and destruction while retaining data", async () => {
+  const env = fixture(),
+    item = host();
+  const citations = env.load(
+    "src/ui/citations.ts",
+    {
+      ...env.shared,
+      "../sources": {
+        getCitationsByAPI: async () => ({
+          items: [reference("Citing paper")],
+          source: "openalex",
+          nextOffset: 1,
+        }),
+      },
+    },
+    "\nexport { states, loadMore };\n",
+  );
+  citations.registerCitationsSection();
+  const pane = env.panes.get("citations"),
+    doc = document();
+  const render = (item) =>
+    pane.onAsyncRender({ body: doc.body, item, setSectionSummary() {} });
+  await render(item);
+  const first = citations.states.get(env.storage.itemStateKey(item));
+  await citations.loadMore(item, first);
+  const oldList = [...first.doms][0].list;
+  assert.equal(first.doms.size, 1);
+  const other = host(2);
+  other.key = "OTHER";
+  await render(other);
+  assert.equal(oldList.isConnected, false);
+  assert.equal(
+    first.doms.size,
+    0,
+    "the old data cache retains no detached DOM",
+  );
+  assert.equal(first.refs.length, 1, "data remains reusable");
+  const next = citations.states.get(env.storage.itemStateKey(other));
+  pane.onDestroy({ body: doc.body });
+  assert.equal(next.doms.size, 0);
+  env.prefs.set("loadingCitations", true);
+  await render(other);
+  assert.equal(env.timers.size, 1);
+  pane.onItemChange({ body: doc.body, item: null, setEnabled() {} });
+  assert.equal(env.timers.size, 0, "unsubscribing cancels the owned debounce");
+});
+
+test("graph collapse, item change and destruction dispose views and cancel old builds", async () => {
+  const env = fixture(),
+    item = host(),
+    waiting = deferred();
+  env.prefs.set("graphEnable", true);
+  let created = 0,
+    destroyed = 0,
+    block = false;
+  const data = { originId: "W1", nodes: [], edges: [] };
+  const graph = env.load(
+    "src/ui/graphSection.ts",
+    {
+      ...env.shared,
+      "../graph/build": {
+        buildGraph: async () => (block ? waiting.promise : data),
+      },
+      "../graph/view": {
+        GraphView: class {
+          constructor() {
+            created++;
+          }
+          destroy() {
+            destroyed++;
+          }
+          setData() {}
+        },
+      },
+      "../core/importer": {},
+      "../core/libmatch": {},
+    },
+    "\nexport { views, dataCache, renderGraph };\n",
+  );
+  graph.registerGraphSection();
+  const pane = env.panes.get("citation-graph"),
+    doc = document();
+  const section = doc.createElement("collapsible-section");
+  doc.body.root = false;
+  section.root = true;
+  section.open = true;
+  section.append(doc.body);
+  const args = { body: doc.body, item, setSectionSummary() {} };
+  await pane.onAsyncRender(args);
+  await env.fire(350);
+  assert.equal(created, 1);
+  section.open = false;
+  pane.onToggle(args);
+  assert.equal(destroyed, 1);
+  assert.equal(graph.views.has(doc.body), false);
+  section.open = true;
+  pane.onToggle(args);
+  await tick();
+  assert.equal(created, 2, "reopening uses data to create a fresh live view");
+  pane.onItemChange({ ...args, item: null, setEnabled() {} });
+  assert.equal(destroyed, 2);
+  await pane.onAsyncRender(args);
+  pane.onDestroy(args);
+  await env.fire(350);
+  assert.equal(created, 2, "destroying cancels the scheduled build");
+  await pane.onAsyncRender(args);
+  block = true;
+  const pending = graph.renderGraph(doc.body, item, () => {}, true);
+  pane.onDestroy(args);
+  waiting.resolve(data);
+  await pending;
+  assert.equal(created, 2, "late completion cannot recreate a disposed view");
+});
+
+function attachSyntheticReader(env, item) {
+  env.globals.Zotero.Reader._readers = [{ itemID: 7 }];
+  env.globals.Zotero.Items.get = (id) =>
+    id === 7
+      ? { id: 7, parentID: item.id, libraryID: item.libraryID }
+      : undefined;
+}
+
+test("References displays ready API results before pending PDF and only saves final fusion", async () => {
+  const env = fixture(),
+    item = host(),
+    pdf = deferred();
+  attachSyntheticReader(env, item);
+  const section = env.section({
+    "../pdf/parser": { parsePDFReferences: () => pdf.promise },
+    "../sources": {
+      sources: { crossref: {} },
+      getReferencesByAPI: async () => ({
+        refs: [reference("API available")],
+        source: "crossref",
+        status: "ok",
+      }),
+    },
+  });
+  section.registerReferencesSection();
+  const pane = env.panes.get("references"),
+    doc = document();
+  await pane.onAsyncRender({ body: doc.body, item, setSectionSummary() {} });
+  const state = section.getState(item);
+  const pending = section.refresh(doc.body, item, state, () => {}, {
+    useCache: false,
+    fromCurrentPage: false,
+  });
+  await tick();
+  assert.equal(state.refs[0].title, "API available");
+  assert.equal(state.provisional, true);
+  assert.match(doc.body.textContent, /API available/);
+  assert.equal(await env.storage.refStorage.get(item, "FUSED"), undefined);
+  pdf.resolve([reference("Printed PDF entry")]);
+  await pending;
+  assert.equal(state.provisional, false);
+  assert.equal(state.refs[0].title, "Printed PDF entry");
+  assert.equal(
+    (await env.storage.refStorage.get(item, "FUSED"))[0].title,
+    "Printed PDF entry",
+  );
+});
+
+test("late References refresh cannot overwrite an edit started on an existing row", async () => {
+  const env = fixture(),
+    item = host(),
+    api = deferred();
+  let rowContext;
+  const section = env.section({
+    "./rows": {
+      ...env.shared["./rows"],
+      renderRefRow(ctx, refs, index) {
+        rowContext = ctx;
+        return env.shared["./rows"].renderRefRow(ctx, refs, index);
+      },
+    },
+    "../sources": {
+      sources: { crossref: {} },
+      getReferencesByAPI: () => api.promise,
+    },
+  });
+  const state = section.getState(item);
+  state.refs = [reference("Existing citation")];
+  section.registerReferencesSection();
+  const doc = document();
+  await env.panes
+    .get("references")
+    .onAsyncRender({ body: doc.body, item, setSectionSummary() {} });
+  const pending = section.refresh(doc.body, item, state, () => {}, {
+    useCache: false,
+    fromCurrentPage: false,
+  });
+  await tick();
+  rowContext.onEditStart();
+  rowContext.onEdited(reference("User correction"), 0);
+  api.resolve({
+    refs: [reference("Late online replacement")],
+    source: "crossref",
+    status: "ok",
+  });
+  await pending;
+  assert.equal(state.refs[0].title, "User correction");
+  assert.equal(
+    (await env.storage.refStorage.get(item, "FUSED"))[0].title,
+    "User correction",
+  );
+});
+
+for (const partial of ["api", "pdf", "pdf-partial", "pdf-ambiguous"]) {
+  test(`partial ${partial} references remain visible without a complete persistent snapshot`, async () => {
+    const env = fixture(),
+      item = host();
+    if (partial.startsWith("pdf")) attachSyntheticReader(env, item);
+    let policy;
+    const section = env.section({
+      "../pdf/parser": {
+        parsePDFReferences: async (_reader, opts) => {
+          opts.onDiagnostics({
+            status:
+              partial === "pdf-partial"
+                ? "partial"
+                : partial === "pdf-ambiguous"
+                  ? "ambiguous"
+                  : "limited",
+          });
+          return [reference("Limited PDF")];
+        },
+      },
+      "../sources": {
+        sources: { crossref: {} },
+        getReferencesByAPI: async (_item, _status, opts) => {
+          policy = opts.cachePolicy;
+          return {
+            refs: [reference("Online result")],
+            source: "semanticscholar",
+            status: partial === "api" ? "partial" : "ok",
+          };
+        },
+      },
+    });
+    const state = section.getState(item);
+    const refs = await section.fetchReferences(item, state, {
+      useCache: false,
+      fromCurrentPage: false,
+    });
+    assert.equal(policy, "refresh");
+    assert.equal(refs.length, 1);
+    assert.equal(state.partial, true);
+    assert.match(state.sourceUsed, /panel-partial/);
+    assert.equal(await env.storage.refStorage.get(item, "FUSED"), undefined);
+    assert.equal(
+      await env.storage.refStorage.get(item, partial === "api" ? "API" : "PDF"),
+      undefined,
+    );
+  });
+}
+
+test("existing correction survives a later refresh", async () => {
+  const env = fixture(),
+    item = host();
+  let rowContext;
+  const section = env.section({
+    "./rows": {
+      ...env.shared["./rows"],
+      renderRefRow(ctx, refs, index) {
+        rowContext = ctx;
+        return env.shared["./rows"].renderRefRow(ctx, refs, index);
+      },
+    },
+    "../sources": {
+      sources: { crossref: {} },
+      getReferencesByAPI: async () => ({
+        refs: [reference("Fresh uncorrected source")],
+        source: "crossref",
+        status: "ok",
+      }),
+    },
+  });
+  const state = section.getState(item);
+  state.refs = [reference("Original")];
+  section.registerReferencesSection();
+  const doc = document();
+  await env.panes
+    .get("references")
+    .onAsyncRender({ body: doc.body, item, setSectionSummary() {} });
+  rowContext.onEditStart();
+  rowContext.onEdited(reference("User correction"), 0);
+  await section.refresh(doc.body, item, state, () => {}, {
+    useCache: false,
+    fromCurrentPage: false,
+  });
+  assert.equal(state.refs[0].title, "User correction");
+});
+
+test("cancelled first fetch remains retryable on return", async () => {
+  const env = fixture(),
+    item = host(),
+    api = deferred();
+  const section = env.section({
+    "../sources": {
+      sources: { crossref: {} },
+      getReferencesByAPI: () => api.promise,
+    },
+  });
+  section.registerReferencesSection();
+  const pane = env.panes.get("references"),
+    doc = document();
+  await pane.onAsyncRender({ body: doc.body, item, setSectionSummary() {} });
+  const state = section.getState(item);
+  const pending = section.refresh(doc.body, item, state, () => {}, {
+    useCache: false,
+    fromCurrentPage: false,
+  });
+  await tick();
+  pane.onItemChange({
+    body: doc.body,
+    item: { ...host(99), key: "OTHERKEY" },
+    setEnabled() {},
+  });
+  api.resolve({
+    refs: [reference("Late API")],
+    source: "crossref",
+    status: "ok",
+  });
+  await pending;
+  assert.equal(
+    state.loadedOnce,
+    false,
+    "cancelled first fetch must remain eligible for auto-refresh",
+  );
+});
+
+test("DOI fusion checks receive refresh and interaction deadline", async () => {
+  const env = fixture(),
+    item = host();
+  attachSyntheticReader(env, item);
+  const author = env.load("src/core/authorNames.ts", {
+    "./text": env.shared["../core/text"],
+  });
+  const fuse = env.load("src/core/fuse.ts", {
+    "./text": env.shared["../core/text"],
+    "./types": env.shared["../core/types"],
+    "./authorNames": author,
+  });
+  const pdf = [1, 2].map((i) => ({
+    ...reference(`Synthetic clinical treatment outcomes ${i}`),
+    number: i,
+    year: "2020",
+    text: `Smith. Synthetic clinical treatment outcomes ${i}. 2020.`,
+  }));
+  const api = pdf.map((r, i) => ({
+    ...r,
+    identifiers: { DOI: `10.5555/${i}` },
+  }));
+  let received = [];
+  const section = env.section({
+    "../core/fuse": fuse,
+    "../pdf/parser": { parsePDFReferences: async () => pdf },
+    "../sources": {
+      sources: {
+        crossref: {
+          getInfoByDOI: async (...args) => {
+            received.push(args[1]);
+            return null;
+          },
+        },
+      },
+      getReferencesByAPI: async () => ({
+        refs: api,
+        source: "crossref",
+        status: "ok",
+      }),
+    },
+  });
+  await section.fetchReferences(item, section.getState(item), {
+    useCache: false,
+    fromCurrentPage: false,
+  });
+  assert.equal(received.length, 2);
+  assert.equal(received[0]?.cachePolicy, "refresh");
+  assert.equal(typeof received[0]?.deadline, "number");
+});
+
+test("edited citations survive a cache reload and uniquely match reordered fresh sources", async () => {
+  const env = fixture(),
+    item = host();
+  let ctx;
+  const first = {
+    ...reference("Original citation"),
+    identifiers: { DOI: "10.5555/original" },
+  };
+  const other = {
+    ...reference("Other citation"),
+    identifiers: { DOI: "10.5555/other" },
+  };
+  const section = env.section({
+    "./rows": {
+      ...env.shared["./rows"],
+      renderRefRow(context, refs, index) {
+        if (index === 0) ctx = context;
+        return env.shared["./rows"].renderRefRow(context, refs, index);
+      },
+    },
+    "../sources": {
+      sources: { crossref: {} },
+      getReferencesByAPI: async () => ({
+        refs: [other, { ...first, number: 2 }],
+        source: "crossref",
+        status: "ok",
+      }),
+    },
+  });
+  const state = section.getState(item);
+  state.refs = [first, other];
+  section.registerReferencesSection();
+  const doc = document();
+  await env.panes
+    .get("references")
+    .onAsyncRender({ body: doc.body, item, setSectionSummary() {} });
+  ctx.onEditStart();
+  ctx.onEdited(reference("User corrected citation"), 0);
+  const persisted = await env.storage.refStorage.get(item, "FUSED");
+  assert.ok(persisted[0].editBase.includes("doi:10.5555/original"));
+  state.refs = [];
+  const fresh = await section.fetchReferences(item, state, {
+    useCache: false,
+    fromCurrentPage: false,
+  });
+  assert.equal(fresh[0].title, "Other citation");
+  assert.equal(fresh[1].title, "User corrected citation");
+  assert.equal(fresh[1].number, 2);
+  assert.deepEqual(fresh[1].identifiers, {});
+  assert.ok(fresh[1].editBase.includes("doi:10.5555/original"));
+});
+
+test("cancelled API preview is discarded and the first fetch remains retryable", async () => {
+  const env = fixture(),
+    item = host(),
+    pdf = deferred();
+  attachSyntheticReader(env, item);
+  const section = env.section({
+    "../pdf/parser": { parsePDFReferences: () => pdf.promise },
+    "../sources": {
+      sources: { crossref: {} },
+      getReferencesByAPI: async () => ({
+        refs: [reference("Preview")],
+        source: "crossref",
+        status: "ok",
+      }),
+    },
+  });
+  section.registerReferencesSection();
+  const pane = env.panes.get("references"),
+    doc = document();
+  await pane.onAsyncRender({ body: doc.body, item, setSectionSummary() {} });
+  const state = section.getState(item);
+  const pending = section.refresh(doc.body, item, state, () => {}, {
+    useCache: false,
+    fromCurrentPage: false,
+  });
+  await tick();
+  assert.equal(state.provisional, true);
+  pane.onItemChange({
+    body: doc.body,
+    item: { ...host(99), key: "OTHERKEY" },
+    setEnabled() {},
+  });
+  pdf.resolve([]);
+  await pending;
+  assert.equal(state.loadedOnce, false);
+  assert.equal(state.provisional, false);
+  assert.equal(state.refs.length, 0);
+});
+
+test("edit evidence rejects a conflicting original DOI despite identical citation text", async () => {
+  const env = fixture(),
+    item = host();
+  const edited = {
+    ...reference("User edit of original paper"),
+    identifiers: { DOI: "10.5555/corrected" },
+    editBase: ["doi:10.5555/original", "text:Same citation"],
+  };
+  const section = env.section({
+    "../sources": {
+      sources: { crossref: {} },
+      getReferencesByAPI: async () => ({
+        refs: [
+          {
+            ...reference("Same citation"),
+            identifiers: { DOI: "10.5555/another" },
+          },
+        ],
+        source: "crossref",
+        status: "ok",
+      }),
+    },
+  });
+  const state = section.getState(item);
+  state.refs = [edited];
+  const result = await section.fetchReferences(item, state, {
+    useCache: false,
+    fromCurrentPage: false,
+  });
+  assert.deepEqual(result, [edited]);
+  assert.equal(state.sourceUsed, "panel-edits-preserved");
+  assert.equal(
+    await env.storage.refStorage.get(item, "FUSED"),
+    undefined,
+    "conflicted refresh must not persist a new list",
+  );
+});
+
+test("same-item DOM rebuild keeps a pending manual refresh alive", async () => {
+  const env = fixture(),
+    item = host(),
+    api = deferred();
+  let calls = 0;
+  env.prefs.set("autoRefresh", true);
+  const section = env.section({
+    "../sources": {
+      sources: { crossref: {} },
+      getReferencesByAPI: () => {
+        calls++;
+        return api.promise;
+      },
+    },
+  });
+  const state = section.getState(item);
+  state.refs = [reference("Previous")];
+  state.loadedOnce = true;
+  section.registerReferencesSection();
+  const pane = env.panes.get("references"),
+    doc = document();
+  const args = { body: doc.body, item, setSectionSummary() {} };
+  await pane.onAsyncRender(args);
+  const pending = section.refresh(doc.body, item, state, () => {}, {
+    useCache: false,
+    fromCurrentPage: false,
+  });
+  await tick();
+  pane.onItemChange({ ...args, setEnabled() {} });
+  await pane.onAsyncRender(args);
+  api.resolve({
+    refs: [reference("Updated")],
+    source: "crossref",
+    status: "ok",
+  });
+  await pending;
+  await env.fire(350);
+  assert.equal(state.refs[0].title, "Updated");
+  assert.equal(calls, 1);
+  assert.equal(state.loading, false);
+});
+
+test("legacy fused snapshots remain recoverable after subsequent refreshes and edits", async () => {
+  const env = fixture(),
+    item = host();
+  await env.storage.refStorage.set(item, "FUSED", [
+    reference("Unmarked legacy correction"),
+  ]);
+  await env.storage.refStorage.set(item, "FUSED", [reference("Fresh source")]);
+  await env.storage.refStorage.set(item, "FUSED", [reference("Later edit")]);
+  assert.equal(
+    (await env.storage.refStorage.get(item, "FUSED"))[0].title,
+    "Later edit",
+  );
+  assert.equal(
+    (await env.storage.refStorage.get(item, "FUSED_BEFORE_REFRESH"))[0].title,
+    "Unmarked legacy correction",
+  );
+});

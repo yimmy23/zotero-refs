@@ -1,6 +1,12 @@
-import { isChinese, isHttpUrl, titlesMatch } from "./text";
+import {
+  hostIdentifiers,
+  identifiersConflict,
+  isChinese,
+  isHttpUrl,
+  titlesMatch,
+} from "./text";
 import { libraryIndex, isRelated } from "./libmatch";
-import type { RefItem } from "./types";
+import type { Identifiers, RefItem } from "./types";
 import { getString } from "../utils/locale";
 import { resolveDOIByTitle, sources } from "../sources";
 import { importCNKIItem, searchCNKI } from "../sources/cnki";
@@ -11,6 +17,101 @@ import { itemStateKey } from "./storage";
  * Import references into the library and manage bidirectional
  * related-item links.
  */
+
+type PendingImport = {
+  identifiers: Identifiers;
+  keys: Set<string>;
+  promise: Promise<Zotero.Item | null>;
+};
+// Public host methods present in Zotero 7–10, omitted by zotero-types 4.1.3.
+type RelationIndexUpdate = (
+  type: "item",
+  id: number,
+  predicate: string,
+  object: string,
+) => void;
+type HostRelationIndex = {
+  register: RelationIndexUpdate;
+  unregister: RelationIndexUpdate;
+};
+const pendingImports = new Map<string, PendingImport>();
+// Mutate the shared Zotero objects only once their write is ready to start.
+// This also keeps rollback/reload ahead of another plugin write to an item.
+let itemWrites: Promise<unknown> = Promise.resolve();
+function writeItems<T>(run: () => Promise<T>): Promise<T> {
+  const result = itemWrites.then(run);
+  itemWrites = result.catch(() => {});
+  return result;
+}
+
+function importKeys(ids: Identifiers, libraryID: number): string[] {
+  return (["DOI", "arXiv", "PMID"] as const).flatMap((kind) => {
+    let id = ids[kind]?.trim().toLowerCase();
+    if (!id) return [];
+    if (kind === "DOI") id = id.replace(/^https?:\/\/(?:dx\.)?doi\.org\//, "");
+    if (kind === "arXiv") id = id.replace(/v\d+$/, "");
+    return [JSON.stringify([libraryID, kind, id])];
+  });
+}
+
+/** Share only validated/printed identifiers, never a title search key. */
+function shareImport(
+  ids: Identifiers,
+  libraryID: number,
+  create: () => Promise<Zotero.Item | null>,
+): Promise<Zotero.Item | null> {
+  const keys = importKeys(ids, libraryID);
+  const matches = [
+    ...new Set(
+      keys.flatMap((key) => {
+        const pending = pendingImports.get(key);
+        return pending ? [pending] : [];
+      }),
+    ),
+  ];
+  // Validate every matching task before publishing aliases. The DOI and PMID
+  // may already point at conflicting tasks; selecting the first hides that.
+  for (let i = 0; i < matches.length; i++) {
+    if (
+      identifiersConflict(ids, matches[i].identifiers) ||
+      matches
+        .slice(i + 1)
+        .some((other) =>
+          identifiersConflict(matches[i].identifiers, other.identifiers),
+        )
+    ) {
+      return Promise.reject(
+        new Error("Conflicting identifiers for pending import"),
+      );
+    }
+  }
+  if (matches.length) {
+    const pending = matches[0];
+    for (const alias of keys) {
+      // A caller can corroborate an additional DOI/PMID/arXiv alias while
+      // creation is pending. Make that alias visible to later entry points.
+      if (!pendingImports.has(alias)) {
+        pendingImports.set(alias, pending);
+        pending.keys.add(alias);
+      }
+    }
+    pending.identifiers = { ...pending.identifiers, ...ids };
+    return pending.promise;
+  }
+  const pending: PendingImport = {
+    identifiers: { ...ids },
+    keys: new Set(keys),
+    promise: Promise.resolve()
+      .then(create)
+      .finally(() => {
+        for (const key of pending.keys) {
+          if (pendingImports.get(key) === pending) pendingImports.delete(key);
+        }
+      }),
+  };
+  for (const key of keys) pendingImports.set(key, pending);
+  return pending.promise;
+}
 
 /** create an item through Zotero's search translators (DOI / arXiv / PMID) */
 export async function createItemByIdentifier(
@@ -100,6 +201,7 @@ export async function importReference(
   ref: RefItem,
   collections?: number[],
   onStatus?: (msg: string) => void,
+  shouldContinue: () => boolean = () => true,
 ): Promise<Zotero.Item | null> {
   if (
     ref.retracted &&
@@ -112,7 +214,60 @@ export async function importReference(
     return null;
   }
   const libraryID = hostItem.libraryID;
-  const cols = collections ?? hostItem.getCollections();
+  const identity = itemStateKey(hostItem);
+  const cols = [...(collections ?? hostItem.getCollections())];
+  const active = () =>
+    shouldContinue() &&
+    !hostItem.deleted &&
+    itemStateKey(hostItem) === identity;
+  if (!active()) return null;
+  const hasIdentity = importKeys(ref.identifiers, libraryID).length > 0;
+  const create = async () => {
+    const item = await importReferenceItem(
+      libraryID,
+      ref,
+      onStatus,
+      hasIdentity,
+    );
+    if (item) libraryIndex.invalidate();
+    return item;
+  };
+  const item = hasIdentity
+    ? await shareImport(ref.identifiers, libraryID, create)
+    : await create();
+  if (!item || !active()) return null;
+  const targetIdentity = itemStateKey(item);
+  // Each subscriber keeps its own collection/cancellation intent. No caller's
+  // collections are committed by the shared translator before it completes.
+  return writeItems(async () => {
+    if (!active()) return null;
+    const current = Zotero.Items.get(item.id) as Zotero.Item | undefined;
+    if (
+      !current ||
+      current.deleted ||
+      current.libraryID !== libraryID ||
+      itemStateKey(current) !== targetIdentity ||
+      !current.isRegularItem() ||
+      identifiersConflict(ref.identifiers, hostIdentifiers(current))
+    )
+      return null;
+    const existing = new Set(current.getCollections());
+    const added = cols.filter((id) => !existing.has(id));
+    if (added.length) {
+      for (const id of added) current.addToCollection(id);
+      await current.saveTx();
+    }
+    return current;
+  });
+}
+
+async function importReferenceItem(
+  libraryID: number,
+  ref: RefItem,
+  onStatus: ((msg: string) => void) | undefined,
+  identityAlreadyShared: boolean,
+): Promise<Zotero.Item | null> {
+  const cols: number[] = [];
 
   // 1. already in library?
   let refItem: Zotero.Item | null | undefined = await libraryIndex.match(
@@ -167,52 +322,154 @@ export async function importReference(
   else if (ref.identifiers.PMID) ids = { PMID: ref.identifiers.PMID };
   if (!Object.keys(ids).length && ref.title) {
     onStatus?.(`${getString("importer-search-doi")}: ${ref.title}`);
-    const DOI = await resolveDOIByTitle(ref.title);
+    const DOI = await resolveDOIByTitle(ref);
     if (DOI) {
       ref.identifiers.DOI = DOI;
       ids = { DOI };
     }
   }
-  if (Object.keys(ids).length) {
-    onStatus?.(`${getString("importer-importing")}: ${Object.values(ids)[0]}`);
-    try {
-      refItem = await createItemByIdentifier(ids, cols, libraryID);
-    } catch (e) {
-      ztoolkit.log("[importer] translate failed", e);
-      refItem = null;
+  const create = async (): Promise<Zotero.Item | null> => {
+    if (Object.keys(ids).length) {
+      // The resolver may finish after another entry point imported this DOI.
+      const existing = await libraryIndex.match(
+        { ...ref, identifiers: ids },
+        libraryID,
+      );
+      if (existing) return existing;
+      onStatus?.(
+        `${getString("importer-importing")}: ${Object.values(ids)[0]}`,
+      );
+      try {
+        refItem = await createItemByIdentifier(ids, cols, libraryID);
+      } catch (e) {
+        ztoolkit.log("[importer] translate failed", e);
+        refItem = null;
+      }
+      if (refItem) return refItem;
     }
-    if (refItem) return refItem;
-  }
 
-  if (chinese) return null;
+    if (chinese) return null;
 
-  // 4. last resort: create from whatever metadata we have
-  if (ref.title && (ref.authors?.length || ref.year)) {
-    onStatus?.(`${getString("importer-create")}: ${ref.title}`);
-    refItem = await createItemFromInfo(ref, cols, libraryID);
-    return refItem;
-  }
-  return null;
+    // 4. last resort: create from whatever metadata we have
+    if (ref.title && (ref.authors?.length || ref.year)) {
+      onStatus?.(`${getString("importer-create")}: ${ref.title}`);
+      refItem = await createItemFromInfo(ref, cols, libraryID);
+      return refItem;
+    }
+    return null;
+  };
+  return Object.keys(ids).length && !identityAlreadyShared
+    ? shareImport(ids, libraryID, create)
+    : create();
 }
 
 export async function addRelation(
   item: Zotero.Item,
   refItem: Zotero.Item,
 ): Promise<void> {
-  item.addRelatedItem(refItem);
-  refItem.addRelatedItem(item);
-  await item.saveTx();
-  await refItem.saveTx();
+  return changeRelation(item, refItem, true);
 }
 
 export async function removeRelation(
   item: Zotero.Item,
   refItem: Zotero.Item,
 ): Promise<void> {
-  item.removeRelatedItem(refItem);
-  refItem.removeRelatedItem(item);
-  await item.saveTx();
-  await refItem.saveTx();
+  return changeRelation(item, refItem, false);
+}
+
+function changeRelation(
+  item: Zotero.Item,
+  refItem: Zotero.Item,
+  add: boolean,
+): Promise<void> {
+  const itemIdentity = itemStateKey(item);
+  const refIdentity = itemStateKey(refItem);
+  return writeItems(async () => {
+    if (item.id === refItem.id) return;
+    const originals = new Map<
+      Zotero.Item,
+      ReturnType<Zotero.Item["getRelations"]>
+    >();
+    const changed = new Map<
+      Zotero.Item,
+      ReturnType<Zotero.Item["getRelations"]>
+    >();
+    try {
+      await Zotero.DB.executeTransaction(async () => {
+        if (
+          item.deleted ||
+          refItem.deleted ||
+          item.libraryID !== refItem.libraryID ||
+          itemStateKey(item) !== itemIdentity ||
+          itemStateKey(refItem) !== refIdentity
+        ) {
+          throw new Error(
+            "Related items must retain their identities in the same library",
+          );
+        }
+        for (const target of [item, refItem]) {
+          const relations = target.getRelations();
+          originals.set(target, {
+            ...relations,
+            ...Object.fromEntries(
+              Object.entries(relations).map(([key, values]) => [
+                key,
+                Array.isArray(values) ? [...values] : values,
+              ]),
+            ),
+          });
+        }
+        if (add) {
+          item.addRelatedItem(refItem);
+          refItem.addRelatedItem(item);
+        } else {
+          await item.removeRelatedItem(refItem);
+          await refItem.removeRelatedItem(item);
+        }
+        for (const target of [item, refItem])
+          changed.set(target, target.getRelations());
+        // saveTx starts a NEW transaction and waits for the outer one. Host
+        // save() participates in the existing transaction instead.
+        await item.save();
+        await refItem.save();
+      });
+    } catch (error) {
+      // A successful first save has already cleared that object's change
+      // tracking. Reload after DB rollback, then preserve any original
+      // unsaved relation edits rather than erasing unrelated user intent.
+      for (const [target, relations] of originals) {
+        try {
+          const attempted = changed.get(target) || target.getRelations();
+          await target.reload(["relations"], true);
+          const persisted = target.getRelations();
+          const relationIndex = (
+            Zotero as unknown as { Relations: HostRelationIndex }
+          ).Relations;
+          // save() calls DataObject._postSave even inside an outer transaction,
+          // updating Zotero.Relations before SQL commit. reload() does not undo
+          // that reverse index. Reconcile only this subject's affected pairs
+          // against the rolled-back database, not its possibly unsaved edits.
+          for (const snapshot of [relations, attempted, persisted]) {
+            for (const [predicate, values] of Object.entries(snapshot)) {
+              for (const value of Array.isArray(values) ? values : [values])
+                relationIndex.unregister("item", target.id, predicate, value);
+            }
+          }
+          for (const [predicate, values] of Object.entries(persisted)) {
+            for (const value of Array.isArray(values) ? values : [values])
+              relationIndex.register("item", target.id, predicate, value);
+          }
+          target.setRelations(relations);
+        } catch (reloadError) {
+          ztoolkit.log(
+            "[importer] relation rollback reload failed",
+            reloadError,
+          );
+        }
+      }
+      throw error;
+    }
+  });
 }
 
 /** import a batch of references sequentially with progress feedback */
@@ -235,7 +492,13 @@ export async function importAll(
     const ref = refs[i];
     const label = ref.title || ref.text || `#${i + 1}`;
     try {
-      const refItem = await importReference(hostItem, ref, collections);
+      const refItem = await importReference(
+        hostItem,
+        ref,
+        collections,
+        undefined,
+        () => !stopped(),
+      );
       // A translator may finish after cancellation or after the host record
       // was edited into another paper. Keep its newly created library item,
       // but never attach the old bibliography to the changed host.

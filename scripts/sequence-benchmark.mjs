@@ -69,6 +69,7 @@ async function freezeBundle(engine, entry, outDir) {
     prefs:
       "export function getPref(){return 4;} export function getNumPref(){return 4;}",
     locale: "export function getString(key){return String(key);}",
+    window: 'export {setTimeout,clearTimeout} from "node:timers";',
   };
   const result = await build({
     absWorkingDir: root,
@@ -85,9 +86,9 @@ async function freezeBundle(engine, entry, outDir) {
         name: "offline-stubs",
         setup(builder) {
           builder.onResolve(
-            { filter: /(?:^|\/)utils\/(prefs|locale)$/ },
+            { filter: /(?:^|\/)utils\/(prefs|locale|window)$/ },
             (args) => ({
-              path: args.path.endsWith("prefs") ? "prefs" : "locale",
+              path: args.path.split("/").at(-1),
               namespace: "offline-stub",
             }),
           );

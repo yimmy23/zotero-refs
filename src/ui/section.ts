@@ -8,9 +8,10 @@ import {
   isChinese,
   isHttpUrl,
   identifiersToURL,
+  cleanText,
 } from "../core/text";
 import { fuseReferences } from "../core/fuse";
-import type { RefItem, SourceID } from "../core/types";
+import type { RefItem, SourceID, SourceRequestOptions } from "../core/types";
 import { SOURCE_NAME } from "../core/types";
 import { getReferencesByAPI, sources } from "../sources";
 import { parsePDFReferences } from "../pdf/parser";
@@ -62,10 +63,71 @@ interface PanelState {
   loadedOnce: boolean;
   needsPDFRefresh: boolean;
   pdfRepairAttempted: boolean;
+  /** Never save a provisional/partial list as a complete fused snapshot. */
+  partial?: boolean;
+  provisional?: boolean;
+  editRevision?: number;
+  cancelFetch?: () => void;
   renders: Map<HTMLElement, (s: string) => void>;
 }
 
 const states = new Map<string, PanelState>();
+const panels = new WeakMap<HTMLElement, PanelState>();
+
+function disposePanel(body: HTMLElement) {
+  const state = panels.get(body);
+  state?.renders.delete(body);
+  if (state && !state.renders.size) state.cancelFetch?.();
+  panels.delete(body);
+}
+
+/** Exact evidence only: a missing or ambiguous edit match retains the old list. */
+function editKeys(ref: RefItem): string[] {
+  const ids = ref.identifiers;
+  return [
+    ids.DOI
+      ? `doi:${ids.DOI.trim()
+          .toLowerCase()
+          .replace(/^https?:\/\/(?:dx\.)?doi\.org\//, "")}`
+      : "",
+    ids.PMID ? `pmid:${ids.PMID}` : "",
+    ids.arXiv ? `arxiv:${ids.arXiv.replace(/v\d+$/, "")}` : "",
+    ref.text ? `text:${cleanText(ref.text)}` : "",
+    ref.title
+      ? `metadata:${JSON.stringify([cleanText(ref.title), ref.authors, ref.year])}`
+      : "",
+  ].filter(Boolean);
+}
+
+function retainEdits(fresh: RefItem[], previous: RefItem[]): RefItem[] | null {
+  const result = [...fresh];
+  const used = new Set<number>();
+  const keys = fresh.map(editKeys);
+  for (const edited of previous.filter((ref) => ref.editBase?.length)) {
+    const matches = keys.flatMap((candidate, index) => {
+      const conflict = ["doi:", "pmid:", "arxiv:"].some((prefix) => {
+        const before = edited.editBase!.find((key) => key.startsWith(prefix));
+        const after = candidate.find((key) => key.startsWith(prefix));
+        return before && after && before !== after;
+      });
+      return !conflict &&
+        candidate.some((key) => edited.editBase!.includes(key))
+        ? [index]
+        : [];
+    });
+    if (matches.length !== 1 || used.has(matches[0])) return null;
+    const index = matches[0];
+    used.add(index);
+    result[index] = {
+      ...edited,
+      number: fresh[index].number,
+      page: fresh[index].page,
+      x: fresh[index].x,
+      y: fresh[index].y,
+    };
+  }
+  return result;
+}
 
 /** monotonically increasing id for chunked list renders */
 let renderSeq = 0;
@@ -184,10 +246,23 @@ async function savePDFRepair(
 async function fetchReferences(
   item: Zotero.Item,
   state: PanelState,
-  options: { useCache: boolean; fromCurrentPage: boolean },
+  options: {
+    useCache: boolean;
+    fromCurrentPage: boolean;
+    shouldCancel?: () => boolean;
+    onAvailable?: (refs: RefItem[], source: string) => void;
+  },
 ): Promise<RefItem[]> {
   const current = () =>
-    itemStateKey(item) === state.stateKey && addon.data.alive;
+    itemStateKey(item) === state.stateKey &&
+    addon.data.alive &&
+    !options.shouldCancel?.();
+  const editRevision = state.editRevision;
+  const unedited = () => state.editRevision === editRevision;
+  const request: SourceRequestOptions = {
+    cachePolicy: options.useCache ? "default" : "refresh",
+    deadline: Date.now() + 30_000,
+  };
   if (!current()) return [];
   await checkPDFRepair(state);
   if (!current()) return [];
@@ -195,7 +270,7 @@ async function fetchReferences(
   // which must not be answered from cache
   if (options.useCache && !options.fromCurrentPage) {
     const fused = await refStorage.get(item, "FUSED", state.stateKey);
-    if (!current()) return [];
+    if (!current() || !unedited()) return [];
     if (fused?.length) {
       new ztoolkit.ProgressWindow(getString("progress-refs-local"), {
         closeOtherProgressWindows: true,
@@ -206,6 +281,7 @@ async function fetchReferences(
         })
         .show();
       state.sourceUsed = getString("panel-cached");
+      state.partial = false;
       return fused;
     }
   }
@@ -228,6 +304,7 @@ async function fetchReferences(
   });
   popupWin.show();
 
+  let pdfIncomplete = false;
   const pdfPromise = (async (): Promise<RefItem[]> => {
     if (options.useCache && !options.fromCurrentPage) {
       const cached = await refStorage.get(item, "PDF", state.stateKey);
@@ -247,6 +324,17 @@ async function fetchReferences(
     try {
       const refs = await parsePDFReferences(reader, {
         fromCurrentPage: options.fromCurrentPage,
+        deadline: request.deadline,
+        shouldCancel: () => !current(),
+        onDiagnostics: (diagnostics) => {
+          pdfIncomplete = [
+            "partial",
+            "ambiguous",
+            "limited",
+            "cancelled",
+            "error",
+          ].includes(diagnostics.status);
+        },
         onProgress: (message, pct) => {
           if (current())
             popupWin.changeLine({
@@ -265,6 +353,7 @@ async function fetchReferences(
       });
       if (
         refs.length &&
+        !pdfIncomplete &&
         getPref("savePDFReferences") &&
         !state.needsPDFRefresh
       ) {
@@ -272,6 +361,7 @@ async function fetchReferences(
       }
       return refs;
     } catch (e) {
+      pdfIncomplete = true;
       if (!current()) return [];
       ztoolkit.log("[section] PDF parse failed", e);
       popupWin.changeLine({
@@ -287,6 +377,7 @@ async function fetchReferences(
   const apiPromise = (async (): Promise<{
     refs: RefItem[];
     source: string | null;
+    status?: string;
   } | null> => {
     if (options.useCache) {
       const cached = await refStorage.get(item, "API", state.stateKey);
@@ -304,11 +395,19 @@ async function fetchReferences(
       }
     }
     if (!current()) return null;
-    const result = await getReferencesByAPI(item, (msg) => {
-      if (current()) popupWin.changeLine({ idx: 1, text: `API: ${msg}` });
-    });
+    const result = await getReferencesByAPI(
+      item,
+      (msg) => {
+        if (current()) popupWin.changeLine({ idx: 1, text: `API: ${msg}` });
+      },
+      request,
+    );
     if (!current()) return null;
-    if (!result) {
+    if (
+      !result ||
+      (!result.refs.length &&
+        (result.status === "unavailable" || result.status === "rate_limited"))
+    ) {
       popupWin.changeLine({
         idx: 1,
         text: `API: ${getString("panel-api-fail")}`,
@@ -328,11 +427,42 @@ async function fetchReferences(
       type: "success",
     });
     // (freshly fetched results always carry a source)
-    if (result.refs.length && getPref("saveAPIReferences")) {
+    if (
+      result.refs.length &&
+      result.status !== "partial" &&
+      getPref("saveAPIReferences")
+    ) {
       void refStorage.set(item, "API", result.refs, state.stateKey);
     }
     return result;
   })();
+
+  // A ready online list is useful while PDF.js is still reading. It is a
+  // read-only preview: only the final fusion owns editing and persistence.
+  let pdfFinished = false;
+  void pdfPromise.then(
+    () => {
+      pdfFinished = true;
+    },
+    () => {
+      pdfFinished = true;
+    },
+  );
+  void apiPromise
+    .then((api) => {
+      if (!pdfFinished && current() && unedited() && api?.refs.length) {
+        const snapshot = api.refs.map((ref) => ({
+          ...ref,
+          identifiers: { ...ref.identifiers },
+          authors: [...ref.authors],
+        }));
+        options.onAvailable?.(
+          snapshot,
+          `${(api.source && SOURCE_NAME[api.source]) || api.source || "API"} · ${getString("panel-pdf-pending")}`,
+        );
+      }
+    })
+    .catch((error) => ztoolkit.log("[section] preview failed", error));
 
   const [pdfRefs, api] = await Promise.all([pdfPromise, apiPromise]);
   if (!current()) {
@@ -353,27 +483,58 @@ async function fetchReferences(
     return [];
   }
 
-  const { refs, tailStart, stats } = await fuseReferences(
+  const fused = await fuseReferences(
     pdfRefs,
     api?.refs ?? [],
     api?.source ?? null,
-    (doi) => sources.crossref.getInfoByDOI!(doi),
+    (doi) =>
+      current() && Date.now() < request.deadline!
+        ? sources.crossref.getInfoByDOI!(doi, request)
+        : Promise.resolve(null),
   );
   if (!current()) {
     popupWin.close();
     return [];
   }
-  tagTail(refs, tailStart);
+  const { tailStart, stats } = fused;
+  tagTail(fused.refs, tailStart);
+  const partial = pdfIncomplete || api?.status === "partial";
   ztoolkit.log(
-    `[section] fused pdf=${pdfRefs.length} api=${api?.refs.length ?? 0} -> ${refs.length} (id=${stats.id} title=${stats.title} volPage=${stats.volPage} pos=${stats.positional} [${stats.posMode}] unmatched=${stats.unmatched} appended=${stats.appended})`,
+    `[section] fused pdf=${pdfRefs.length} api=${api?.refs.length ?? 0} -> ${fused.refs.length} (id=${stats.id} title=${stats.title} volPage=${stats.volPage} pos=${stats.positional} [${stats.posMode}] unmatched=${stats.unmatched} appended=${stats.appended})`,
   );
-  if (state.needsPDFRefresh && pdfRefs.length && refs.length) {
+  // A user can begin editing an existing row while a refresh is pending.
+  // Neither the late list nor its persisted snapshot may replace that edit.
+  if (!unedited()) {
+    popupWin.startCloseTimer(3000);
+    return [];
+  }
+  const previous = state.refs.some((ref) => ref.editBase?.length)
+    ? state.refs
+    : ((await refStorage.get(item, "FUSED", state.stateKey)) ?? []);
+  if (!current() || !unedited()) {
+    popupWin.close();
+    return [];
+  }
+  const refs = retainEdits(fused.refs, previous);
+  if (!refs) {
+    state.sourceUsed = getString("panel-edits-preserved");
+    state.partial = false;
+    popupWin.changeHeadline(getString("panel-edits-preserved"));
+    popupWin.startCloseTimer(5000);
+    return previous;
+  }
+  if (state.needsPDFRefresh && !partial && pdfRefs.length && refs.length) {
     if (!(await savePDFRepair(state, pdfRefs, refs))) {
       popupWin.changeHeadline(getString("progress-refs-fail"));
       popupWin.startCloseTimer(3000);
       return [];
     }
-  } else if (refs.length && cachingEnabled() && !state.needsPDFRefresh) {
+  } else if (
+    refs.length &&
+    !partial &&
+    cachingEnabled() &&
+    !state.needsPDFRefresh
+  ) {
     void refStorage.set(item, "FUSED", refs, state.stateKey);
   }
   if (!current()) return [];
@@ -383,6 +544,8 @@ async function fetchReferences(
     parts.push((api.source && SOURCE_NAME[api.source]) || api.source || "API");
   }
   state.sourceUsed = parts.join(" + ");
+  state.partial = partial;
+  if (partial) state.sourceUsed += ` · ${getString("panel-partial")}`;
   popupWin.changeHeadline(getString("progress-refs-done"));
   popupWin.startCloseTimer(3000);
   return refs;
@@ -476,15 +639,21 @@ function renderList(
     state.sourceUsed ? ` · ${state.sourceUsed}` : ""
   }`;
   setSectionSummary(`${state.refs.length}`);
+  const originals = [...state.refs];
   const ctx: RowContext = {
     hostItem: item,
     list,
     numbered: true,
-    editable: true,
+    editable: !state.provisional && !state.partial,
+    onEditStart: () => {
+      state.editRevision = (state.editRevision ?? 0) + 1;
+    },
     onEdited: (ref, index) => {
+      ref.editBase =
+        originals[index]?.editBase ?? editKeys(originals[index] ?? ref);
       state.refs[index] = ref;
       // the shown (fused) list is what the user edited — persist it there
-      if (cachingEnabled())
+      if (cachingEnabled() && !state.provisional && !state.partial)
         void refStorage.set(item, "FUSED", state.refs, state.stateKey);
     },
   };
@@ -521,6 +690,15 @@ async function refresh(
 ) {
   if (state.loading) return;
   state.loading = true;
+  let cancelled = false;
+  state.cancelFetch = () => {
+    cancelled = true;
+  };
+  const previous = {
+    refs: state.refs,
+    sourceUsed: state.sourceUsed,
+    partial: state.partial,
+  };
   for (const live of state.renders.keys()) {
     if (!isCurrent(live, state)) {
       state.renders.delete(live);
@@ -534,19 +712,42 @@ async function refresh(
       setListMessage(list, getString("panel-loading"));
   }
   try {
-    const refs = await fetchReferences(item, state, options);
+    const hadViews = state.renders.size > 0;
+    const refs = await fetchReferences(item, state, {
+      ...options,
+      shouldCancel: () => {
+        if (
+          hadViews &&
+          ![...state.renders.keys()].some((live) => isCurrent(live, state))
+        )
+          cancelled = true;
+        return cancelled;
+      },
+      onAvailable: (available, source) => {
+        // Retain an existing list until final success, including its edits.
+        if (state.refs.length) return;
+        state.refs = available;
+        state.sourceUsed = source;
+        state.provisional = true;
+        for (const [live, summary] of state.renders)
+          if (isCurrent(live, state)) renderList(live, item, state, summary);
+      },
+    });
     if (itemStateKey(item) !== state.stateKey || !addon.data.alive) return;
+    if (cancelled) return;
     state.loadedOnce = true;
     // a failed (re)fetch must never wipe a list already on screen — the
     // failure popup has been shown; keep what the user has
     if (!refs.length) return;
     state.refs = refs;
+    state.provisional = false;
     for (const [live, summary] of state.renders) {
       if (isCurrent(live, state)) renderList(live, item, state, summary);
       else state.renders.delete(live);
     }
   } catch (e) {
-    if (itemStateKey(item) !== state.stateKey || !addon.data.alive) return;
+    if (cancelled || itemStateKey(item) !== state.stateKey || !addon.data.alive)
+      return;
     ztoolkit.log("[section] refresh failed", e);
     new ztoolkit.ProgressWindow(getString("progress-refs-fail"), {
       closeOtherProgressWindows: true,
@@ -555,6 +756,11 @@ async function refresh(
       .show();
   } finally {
     state.loading = false;
+    state.cancelFetch = undefined;
+    if (cancelled && state.provisional) {
+      Object.assign(state, previous);
+      state.provisional = false;
+    }
     for (const live of state.renders.keys()) {
       if (!isCurrent(live, state)) {
         state.renders.delete(live);
@@ -568,6 +774,19 @@ async function refresh(
       const list = live.querySelector<HTMLElement>(".references-list");
       if (list && !state.refs.length)
         setListMessage(list, getString("panel-empty"));
+    }
+    // A user can return before the cancelled transport settles. Retry outside
+    // Zotero's awaited render hook once its old refresh has released the state.
+    if (cancelled && !state.loadedOnce && getPref("autoRefresh")) {
+      const live = [...state.renders].find(([view]) => isCurrent(view, state));
+      if (live)
+        setTimeout(() => {
+          if (isCurrent(live[0], state))
+            void refresh(live[0], item, state, live[1], {
+              useCache: true,
+              fromCurrentPage: false,
+            });
+        }, 350);
     }
   }
 }
@@ -739,16 +958,31 @@ export function registerReferencesSection() {
       l10nID: getLocaleID("item-section-references-sidenav-tooltip"),
       icon: `chrome://${config.addonRef}/content/icons/20/references.svg`,
     },
-    onItemChange: guard("references.onItemChange", ({ item, setEnabled }) => {
-      setEnabled(!!item?.isRegularItem?.());
-      return true;
-    }),
+    onItemChange: guard(
+      "references.onItemChange",
+      ({ body, item, setEnabled }) => {
+        if (
+          !item?.isRegularItem?.() ||
+          panels.get(body)?.stateKey !== itemStateKey(item)
+        )
+          disposePanel(body);
+        setEnabled(!!item?.isRegularItem?.());
+        return true;
+      },
+    ),
+    onDestroy: guard("references.onDestroy", ({ body }) => disposePanel(body)),
     onRender: () => {},
     onAsyncRender: guardAsync(
       "references.onAsyncRender",
       async ({ body, item, setSectionSummary }) => {
-        if (!item?.isRegularItem?.()) return;
+        if (!item?.isRegularItem?.()) {
+          disposePanel(body);
+          return;
+        }
         const state = getState(item);
+        // Rebuilding this same subscription is not leaving the item: retain
+        // its active refresh while replacing only the DOM below.
+        if (panels.get(body) !== state) disposePanel(body);
         // (re)build DOM for this item; the stamp guards all later async work
         body.textContent = "";
         (body as HTMLElement).dataset.itemKey = state.stateKey;
@@ -756,6 +990,7 @@ export function registerReferencesSection() {
         for (const live of state.renders.keys())
           if (!isCurrent(live, state)) state.renders.delete(live);
         state.renders.set(body as HTMLElement, setSectionSummary);
+        panels.set(body, state);
         buildToolbar(body as HTMLElement, item, state, setSectionSummary);
         const list = body.ownerDocument!.createElement("div");
         list.className = "references-list";

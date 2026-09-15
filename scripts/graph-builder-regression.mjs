@@ -265,12 +265,15 @@ test("provider calls, cited page limit and related sample remain unchanged befor
     ["origin", "references", "citing", "related"],
   );
   assert.deepEqual(f.requests[1].ids, ids);
-  assert.deepEqual(plain(f.requests[1].options), { lean: true });
+  assert.equal(f.requests[1].options.lean, true);
+  assert.equal(typeof f.requests[1].options.deadline, "number");
+  assert.ok(f.requests[1].options.deadline > Date.now());
+  assert.ok(f.requests[1].options.deadline <= Date.now() + 45000);
   assert.equal(f.requests[1].full, true);
   assert.equal(f.requests[2].offset, 0);
   assert.equal(f.requests[2].limit, 15);
   assert.deepEqual(f.requests[3].ids, ids.slice(0, 10));
-  assert.deepEqual(plain(f.requests[3].options), { lean: true });
+  assert.deepEqual(plain(f.requests[3].options), plain(f.requests[1].options));
   assert.equal(f.requests[3].full, false);
 });
 

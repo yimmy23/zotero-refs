@@ -29,6 +29,8 @@ const NAV_CORRELATION_MS = 300;
 
 interface ReaderState {
   cancelled: boolean;
+  navigationGeneration: number;
+  openingSplit?: Promise<boolean>;
   view: any;
   /** pdf.js iframe window */
   win: any;
@@ -74,7 +76,12 @@ export class ReaderLinks {
       }
     }
     if (existing) this.teardown(existing);
-    const state: ReaderState = { cancelled: false, view: null, win: null };
+    const state: ReaderState = {
+      cancelled: false,
+      navigationGeneration: 0,
+      view: null,
+      win: null,
+    };
     this.states.set(reader, state);
     this.setup(reader, state).catch((e) =>
       ztoolkit.log("[readerLinks] attach failed", e),
@@ -108,6 +115,8 @@ export class ReaderLinks {
 
   private teardown(state: ReaderState) {
     state.cancelled = true;
+    state.navigationGeneration++;
+    state.openingSplit = undefined;
     const view = state.view;
     try {
       if (
@@ -190,7 +199,11 @@ export class ReaderLinks {
 
     // Only explicit split gestures may authorize one matching navigation.
     if (typeof view.navigate === "function") {
-      let pendingNav: { destination: string; at: number } | null = null;
+      let pendingNav: {
+        destination: string;
+        at: number;
+        generation: number;
+      } | null = null;
       const pointerListener = (event: any) => {
         pendingNav = null;
         try {
@@ -212,7 +225,12 @@ export class ReaderLinks {
           // navigations on that page must not inherit the split gesture.
           if (destPos) {
             const destination = JSON.stringify(destPos);
-            if (destination) pendingNav = { destination, at: Date.now() };
+            if (destination)
+              pendingNav = {
+                destination,
+                at: Date.now(),
+                generation: ++state.navigationGeneration,
+              };
           }
         } catch {
           pendingNav = null;
@@ -240,11 +258,13 @@ export class ReaderLinks {
             location?.position &&
             JSON.stringify(location.position) === gesture.destination
           ) {
-            const position = location.position;
-            void this.jumpInSecondView(reader, position, state)
+            const position = JSON.parse(gesture.destination);
+            const generation = gesture.generation;
+            void this.jumpInSecondView(reader, position, state, generation)
               .then((jumped) => {
                 if (
                   !jumped &&
+                  generation === state.navigationGeneration &&
                   !state.cancelled &&
                   this.states.get(reader) === state &&
                   reader._internalReader?._primaryView === view
@@ -261,6 +281,8 @@ export class ReaderLinks {
         } catch (e) {
           ztoolkit.log("[readerLinks] navigate hook failed", e);
         }
+        // A newer native navigation also supersedes a pending split jump.
+        state.navigationGeneration++;
         // Keep the original return value and synchronous call timing.
         return origNavigate(location, options);
       };
@@ -276,6 +298,7 @@ export class ReaderLinks {
     reader: any,
     position: any,
     state: ReaderState,
+    generation: number,
   ): Promise<boolean> {
     try {
       const internal = (reader as any)._internalReader;
@@ -284,34 +307,56 @@ export class ReaderLinks {
         this.states.get(reader) === state &&
         reader._internalReader === internal &&
         internal?._primaryView === state.view;
-      if (!internal || !ownsView()) return false;
-      if (!internal._secondaryView) {
-        const cmd = getPref("clickLinkCmd") as string;
-        if (cmd === "splitVertically") {
-          if (typeof internal.toggleVerticalSplit !== "function") return false;
-          await internal.toggleVerticalSplit(true);
-        } else {
-          if (typeof internal.toggleHorizontalSplit !== "function")
-            return false;
-          await internal.toggleHorizontalSplit(true);
+      const current = () =>
+        ownsView() && generation === state.navigationGeneration;
+      if (!internal || !current()) return false;
+      // Once creation starts, even a newly visible secondary view must finish
+      // the same settle phase. New gestures share creation but own their jump.
+      if (state.openingSplit || !internal._secondaryView) {
+        if (!state.openingSplit) {
+          const opening = this.openSecondView(internal, ownsView);
+          state.openingSplit = opening;
+          void opening.then(() => {
+            if (state.openingSplit === opening) state.openingSplit = undefined;
+          });
         }
-        const deadline = Date.now() + READY_TIMEOUT;
-        while (!internal._secondaryView?._iframeWindow) {
-          if (!ownsView() || Date.now() > deadline) return false;
-          await Zotero.Promise.delay(100);
-        }
-        // let the fresh view settle before navigating
-        await Zotero.Promise.delay(300);
+        const opened = await state.openingSplit;
+        if (!current() || !opened) return false;
       }
-      if (
-        !ownsView() ||
-        typeof internal._secondaryView?.navigate !== "function"
-      )
+      if (!current() || typeof internal._secondaryView?.navigate !== "function")
         return false;
       await internal._secondaryView.navigate({ position });
-      return true;
+      return current();
     } catch (e) {
       ztoolkit.log("[readerLinks] second-view jump failed", e);
+      return false;
+    }
+  }
+
+  private async openSecondView(
+    internal: any,
+    ownsView: () => boolean,
+  ): Promise<boolean> {
+    try {
+      if (!ownsView()) return false;
+      const cmd = getPref("clickLinkCmd") as string;
+      const toggle =
+        cmd === "splitVertically"
+          ? internal.toggleVerticalSplit
+          : internal.toggleHorizontalSplit;
+      if (typeof toggle !== "function") return false;
+      await toggle.call(internal, true);
+      if (!ownsView()) return false;
+      const deadline = Date.now() + READY_TIMEOUT;
+      while (!internal._secondaryView?._iframeWindow) {
+        if (!ownsView() || Date.now() > deadline) return false;
+        await Zotero.Promise.delay(100);
+        if (!ownsView()) return false;
+      }
+      await Zotero.Promise.delay(300);
+      return ownsView();
+    } catch (error) {
+      ztoolkit.log("[readerLinks] split creation failed", error);
       return false;
     }
   }

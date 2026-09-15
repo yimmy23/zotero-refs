@@ -1,3 +1,4 @@
+import { setTimeout, clearTimeout } from "node:timers";
 import console from "node:console";
 import process from "node:process";
 import { setImmediate } from "node:timers";
@@ -50,6 +51,7 @@ async function load(file, zotero = {}, extraExports = "", globals = {}) {
     URL,
     console,
     Zotero: {
+      getMainWindow: () => ({ closed: false, setTimeout, clearTimeout }),
       Prefs: { get: () => undefined },
       Libraries: { userLibraryID: 1 },
       Promise: { delay: async () => {} },

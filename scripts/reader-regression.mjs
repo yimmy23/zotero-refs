@@ -63,6 +63,7 @@ function windowDouble() {
 }
 function readerFixture() {
   let clock = 0;
+  let delayHook;
   const win = windowDouble();
   const primaryCalls = [],
     secondaryCalls = [],
@@ -103,6 +104,7 @@ function readerFixture() {
         Promise: {
           delay: async (ms) => {
             clock += ms;
+            await delayHook?.(ms);
           },
         },
       },
@@ -124,6 +126,9 @@ function readerFixture() {
     primaryReceivers,
     secondaryCalls,
     nativePopup,
+    setDelay: (fn) => {
+      delayHook = fn;
+    },
     advanceClock: (ms) => {
       clock += ms;
     },
@@ -424,6 +429,137 @@ await check("pending split fallback retains original options", async () => {
   assert.equal(f.primaryOptions[0], options);
   assert.equal(f.primaryReceivers[0], f.view);
 });
+function splitGesture(f, pageIndex) {
+  const position = { pageIndex, rects: [[1, 2, 3, 4]] };
+  f.view._getSelectableOverlay = () => ({
+    type: "citation",
+    references: [{ position }],
+  });
+  f.win.emit("pointerup", { button: 0, altKey: true });
+  f.view.navigate({ position });
+  return position;
+}
+for (const overlap of ["creation", "settling"]) {
+  await check(
+    `only latest Alt gesture navigates while split is ${overlap}`,
+    async () => {
+      const f = readerFixture(),
+        gate = deferred();
+      let opened = 0;
+      f.internal._secondaryView = null;
+      f.internal.toggleHorizontalSplit = async () => {
+        opened++;
+        if (overlap === "creation") await gate.promise;
+        f.internal._secondaryView = f.secondary;
+      };
+      if (overlap === "settling")
+        f.setDelay((ms) => (ms === 300 ? gate.promise : undefined));
+      f.links.attach(f.reader);
+      await settle();
+      splitGesture(f, 1);
+      await settle();
+      splitGesture(f, 2);
+      await settle();
+      assert.equal(opened, 1, "overlapping gestures share one split creation");
+      assert.equal(f.secondaryCalls.length, 0);
+      gate.resolve();
+      await settle();
+      await settle();
+      assert.deepEqual(
+        f.secondaryCalls.map((call) => call.position.pageIndex),
+        [2],
+      );
+      assert.equal(f.primaryCalls.length, 0);
+      assert.equal(f.view._onSetOverlayPopup, f.nativePopup);
+      f.links.detachAll();
+    },
+  );
+}
+await check(
+  "failed shared split only falls back for the latest gesture",
+  async () => {
+    const f = readerFixture(),
+      gate = deferred();
+    f.internal._secondaryView = null;
+    let opened = 0;
+    f.internal.toggleHorizontalSplit = async () => {
+      opened++;
+      await gate.promise;
+      throw Error("failed");
+    };
+    f.links.attach(f.reader);
+    await settle();
+    splitGesture(f, 1);
+    splitGesture(f, 2);
+    await settle();
+    gate.resolve();
+    await settle();
+    await settle();
+    assert.equal(opened, 1);
+    assert.deepEqual(
+      f.primaryCalls.map((call) => call.position.pageIndex),
+      [2],
+    );
+    assert.equal(f.secondaryCalls.length, 0);
+  },
+);
+for (const ending of ["unload", "detach", "native navigation"]) {
+  await check(
+    `${ending} supersedes pending overlapping split gestures`,
+    async () => {
+      const f = readerFixture(),
+        gate = deferred();
+      f.internal._secondaryView = null;
+      f.internal.toggleHorizontalSplit = async () => {
+        await gate.promise;
+        f.internal._secondaryView = f.secondary;
+      };
+      f.links.attach(f.reader);
+      await settle();
+      splitGesture(f, 1);
+      splitGesture(f, 2);
+      await settle();
+      if (ending === "unload") f.win.emit("unload");
+      if (ending === "detach") f.links.detachAll();
+      if (ending === "native navigation") f.view.navigate({ pageIndex: 9 });
+      gate.resolve();
+      await settle();
+      await settle();
+      assert.equal(f.secondaryCalls.length, 0);
+      assert.equal(
+        f.primaryCalls.length,
+        ending === "native navigation" ? 1 : 0,
+      );
+    },
+  );
+}
+await check(
+  "rejected old secondary navigation cannot fall back over a newer jump",
+  async () => {
+    const f = readerFixture(),
+      gate = deferred();
+    f.secondary.navigate = async (location) => {
+      f.secondaryCalls.push(location);
+      if (location.position.pageIndex === 1) {
+        await gate.promise;
+        throw Error("old failure");
+      }
+    };
+    f.links.attach(f.reader);
+    await settle();
+    splitGesture(f, 1);
+    splitGesture(f, 2);
+    await settle();
+    gate.resolve();
+    await settle();
+    await settle();
+    assert.deepEqual(
+      f.secondaryCalls.map((call) => call.position.pageIndex),
+      [1, 2],
+    );
+    assert.equal(f.primaryCalls.length, 0);
+  },
+);
 function hookFixture() {
   const wait = deferred();
   const reader = { _initPromise: wait.promise };

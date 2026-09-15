@@ -153,6 +153,32 @@ console.log(
   "PASS popup follows resized owner viewport and releases resize listener",
 );
 
+// Actual PopupCard focus lifecycle; browser focus/containment is the boundary.
+const focusCard = new PopupCard();
+focusCard.onInit({ x: 600, y: 100, width: 100, height: 20 }, "left");
+let focusReturned = 0;
+const trigger = {
+  isConnected: true,
+  focus() {
+    focusReturned++;
+    doc.activeElement = this;
+  },
+};
+focusCard.container.contains = (node) => node === focusCard.container;
+focusCard.container.focus = () => {
+  doc.activeElement = focusCard.container;
+};
+focusCard.focusFrom(trigger);
+assert.equal(doc.activeElement, focusCard.container);
+focusCard.clear();
+assert.equal(doc.activeElement, trigger);
+assert.equal(focusReturned, 1);
+focusCard.clear();
+assert.equal(focusReturned, 1, "repeated disposal cannot steal focus");
+console.log(
+  "PASS explicit details focus returns to its still-connected trigger on clear",
+);
+
 // Real text-only DOM construction. Supply only the modern DOM conveniences
 // absent from the XML DOM; the production renderer and translation methods run.
 const abstractDoc = new DOMImplementation().createDocument(null, "root", null);
