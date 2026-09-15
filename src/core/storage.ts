@@ -40,6 +40,14 @@ function sanitizeRef(r: any): RefItem | null {
     // markup left by APIs in older caches ("<i>ALK</i>") is cleaned here too
     title: cleanText(str(r.title)),
     text: cleanText(str(r.text)),
+    editBase: Array.isArray(r.editBase)
+      ? r.editBase
+          .filter(
+            (key: unknown): key is string =>
+              typeof key === "string" && key.length > 0 && key.length <= 65536,
+          )
+          .slice(0, 5)
+      : undefined,
     year:
       str(r.year) ?? (typeof r.year === "number" ? String(r.year) : undefined),
     type: str(r.type) || "journalArticle",
@@ -298,6 +306,7 @@ class RefStorage {
       return;
     const itemKey = itemCacheKey(item);
     const clean = refs.map(sanitizeRef).filter((r): r is RefItem => !!r);
+    if (slot === "FUSED") this.preserveFusedSnapshot(itemKey, expectedStateKey);
     (this.cache[itemKey] ??= Object.create(null))[slot] = {
       t: Date.now(),
       identity: expectedStateKey,
@@ -305,6 +314,23 @@ class RefStorage {
     };
     this.evictIfNeeded();
     this.scheduleWrite();
+  }
+
+  /** Older FUSED files cannot tell edits from source enrichment. Preserve the
+   * first replaced snapshot for recovery instead of trying to infer authorship.
+   * Like the other saved slots, it is removed by explicit cache clearing/eviction.
+   */
+  private preserveFusedSnapshot(itemKey: string, identity: string) {
+    const slots = this.cache[itemKey];
+    const previous = slots?.FUSED;
+    if (!previous?.refs.length || previous.identity !== identity) return;
+    if (slots.FUSED_BEFORE_REFRESH?.identity === identity) return;
+    slots.FUSED_BEFORE_REFRESH = {
+      ...previous,
+      refs: previous.refs
+        .map(sanitizeRef)
+        .filter((ref): ref is RefItem => !!ref),
+    };
   }
 
   /** Commit a successful local repair without exposing the old derived list
@@ -328,6 +354,7 @@ class RefStorage {
     )
       return false;
     const slots = (this.cache[itemCacheKey(item)] ??= Object.create(null));
+    this.preserveFusedSnapshot(itemCacheKey(item), expectedStateKey);
     const pending = this.pendingPDFRepair(item, expectedStateKey);
     const t = Date.now();
     // No await here: readers must see either the old rejected pair or the new

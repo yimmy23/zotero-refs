@@ -41,7 +41,27 @@ interface GraphCenter {
 }
 const centers = new WeakMap<HTMLElement, GraphCenter>();
 const requests = new WeakMap<HTMLElement, number>();
+const buildTimers = new WeakMap<HTMLElement, number>();
+const hoverCleanups = new WeakMap<HTMLElement, () => void>();
 let requestSequence = 0;
+
+function disposeGraph(body: HTMLElement, resetCenter = false) {
+  if (!body) return;
+  requests.set(body, ++requestSequence);
+  clearTimeout(buildTimers.get(body));
+  buildTimers.delete(body);
+  hoverCleanups.get(body)?.();
+  hoverCleanups.delete(body);
+  views.get(body)?.destroy();
+  views.delete(body);
+  if (resetCenter) centers.delete(body);
+}
+
+function graphVisible(body: HTMLElement): boolean {
+  const section = body.closest("collapsible-section") as
+    (HTMLElement & { open?: boolean }) | null;
+  return body.isConnected && section?.open !== false;
+}
 
 async function nodeClicked(
   node: GraphNode,
@@ -96,6 +116,7 @@ async function importNode(
       (m) => {
         if (current()) popupWin.changeLine({ text: m });
       },
+      current,
     );
     // The library import can outlive an edit/deletion of the host. Keep the
     // successfully imported item, but never link it to a different paper.
@@ -273,6 +294,11 @@ function makeHoverHandler(
   item: Zotero.Item,
 ): GraphHandlers["onHover"] {
   let hoverTimer: number | undefined;
+  let ownedPopup: ReturnType<typeof showRefPopup> | undefined;
+  hoverCleanups.set(body, () => {
+    clearTimeout(hoverTimer);
+    if (ownedPopup && getCurrentPopup() === ownedPopup) ownedPopup.clear();
+  });
   const generation = requests.get(body);
   const stateKey = itemStateKey(item);
   const current = () =>
@@ -310,7 +336,7 @@ function makeHoverHandler(
         hoverTimer = undefined;
         if (!current()) return;
         const view = views.get(body);
-        showRefPopup(node.ref, rect, "left", undefined, {
+        ownedPopup = showRefPopup(node.ref, rect, "left", undefined, {
           onImport: () => {
             if (current()) void importNode(item, node, view);
           },
@@ -327,6 +353,7 @@ async function renderGraph(
   setSectionSummary: (s: string) => void,
   force = false,
 ) {
+  if (!graphVisible(body)) return;
   const container = body.querySelector<HTMLElement>(
     ".references-graph-container",
   );
@@ -334,15 +361,15 @@ async function renderGraph(
   const home = body.querySelector<HTMLElement>(".references-graph-home");
   if (!container || !status) return;
   const stateKey = itemStateKey(item);
+  disposeGraph(body);
   const generation = ++requestSequence;
   requests.set(body, generation);
   const current = () =>
     container.isConnected &&
+    graphVisible(body) &&
     itemStateKey(item) === stateKey &&
     requests.get(body) === generation &&
     addon.data.alive;
-  views.get(body)?.destroy();
-  views.delete(body);
   const maxNodes = Math.min(200, Math.max(10, getNumPref("graphMaxNodes", 50)));
 
   const center = centers.get(body) ?? {
@@ -369,6 +396,8 @@ async function renderGraph(
         { ids: center.ids, libraryID: item.libraryID },
         {
           maxNodes,
+          cachePolicy: force ? "refresh" : "default",
+          shouldContinue: current,
           onStatus: (msg) => {
             if (current()) status.textContent = msg;
           },
@@ -431,7 +460,8 @@ export function registerGraphSection() {
       l10nID: getLocaleID("item-section-graph-sidenav-tooltip"),
       icon: `chrome://${config.addonRef}/content/icons/20/graph.svg`,
     },
-    onItemChange: guard("graph.onItemChange", ({ item, setEnabled }) => {
+    onItemChange: guard("graph.onItemChange", ({ body, item, setEnabled }) => {
+      disposeGraph(body, true);
       if (!item?.isRegularItem?.() || !getPref("graphEnable")) {
         setEnabled(false);
         return true;
@@ -440,15 +470,19 @@ export function registerGraphSection() {
       setEnabled(!!(ids.DOI || ids.PMID));
       return true;
     }),
+    onDestroy: guard("graph.onDestroy", ({ body }) => disposeGraph(body, true)),
+    onToggle: guard("graph.onToggle", ({ body, item, setSectionSummary }) => {
+      if (!graphVisible(body)) disposeGraph(body);
+      else if (item?.isRegularItem?.() && getPref("graphEnable"))
+        void renderGraph(body, item, setSectionSummary);
+    }),
     onRender: () => {},
     onAsyncRender: guardAsync(
       "graph.onAsyncRender",
       async ({ body, item, setSectionSummary }) => {
+        disposeGraph(body, true);
         if (!item?.isRegularItem?.()) return;
         const doc = body.ownerDocument!;
-        views.get(body as HTMLElement)?.destroy();
-        views.delete(body as HTMLElement);
-        requests.set(body as HTMLElement, ++requestSequence);
         body.textContent = "";
         (body as HTMLElement).classList.add("references-panel");
 
@@ -518,12 +552,16 @@ export function registerGraphSection() {
         // settle debounce OUTSIDE the awaited render — the OpenAlex build is
         // the most expensive auto-fetch, so never fire it per arrow-key step
         // and never hold up Zotero's item-pane render loop for it
-        setTimeout(
-          guard("graph.autoBuild", () => {
-            if (!container.isConnected) return;
-            void renderGraph(body as HTMLElement, item, setSectionSummary);
-          }),
-          350,
+        buildTimers.set(
+          body,
+          setTimeout(
+            guard("graph.autoBuild", () => {
+              buildTimers.delete(body);
+              if (!container.isConnected || !graphVisible(body)) return;
+              void renderGraph(body as HTMLElement, item, setSectionSummary);
+            }),
+            350,
+          ),
         );
       },
     ),

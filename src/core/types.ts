@@ -63,6 +63,8 @@ export interface RefItem {
   type?: string;
   /** raw reference string as it appears in the bibliography */
   text?: string;
+  /** Original citation evidence used to retain a local edit across refreshes. */
+  editBase?: string[];
   year?: string;
   url?: string;
   /** open-access PDF url if known */
@@ -92,6 +94,37 @@ export interface RefItem {
   retracted?: boolean;
 }
 
+/** Request policy shared by registry, providers and the HTTP layer. */
+export interface SourceRequestOptions {
+  /** Refresh skips cached reads, replaces successful entries, and still deduplicates. */
+  cachePolicy?: "default" | "refresh" | "no-store";
+  /** Absolute deadline in milliseconds; includes queueing and retry waits. */
+  deadline?: number;
+}
+
+export interface RequestFailure {
+  kind:
+    | "not_found"
+    | "rate_limited"
+    | "unavailable"
+    | "deadline"
+    | "invalid_response"
+    | "pagination";
+  recoverable: boolean;
+  status?: number;
+  /** Earliest server-permitted retry time (absolute milliseconds). */
+  retryAt?: number;
+}
+
+/** A reference list whose completeness survives the provider boundary. */
+export interface ReferenceResult {
+  items: RefItem[];
+  status: "ok" | "empty" | "partial" | "unavailable" | "rate_limited";
+  /** Retryable page offset; omitted when the server supplied no usable cursor. */
+  nextOffset?: number;
+  error?: RequestFailure;
+}
+
 /** Paged result for citations ("cited by") queries. */
 export interface PagedRefs {
   items: RefItem[];
@@ -107,21 +140,49 @@ export interface PagedRefs {
 export interface MetaSource {
   id: SourceID;
   /** single-record metadata lookups (used by the hover popup) */
-  getInfoByDOI?(doi: string): Promise<RefItem | null>;
-  getInfoByArXiv?(arxiv: string): Promise<RefItem | null>;
-  getInfoByPMID?(pmid: string): Promise<RefItem | null>;
+  getInfoByDOI?(
+    doi: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem | null>;
+  getInfoByArXiv?(
+    arxiv: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem | null>;
+  getInfoByPMID?(
+    pmid: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem | null>;
   /** title search; refText available for fuzzy/validation use */
-  getInfoByTitle?(title: string, refText?: string): Promise<RefItem | null>;
+  getInfoByTitle?(
+    title: string,
+    refText?: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem | null>;
   /** full reference list of a work */
-  getReferences?(ids: Identifiers, title?: string): Promise<RefItem[] | null>;
+  getReferences?(
+    ids: Identifiers,
+    title?: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem[] | null>;
+  /** Optional completeness-aware list; legacy array callers remain supported. */
+  getReferencesResult?(
+    ids: Identifiers,
+    title?: string,
+    options?: SourceRequestOptions,
+  ): Promise<ReferenceResult>;
   /** works citing this work */
   getCitations?(
     ids: Identifiers,
     offset?: number,
     limit?: number,
+    options?: SourceRequestOptions,
   ): Promise<PagedRefs | null>;
   /** recommended / related works */
-  getRelated?(ids: Identifiers, limit?: number): Promise<RefItem[] | null>;
+  getRelated?(
+    ids: Identifiers,
+    limit?: number,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem[] | null>;
 }
 
 /** Graph structures for the citation graph view. */

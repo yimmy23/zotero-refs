@@ -127,6 +127,11 @@ class Node {
       return this.getAttribute(attr[1]) === attr[2].replace(/["']/g, "");
     return this.localName === selector;
   }
+  closest(selector) {
+    for (let node = this; node; node = node.parentElement)
+      if (node.matches(selector)) return node;
+    return null;
+  }
   querySelectorAll(selector) {
     if (selector.startsWith(":scope > "))
       return this.children.filter((child) => child.matches(selector.slice(9)));
@@ -956,6 +961,80 @@ test("built full preference keys restore invalid values and invalidate CNKI sess
     await panel.emit("change", { target: input });
     assert.equal(env.prefs.getPref("CNKI.token"), "");
   }
+});
+
+test("details opens from keyboard activation without hover or citation copying", async () => {
+  const env = environment(),
+    doc = document();
+  let focused,
+    opened = 0;
+  class PopupCard {
+    onInit() {
+      this.container = doc.createElement("div");
+      doc.root.append(this.container);
+      opened++;
+    }
+    update() {}
+    clear() {
+      this.container?.remove();
+    }
+    focusFrom(trigger) {
+      focused = trigger;
+      this.container.focus();
+    }
+  }
+  const rows = env.load("src/ui/rows.ts", {
+    ...env.shared,
+    "../core/libmatch": {
+      libraryIndex: { match: async () => undefined },
+      isRelated: () => false,
+    },
+    "../core/importer": {},
+    "../sources": {
+      infoCandidates: () => ({ according: "Title", thunks: [] }),
+    },
+    "../sources/cnki": {},
+    "../sources/abstract": {
+      cachedAbstract: () => null,
+      fetchAbstract: async () => null,
+    },
+    "./popup": { PopupCard },
+  });
+  const list = append(doc.root, "div", "references-list");
+  const row = rows.renderRefRow(
+    { hostItem: host(), list, editable: true },
+    [
+      {
+        title: "A synthetic scientific paper",
+        text: "A synthetic scientific paper",
+        authors: [],
+        identifiers: {},
+      },
+    ],
+    0,
+  );
+  row.getBoundingClientRect = () => ({
+    x: 600,
+    y: 100,
+    width: 300,
+    height: 40,
+  });
+  const trigger = row.querySelector(".references-row-details");
+  assert.equal(trigger.localName, "button");
+  assert.equal(trigger.getAttribute("aria-haspopup"), "dialog");
+  assert.equal(opened, 0);
+  trigger.focus();
+  await trigger.emit("click"); // Native buttons dispatch click for Enter/Space.
+  assert.equal(opened, 1);
+  assert.equal(focused, trigger);
+  assert.equal(doc.activeElement, rows.getCurrentPopup().container);
+  await row.emit("mouseup", { target: trigger, button: 0 });
+  assert.deepEqual(env.copied, [], "the details action must not copy the row");
+  await row
+    .querySelector(".references-row-label")
+    .emit("keydown", { key: "Enter", altKey: true });
+  assert.equal(opened, 2, "the documented keyboard shortcut is equivalent");
+  assert.deepEqual(env.copied, []);
 });
 
 let failed = 0;

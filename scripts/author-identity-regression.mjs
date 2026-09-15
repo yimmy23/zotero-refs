@@ -6,6 +6,7 @@ import vm from "node:vm";
 import { fileURLToPath, URL } from "node:url";
 import { build } from "esbuild";
 import { DOMParser } from "@xmldom/xmldom";
+import { setTimeout, clearTimeout } from "node:timers";
 
 // Production modules with synthetic, offline Zotero/API fixtures only.
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -25,10 +26,13 @@ async function load(file, extra = "", zotero = {}, globals = {}) {
     logLevel: "silent",
   });
   const context = vm.createContext({
+    setTimeout,
+    clearTimeout,
     module: { exports: {} },
     URL,
     console,
     Zotero: {
+      getMainWindow: () => ({ closed: false, setTimeout, clearTimeout }),
       DataDirectory: { dir: "/synthetic" },
       Prefs: { get: () => undefined },
       Libraries: { userLibraryID: 1 },
@@ -326,21 +330,39 @@ const batchItem = (id) => ({
     date: "2024",
   },
   relatedItems: [],
+  collections: [],
   saves: 0,
+  collectionSaves: 0,
+  isRegularItem: () => true,
   getField(key) {
     return this.fields[key] || "";
   },
-  getCollections: () => [7],
+  getCollections() {
+    return [...this.collections];
+  },
+  addToCollection(id) {
+    if (!this.collections.includes(id)) this.collections.push(id);
+  },
+  getRelations() {
+    return { "dc:relation": [...this.relatedItems] };
+  },
+  setRelations(value) {
+    this.relatedItems = [...value["dc:relation"]];
+  },
   addRelatedItem(item) {
     this.relatedItems.push(item.key);
   },
-  async saveTx() {
+  async save() {
     this.saves++;
+  },
+  async saveTx() {
+    this.collectionSaves++;
   },
 });
 async function batchFixture(options = {}) {
   const addonState = { data: { alive: true } };
   const host = batchItem(1);
+  host.collections = [7];
   const targets = [2, 3].map((id) =>
     ref({ identifiers: { DOI: `10.5555/reference${id}` } }),
   );
@@ -373,15 +395,22 @@ async function batchFixture(options = {}) {
     "src/core/importer.ts",
     '\nexport { runBatchImport } from "../ui/batchImport";\n',
     {
-      Items: { getAll: async () => [] },
+      DB: { executeTransaction: (fn) => fn() },
+      Items: {
+        getAll: async () => [],
+        get: (id) => created.find((item) => item.id === id),
+      },
       getMainWindow: () => ({}),
       Translate: {
         Search: class {
-          setIdentifier() {}
+          setIdentifier(ids) {
+            this.ids = ids;
+          }
           getTranslators = async () => [{}];
           setTranslator() {}
           async translate(args) {
             const item = batchItem(created.length + 2);
+            item.fields.DOI = this.ids.DOI;
             item.importOptions = args;
             created.push(item);
             if (created.length === (options.pauseAt || 1)) {
@@ -469,7 +498,8 @@ test("unchanged host identity allows normal imports and bidirectional relations"
     assert.deepEqual(f.created[i].relatedItems, ["ITEM1"]);
     assert.equal(f.created[i].saves, 1);
     assert.equal(f.created[i].importOptions.libraryID, 1);
-    assert.deepEqual(f.created[i].importOptions.collections, [7]);
+    assert.deepEqual(Array.from(f.created[i].importOptions.collections), []);
+    assert.deepEqual(f.created[i].collections, [7]);
     assert.equal(f.targets[i].libItemID, f.created[i].id);
   }
 });

@@ -1,3 +1,4 @@
+import type { SourceRequestOptions } from "../core/types";
 import { cleanText, isDOI } from "../core/text";
 import { normalizeAbstractText } from "../core/abstractText";
 import type { MetaSource, RefItem, RefTag } from "../core/types";
@@ -17,10 +18,11 @@ const CHROME_UA =
 
 export async function translateDOI(
   doi: string,
+  options: SourceRequestOptions = {},
 ): Promise<{ paperId: string; title?: string } | null> {
   const res = await http.getJSON<{ paperId?: string; title?: string }>(
     `https://rest.connectedpapers.com/id_translator/doi/${encodeURIComponent(doi)}`,
-    { headers: { "user-agent": CHROME_UA } },
+    { ...options, headers: { "user-agent": CHROME_UA } },
   );
   if (!res?.paperId) return null;
   return { paperId: res.paperId, title: res.title };
@@ -65,10 +67,11 @@ function mapPaper(item: any): RefItem {
 async function getInfoByTitle(
   title: string,
   _refText?: string,
+  options: SourceRequestOptions = {},
 ): Promise<RefItem | null> {
   let query = title;
   if (isDOI(title)) {
-    const translated = await translateDOI(title);
+    const translated = await translateDOI(title, options);
     if (!translated) return null;
     query = translated.title || title;
   }
@@ -76,6 +79,7 @@ async function getInfoByTitle(
   const res = await http.postJSON<any>(
     `https://rest.connectedpapers.com/search/${encodeURIComponent(query)}/1`,
     {},
+    options,
   );
   const item = res?.results?.[0];
   if (!item) return null;

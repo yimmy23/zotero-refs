@@ -1,3 +1,4 @@
+import type { SourceRequestOptions } from "../core/types";
 import { cleanText } from "../core/text";
 import { http, politeEmail } from "../core/http";
 import { getString } from "../utils/locale";
@@ -18,15 +19,21 @@ const TYPE_MAP: Record<string, string> = {
 };
 
 export const unpaywall: MetaSource & {
-  getInfoByDOI(doi: string): Promise<RefItem | null>;
+  getInfoByDOI(
+    doi: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem | null>;
 } = {
   id: "unpaywall",
 
-  async getInfoByDOI(doi: string): Promise<RefItem | null> {
+  async getInfoByDOI(
+    doi: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem | null> {
     const url =
       `https://api.unpaywall.org/v2/${encodeURIComponent(doi)}` +
       `?email=${encodeURIComponent(politeEmail())}`;
-    const data = await http.getJSON(url);
+    const data = await http.getJSON(url, options);
     if (!data) return null;
 
     const identifiers: Identifiers = { DOI: doi };

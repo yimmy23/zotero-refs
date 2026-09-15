@@ -3,7 +3,7 @@ import { config } from "../../package.json";
 import { getLocaleID, getString } from "../utils/locale";
 import { getPref } from "../utils/prefs";
 import { itemStateKey } from "../core/storage";
-import { setTimeout } from "../utils/window";
+import { clearTimeout, setTimeout } from "../utils/window";
 import type { Identifiers, RefItem } from "../core/types";
 import { getCitationsByAPI } from "../sources";
 import type { CitationSource } from "../sources";
@@ -52,6 +52,13 @@ function refKey(ref: RefItem): string {
 }
 
 const states = new Map<string, CitationsState>();
+/** Only mounted bodies subscribe to cached data; a different item unsubscribes. */
+const subscriptions = new WeakMap<HTMLElement, () => void>();
+
+function disposePanel(body: HTMLElement) {
+  subscriptions.get(body)?.();
+  subscriptions.delete(body);
+}
 
 function idsOf(item: Zotero.Item): Identifiers | null {
   const ids = hostIdentifiers(item);
@@ -184,14 +191,20 @@ export function registerCitationsSection() {
       l10nID: getLocaleID("item-section-citations-sidenav-tooltip"),
       icon: `chrome://${config.addonRef}/content/icons/20/citations.svg`,
     },
-    onItemChange: guard("citations.onItemChange", ({ item, setEnabled }) => {
-      setEnabled(!!item?.isRegularItem?.() && !!idsOf(item));
-      return true;
-    }),
+    onItemChange: guard(
+      "citations.onItemChange",
+      ({ body, item, setEnabled }) => {
+        disposePanel(body);
+        setEnabled(!!item?.isRegularItem?.() && !!idsOf(item));
+        return true;
+      },
+    ),
+    onDestroy: guard("citations.onDestroy", ({ body }) => disposePanel(body)),
     onRender: () => {},
     onAsyncRender: guardAsync(
       "citations.onAsyncRender",
       async ({ body, item, setSectionSummary }) => {
+        disposePanel(body);
         if (!item?.isRegularItem?.()) return;
         const stateKey = itemStateKey(item);
         let state = states.get(stateKey);
@@ -254,6 +267,12 @@ export function registerCitationsSection() {
         for (const old of state.doms)
           if (!old.list.isConnected) state.doms.delete(old);
         state.doms.add(dom);
+        let autoFetchTimer: number | undefined;
+        const subscribedState = state;
+        subscriptions.set(body, () => {
+          clearTimeout(autoFetchTimer);
+          subscribedState.doms.delete(dom);
+        });
         more.disabled = state.loading;
         more.hidden = state.exhausted;
         if (!state.refs.length)
@@ -264,7 +283,7 @@ export function registerCitationsSection() {
                 ? "panel-loading"
                 : state.exhausted
                   ? "citations-empty"
-                  : "panel-ready",
+                  : "citations-ready",
             ),
           );
         if (state.refs.length) {
@@ -293,7 +312,7 @@ export function registerCitationsSection() {
           // settle debounce outside the awaited render (see section.ts);
           // `list` detaches whenever ANY item re-renders the shared body,
           // so this also skips items the user merely arrow-keyed past
-          setTimeout(
+          autoFetchTimer = setTimeout(
             guard("citations.autoFetch", () => {
               if (!list.isConnected) return;
               void loadMore(item, state);
@@ -307,13 +326,17 @@ export function registerCitationsSection() {
 }
 
 export function invalidateCitations(stateKeys?: string[]) {
-  if (!stateKeys) states.clear();
-  else
+  if (!stateKeys) {
+    for (const state of states.values()) state.doms.clear();
+    states.clear();
+  } else
     for (const key of states.keys())
       if (
         stateKeys.some(
           (stateKey) => key === stateKey || key.startsWith(`${stateKey}@`),
         )
-      )
+      ) {
+        states.get(key)?.doms.clear();
         states.delete(key);
+      }
 }

@@ -70,6 +70,7 @@ export class PopupCard {
   /** timestamp of the last handled zoom event (wheel/DOMMouseScroll dedupe) */
   private lastZoomStamp = -1;
   private ownerWindow?: Window;
+  private returnFocus?: HTMLElement;
   private translationScope = "";
   private translationEntries = new WeakMap<HTMLElement, TranslationEntry>();
   private onResize = () => {
@@ -91,10 +92,28 @@ export class PopupCard {
 
   /** Dispose only this card; stale async work must not close a newer one. */
   clear() {
+    const trigger = this.returnFocus;
+    const focused = this.container?.ownerDocument?.activeElement;
+    const restoreFocus = !!(
+      trigger &&
+      focused &&
+      this.container?.contains(focused)
+    );
+    this.returnFocus = undefined;
     clearTimeout(this.tipTimer);
     this.ownerWindow?.removeEventListener("resize", this.onResize);
     this.ownerWindow = undefined;
     this.container?.remove();
+    if (restoreFocus && trigger?.isConnected)
+      trigger.focus({ preventScroll: true });
+  }
+
+  /** Explicit details actions enter the card and return to their row on Escape. */
+  focusFrom(trigger: HTMLElement) {
+    this.returnFocus = trigger;
+    clearTimeout(this.tipTimer);
+    this.container.tabIndex = -1;
+    this.container.focus({ preventScroll: true });
   }
 
   /**
@@ -159,7 +178,11 @@ export class PopupCard {
         {
           type: "keydown",
           listener: (event: Event) => {
-            if ((event as KeyboardEvent).key === "Escape") this.clear();
+            if ((event as KeyboardEvent).key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              this.clear();
+            }
           },
         },
         { type: "focusin", listener: () => clearTimeout(this.tipTimer) },

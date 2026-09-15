@@ -1,3 +1,4 @@
+import type { SourceRequestOptions } from "../core/types";
 import { htmlToText } from "../core/text";
 import { normalizeAbstractText } from "../core/abstractText";
 import type { MetaSource, RefItem, RefTag } from "../core/types";
@@ -38,21 +39,29 @@ function mapPaper(data: any): RefItem {
   };
 }
 
-async function search(title: string): Promise<any | null> {
-  const res = await http.postJSON<any>(SEARCH_API, {
-    keywords: title,
-    page: 1,
-    pageSize: 1,
-    searchType: 0,
-  });
+async function search(
+  title: string,
+  options: SourceRequestOptions,
+): Promise<any | null> {
+  const res = await http.postJSON<any>(
+    SEARCH_API,
+    {
+      keywords: title,
+      page: 1,
+      pageSize: 1,
+      searchType: 0,
+    },
+    options,
+  );
   return res?.data?.list?.[0] || null;
 }
 
 async function getInfoByTitle(
   title: string,
   _refText?: string,
+  options: SourceRequestOptions = {},
 ): Promise<RefItem | null> {
-  const data = await search(title);
+  const data = await search(title, options);
   if (!data) return null;
   return mapPaper(data);
 }
@@ -62,11 +71,16 @@ async function getInfoByTitle(
 async function getInfoByTitleWithDOI(
   title: string,
   doi: string,
+  options: SourceRequestOptions = {},
 ): Promise<RefItem | null> {
-  const data = await search(title);
+  const data = await search(title, options);
   if (!data) return null;
 
-  const detail = await http.postJSON<any>(DETAIL_API, { paperId: data.id });
+  const detail = await http.postJSON<any>(
+    DETAIL_API,
+    { paperId: data.id },
+    options,
+  );
   const remoteDOI = (detail?.data?.doi as string) || "";
   if (!remoteDOI || remoteDOI.toUpperCase() !== doi.toUpperCase()) {
     return null;
@@ -78,7 +92,11 @@ async function getInfoByTitleWithDOI(
 }
 
 export const readpaper: MetaSource & {
-  getInfoByTitleWithDOI(title: string, doi: string): Promise<RefItem | null>;
+  getInfoByTitleWithDOI(
+    title: string,
+    doi: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem | null>;
 } = {
   id: "readpaper",
   getInfoByTitle,

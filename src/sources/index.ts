@@ -13,6 +13,8 @@ import type {
   MetaSource,
   PagedRefs,
   RefItem,
+  SourceRequestOptions,
+  ReferenceResult,
 } from "../core/types";
 import { arxiv } from "./arxiv";
 import { cnki } from "./cnki";
@@ -117,10 +119,36 @@ export function infoCandidates(ref: RefItem): {
  * Fallback chain: Crossref -> Semantic Scholar -> OpenAlex -> CNKI (Chinese).
  * Returns the source id used along with the references.
  */
+export type ReferenceAPIResult = Omit<ReferenceResult, "items"> & {
+  refs: RefItem[];
+  source: string;
+};
+
 export async function getReferencesByAPI(
   item: Zotero.Item,
   onStatus?: (msg: string) => void,
-): Promise<{ refs: RefItem[]; source: string } | null> {
+  options: SourceRequestOptions = {},
+): Promise<ReferenceAPIResult | null> {
+  options = { ...options, deadline: options.deadline ?? Date.now() + 30000 };
+  let incomplete: ReferenceAPIResult | null = null;
+  const lookup = async (src: MetaSource, ids: Identifiers, title: string) => {
+    if (src.getReferencesResult) {
+      const { items, ...state } = await src.getReferencesResult(
+        ids,
+        title,
+        options,
+      );
+      const result = { ...state, refs: items, source: src.id };
+      if (state.status === "ok" && items.length) return result;
+      if (state.status === "partial" || (!incomplete && state.error))
+        incomplete = result;
+      return null;
+    }
+    const refs = await src.getReferences?.(ids, title, options);
+    return refs?.length
+      ? { refs, source: src.id, status: "ok" as const }
+      : null;
+  };
   const title = (item.getField("title") as string) || "";
   const url = (item.getField("url") as string) || "";
   const ids: Identifiers = hostIdentifiers(item);
@@ -138,8 +166,8 @@ export async function getReferencesByAPI(
         }),
       );
       try {
-        const refs = await src.getReferences?.(ids, title);
-        if (refs?.length) return { refs, source: src.id };
+        const result = await lookup(src, ids, title);
+        if (result) return result;
       } catch (e) {
         ztoolkit.log(`[sources] ${src.id} references failed`, e);
       }
@@ -150,27 +178,43 @@ export async function getReferencesByAPI(
       getString("panel-requesting-source", { args: { source: "CNKI" } }),
     );
     try {
-      const refs = await cnki.getReferences?.(ids, title);
-      if (refs?.length) return { refs, source: cnki.id };
+      const result = await lookup(cnki, ids, title);
+      if (result) return result;
     } catch (e) {
       ztoolkit.log("[sources] cnki references failed", e);
     }
   }
   // last try: resolve DOI by title then crossref/s2
   if (!ids.DOI && title && !isChinese(title)) {
-    const doi = await resolveDOIByTitle(title);
+    const authors = item
+      .getCreatorsJSON()
+      .filter((creator) => creator.creatorType === "author")
+      .map(
+        (creator) =>
+          creator.name ||
+          [creator.firstName, creator.lastName].filter(Boolean).join(" "),
+      );
+    const doi = await resolveDOIByTitle(
+      {
+        identifiers: ids,
+        title,
+        authors,
+        year: String(item.getField("date") || "").match(/\b\d{4}\b/)?.[0],
+      },
+      options,
+    );
     if (doi) {
       for (const src of [crossref, semanticscholar, openalex]) {
         try {
-          const refs = await src.getReferences?.({ DOI: doi }, title);
-          if (refs?.length) return { refs, source: src.id };
+          const result = await lookup(src, { DOI: doi }, title);
+          if (result) return result;
         } catch {
           // try the next source
         }
       }
     }
   }
-  return null;
+  return incomplete;
 }
 
 export type CitationSource = "semanticscholar" | "openalex";
@@ -192,11 +236,18 @@ export async function getCitationsByAPI(
   offset = 0,
   limit = 25,
   only?: CitationSource,
+  options: SourceRequestOptions = {},
 ): Promise<(PagedRefs & { source: CitationSource }) | null> {
+  options = { ...options, deadline: options.deadline ?? Date.now() + 30000 };
   let empty: (PagedRefs & { source: CitationSource }) | null = null;
   if (only !== "openalex") {
     try {
-      const res = await semanticscholar.getCitations?.(ids, offset, limit);
+      const res = await semanticscholar.getCitations?.(
+        ids,
+        offset,
+        limit,
+        options,
+      );
       if (res?.items.length || only === "semanticscholar") {
         return res ? { ...res, source: "semanticscholar" } : null;
       }
@@ -207,7 +258,7 @@ export async function getCitationsByAPI(
     }
   }
   try {
-    const res = await openalex.getCitations?.(ids, offset, limit);
+    const res = await openalex.getCitations?.(ids, offset, limit, options);
     if (res?.items.length) return { ...res, source: "openalex" };
     // OpenAlex reports the real total (meta.count), S2 does not — prefer
     // its empty answer so the section can show a definitive 0
@@ -224,7 +275,9 @@ export async function getRelatedByAPI(
   limit = 40,
   onProgress?: (result: RelatedResult) => void,
   shouldContinue: () => boolean = () => true,
+  options: SourceRequestOptions = {},
 ): Promise<RelatedResult> {
+  options = { ...options, deadline: options.deadline ?? Date.now() + 30000 };
   const bounded = relatedLimit(limit);
   const query = { ...ids };
   const snapshots: RelatedSnapshot[] = RELATED_SOURCES.map((source) => ({
@@ -248,8 +301,9 @@ export async function getRelatedByAPI(
       try {
         refs =
           source === "openalex"
-            ? await openalex.getRelated(query, bounded, shouldContinue)
-            : ((await semanticscholar.getRelated?.(query, bounded)) ?? null);
+            ? await openalex.getRelated(query, bounded, shouldContinue, options)
+            : ((await semanticscholar.getRelated?.(query, bounded, options)) ??
+              null);
       } catch (error) {
         if (shouldContinue())
           ztoolkit.log(`[sources] ${source} related failed`, error);
@@ -268,45 +322,21 @@ export async function getRelatedByAPI(
 }
 
 /**
- * Strict title equality (normalized). Substring containment is NOT
- * accepted: Crossref happily ranks derivative records ("Review of X",
- * "Faculty Opinions recommendation of X") above the article, and a
- * containment rule would resolve the WRONG DOI for them (live-verified
- * with "Array programming with NumPy").
+ * Verify a title query against a bounded Crossref candidate set. Title, first
+ * author and publication year must agree, with one plausible DOI. Crossref's
+ * total-results counts broad ranked hits, not exact-title identities; this is
+ * verification within the returned candidates, not proof of global uniqueness.
+ * Providers exposing only one selected hit cannot establish candidate identity.
  */
-function titleSimilar(a?: string, b?: string): boolean {
-  return titlesMatch(a, b);
-}
-
-/**
- * Resolve a DOI from a title with validation, so we never import the
- * wrong paper. Crossref bibliographic query -> OpenAlex -> S2.
- */
-export async function resolveDOIByTitle(title: string): Promise<string | null> {
-  if (!title || title.length < 8) return null;
+export async function resolveDOIByTitle(
+  ref: string | RefItem,
+  options?: SourceRequestOptions,
+): Promise<string | null> {
+  if (typeof ref === "string") return null;
   try {
-    const hit = await crossref.getInfoByTitle?.(title);
-    if (hit?.identifiers.DOI && titleSimilar(hit.title, title)) {
-      return hit.identifiers.DOI;
-    }
+    const hit = await crossref.getInfoByReference(ref, options);
+    return hit?.identifiers.DOI || null;
   } catch {
-    // fall through to the next resolver
+    return null;
   }
-  try {
-    const hit = await openalex.getInfoByTitle?.(title);
-    if (hit?.identifiers.DOI && titleSimilar(hit.title, title)) {
-      return hit.identifiers.DOI;
-    }
-  } catch {
-    // fall through to the next resolver
-  }
-  try {
-    const hit = await semanticscholar.getInfoByTitle?.(title);
-    if (hit?.identifiers.DOI && titleSimilar(hit.title, title)) {
-      return hit.identifiers.DOI;
-    }
-  } catch {
-    // fall through to the next resolver
-  }
-  return null;
 }

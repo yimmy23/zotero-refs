@@ -13,6 +13,11 @@ import {
 } from "./groupedStudyReferences";
 import { getPref } from "../utils/prefs";
 import { getString } from "../utils/locale";
+import {
+  PDFReadSession,
+  PDFReadInterrupted,
+  type PDFReadOptions,
+} from "./parserSession";
 
 /**
  * PDF bibliography extraction engine.
@@ -632,8 +637,13 @@ function continuationVerdict(
   return "stray";
 }
 
-/** a real entry never needs this many wrapped lines — bound the last one */
-const MAX_TAIL_LINES = 12;
+/** Look ahead only to disambiguate title words that resemble tail headings. */
+const TAIL_HEADING_LOOKAHEAD = 32;
+/** Existing bounded evidence probe for an out-of-sequence numbered start. */
+const CITATION_EVIDENCE_LOOKAHEAD = 12;
+/** Emergency text budget, independent of narrow columns or wrapped author lists.
+ * Geometry, completion evidence and tail headings remain the normal boundaries. */
+const MAX_TAIL_CHARACTERS = 32_768;
 
 /**
  * Numbered bibliographies (the vast majority of biomedical journals): a
@@ -642,7 +652,10 @@ const MAX_TAIL_LINES = 12;
  * which breaks across columns / pages / justified layouts.
  * Returns null when the input is not a numbered list starting at 1.
  */
-function mergeNumberedRefs(input: PDFLine[]): PDFLine[] | null {
+function mergeNumberedRefs(
+  input: PDFLine[],
+  diagnostics?: PDFParseDiagnostics,
+): PDFLine[] | null {
   if (!input.length) return null;
   const startIdx = findNumberedStart(input);
   if (startIdx < 0) return null;
@@ -682,7 +695,8 @@ function mergeNumberedRefs(input: PDFLine[]): PDFLine[] | null {
   // their Methods references (69–83) after a block of front matter
   let skipping = false;
   let strayed = false;
-  let tailLines = 0;
+  let entryCharacters = 0;
+  const truncations: NonNullable<PDFParseDiagnostics["truncations"]> = [];
   let strayCount = 0;
   let endedAt = "";
   const joinLines = (lines: PDFLine[]) =>
@@ -705,7 +719,7 @@ function mergeNumberedRefs(input: PDFLine[]): PDFLine[] | null {
     }
     last = line;
     row = { line };
-    tailLines++;
+    entryCharacters += line.text.length + 1;
   };
   for (let i = 0; i < input.length; i++) {
     const line = input[i];
@@ -731,7 +745,7 @@ function mergeNumberedRefs(input: PDFLine[]): PDFLine[] | null {
       expected = n + 1;
       skipping = false;
       strayed = false;
-      tailLines = 0;
+      entryCharacters = line.text.length;
       continue;
     }
     if (!cur || !last || !anchor) continue; // leading noise before entry 1
@@ -802,7 +816,7 @@ function mergeNumberedRefs(input: PDFLine[]): PDFLine[] | null {
       const continuation: PDFLine[] = [];
       for (
         let j = i;
-        j < input.length && continuation.length <= MAX_TAIL_LINES;
+        j < input.length && continuation.length <= TAIL_HEADING_LOOKAHEAD;
         j++
       ) {
         if (j > i && nums[j] > 0) break;
@@ -841,7 +855,24 @@ function mergeNumberedRefs(input: PDFLine[]): PDFLine[] | null {
       }
       continue;
     }
-    if (verdict === "accept" && isLast && tailLines >= MAX_TAIL_LINES) {
+    if (
+      verdict === "accept" &&
+      isLast &&
+      entryCharacters + line.text.length + 1 > MAX_TAIL_CHARACTERS
+    ) {
+      truncations.push({
+        reason: "tail-character-budget",
+        entryOrdinal: out.length,
+        printedNumber: numAtStart(cur.text) || null,
+        limit: MAX_TAIL_CHARACTERS,
+        retainedText: joinLines(entryLines),
+        firstOmittedLine: {
+          text: line.text,
+          page: line.pageNum ?? null,
+          x: absX(line),
+          y: line.y,
+        },
+      });
       verdict = "end";
     }
     if (verdict === "end") {
@@ -868,7 +899,7 @@ function mergeNumberedRefs(input: PDFLine[]): PDFLine[] | null {
       };
       entryLines.push(line);
       if (provisional.length) provisional.push(line);
-      tailLines++;
+      entryCharacters += line.text.length + 1;
       continue;
     }
     // solid = directly below a line of the entry's own flow
@@ -897,6 +928,11 @@ function mergeNumberedRefs(input: PDFLine[]): PDFLine[] | null {
       `[pdfparser] numbering out of sequence (${out.length} of ${numberedLines}) — indent merge`,
     );
     return null;
+  }
+  if (out.length >= 3 && diagnostics && truncations.length) {
+    diagnostics.status = "limited";
+    diagnostics.truncations = truncations;
+    diagnostics.warnings.push("tail-character-budget", "reference-truncated");
   }
   return out.length >= 3 ? out : null;
 }
@@ -934,9 +970,12 @@ function createIndentMatcher(lines: PDFLine[], indent: number) {
   };
 }
 
-function mergeSameRef(input: PDFLine[]): PDFLine[] {
+function mergeSameRef(
+  input: PDFLine[],
+  diagnostics?: PDFParseDiagnostics,
+): PDFLine[] {
   if (!input.length) return [];
-  const numbered = mergeNumberedRefs(input);
+  const numbered = mergeNumberedRefs(input, diagnostics);
   if (numbered) {
     ztoolkit.log(`[pdfparser] numbered merge -> ${numbered.length}`);
     return numbered;
@@ -1236,6 +1275,7 @@ function findLineNumbers(items: PDFItem[]): Set<PDFItem> {
 async function hasLineNumbers(
   pages: any[],
   probeText?: ProbeTextCache,
+  session?: PDFReadSession,
 ): Promise<boolean> {
   // a handful of body pages from the first third of the document: the
   // title page has none, a pre-proof cover sheet has no text, and pages
@@ -1249,12 +1289,19 @@ async function hasLineNumbers(
   );
   for (const i of probes) {
     try {
-      const tc = await pages[i].pdfPage.getTextContent();
+      const tc = session
+        ? await session.wait<any>(
+            () => pages[i].pdfPage.getTextContent(),
+            "probe-text",
+          )
+        : await pages[i].pdfPage.getTextContent();
+      session?.check("probe-text");
       const found = findLineNumbers(tc.items).size > 0;
       // Only these at-most-five successful body-page probes enter the cache.
       probeText?.set(pages[i].pdfPage, tc);
       if (found) return true;
-    } catch {
+    } catch (error) {
+      if (error instanceof PDFReadInterrupted) throw error;
       // unreadable page — no evidence
     }
   }
@@ -1361,14 +1408,22 @@ async function readPdfPage(
   pdfPage: any,
   stripLineNumbers = false,
   probeText?: ProbeTextCache,
+  session?: PDFReadSession,
 ): Promise<PDFLine[]> {
+  session?.check("page-text");
   const probed = probeText?.get(pdfPage);
   // Consume before annotation/text processing, including its failure paths.
   probeText?.delete(pdfPage);
-  const textContent = probed ?? (await pdfPage.getTextContent());
-  let items: PDFItem[] = textContent.items.filter(
-    (item: PDFItem) => item.str.trim().length,
-  );
+  const textContent =
+    probed ??
+    (session
+      ? await session.wait<any>(() => pdfPage.getTextContent(), "page-text")
+      : await pdfPage.getTextContent());
+  session?.check("page-text");
+  // Annotation enrichment belongs to this parse, never mutate pdf.js caches.
+  let items: PDFItem[] = textContent.items
+    .filter((item: PDFItem) => item.str.trim().length)
+    .map((item: PDFItem) => ({ ...item, transform: [...item.transform] }));
   if (items.length == 0) {
     return [];
   }
@@ -1461,7 +1516,13 @@ async function readPdfPage(
       items = items.filter((it) => !drop.has(it));
     }
   }
-  const annotations: PDFAnnotation[] = await pdfPage.getAnnotations();
+  const annotations: PDFAnnotation[] = session
+    ? await session.wait<PDFAnnotation[]>(
+        () => pdfPage.getAnnotations(),
+        "page-annotations",
+      )
+    : await pdfPage.getAnnotations();
+  session?.check("page-annotations");
   updateItemsAnnotions(items, annotations);
   const lines = mergeSameLine(restoreGutterNumberItems(items));
   const view = pdfPage._pageInfo?.view;
@@ -1501,14 +1562,17 @@ async function readPdfPage(
 async function getViewerApp(
   reader: any,
   captureManualPage: boolean,
+  session: PDFReadSession,
 ): Promise<{ app: any; manualPage?: unknown } | null> {
   for (let i = 0; i < 25; i++) {
+    session.check("viewer");
     try {
       const internal = (reader as any)?._internalReader;
       const view =
         internal?._primaryView ?? internal?._lastView ?? internal?._views?.[0];
       const app = view?._iframeWindow?.PDFViewerApplication;
       if (app?.pdfLoadingTask && app?.pdfViewer) {
+        session.bind(reader, view, app);
         if (!captureManualPage) return { app };
         try {
           return { app, manualPage: app.page };
@@ -1516,10 +1580,11 @@ async function getViewerApp(
           return { app, manualPage: undefined };
         }
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof PDFReadInterrupted) throw error;
       // reader still initializing
     }
-    await Zotero.Promise.delay(200);
+    await session.wait(() => Zotero.Promise.delay(200), "viewer");
   }
   return null;
 }
@@ -1665,6 +1730,7 @@ async function markedContinuation(
   probeText?: ProbeTextCache,
   preloadedEmptyPages?: Set<number>,
   diagnostics?: PDFParseDiagnostics,
+  session?: PDFReadSession,
 ): Promise<PDFLine[] | null> {
   const relevantMarkers = () =>
     Object.entries(pageLines).flatMap(([page, lines]) =>
@@ -1711,6 +1777,7 @@ async function markedContinuation(
   const failedPages = new Set<number>();
   const LIMIT = 64;
   const read = async (index: number) => {
+    session?.check("continuation-page");
     // Empty preload reads used to consume this lookup budget on reread.
     // Keep that search boundary while reusing their already-known empty lines.
     if (preloadedEmptyPages?.has(index)) {
@@ -1727,8 +1794,11 @@ async function markedContinuation(
           pages[index].pdfPage,
           lineNumbered,
           probeText,
+          session,
         );
-      } catch {
+        session?.check("continuation-page");
+      } catch (error) {
+        if (error instanceof PDFReadInterrupted) throw error;
         failedPages.add(index);
         ztoolkit.log(
           `[pdfparser] continuation lookup could not read p${index}`,
@@ -1873,10 +1943,12 @@ async function getRefLines(
   manualCurrentPage: unknown,
   onProgress: ParseProgress,
   probeText: ProbeTextCache,
-  diagnostics?: PDFParseDiagnostics,
+  diagnostics: PDFParseDiagnostics | undefined,
+  session: PDFReadSession,
 ): Promise<PDFLine[]> {
-  await app.pdfLoadingTask.promise;
-  await app.pdfViewer.pagesPromise;
+  await session.wait(() => app.pdfLoadingTask.promise, "loading");
+  await session.wait(() => app.pdfViewer.pagesPromise, "pages");
+  session.check("pages");
   const pages: any[] = app.pdfViewer._pages;
   if (!pages?.length) {
     ztoolkit.log("[pdfparser] no pages");
@@ -1910,7 +1982,7 @@ async function getRefLines(
   const preloadedEmptyPages = new Set<number>();
   let maxWidth = 0;
   let maxHeight = 0;
-  const lineNumbered = await hasLineNumbers(pages, probeText);
+  const lineNumbered = await hasLineNumbers(pages, probeText, session);
   if (lineNumbered)
     ztoolkit.log("[pdfparser] manuscript line numbers detected");
   if (diagnostics) {
@@ -1936,7 +2008,7 @@ async function getRefLines(
     const pdfPage = pages[pageNum].pdfPage;
     maxWidth = pdfPage._pageInfo.view[2];
     maxHeight = pdfPage._pageInfo.view[3];
-    const lines = await readPdfPage(pdfPage, lineNumbered, probeText);
+    const lines = await readPdfPage(pdfPage, lineNumbered, probeText, session);
     // An empty text layer is a completed read, not a cache miss.
     pageLines[pageNum] = lines;
     if (lines.length == 0) {
@@ -1958,6 +2030,7 @@ async function getRefLines(
     probeText,
     preloadedEmptyPages,
     diagnostics,
+    session,
   );
   if (marked !== null) {
     onProgress(getString("parser-done"), 100);
@@ -2013,7 +2086,7 @@ async function getRefLines(
         onProgress(`${getString("parser-read-text")} ${p}/${p}`, 90);
       }
     } else {
-      lines = await readPdfPage(pdfPage, lineNumbered, probeText);
+      lines = await readPdfPage(pdfPage, lineNumbered, probeText, session);
       pageLines[pageNum] = [...lines];
       if (
         continuationMarkers(lines).some((marker) =>
@@ -2028,6 +2101,7 @@ async function getRefLines(
           probeText,
           preloadedEmptyPages,
           diagnostics,
+          session,
         );
         if (linked !== null) {
           onProgress(getString("parser-done"), 100);
@@ -2530,7 +2604,7 @@ async function getRefLines(
         let text = lines[start].text;
         for (
           let i = start + 1;
-          i < Math.min(lines.length, start + MAX_TAIL_LINES + 1);
+          i < Math.min(lines.length, start + CITATION_EVIDENCE_LOOKAHEAD + 1);
           i++
         ) {
           if (nums[i] || tailNoiseKind(lines[i].text)) break;
@@ -3115,10 +3189,19 @@ async function parsePDFReferencesImpl(
   options: PDFParseOptions = {},
   diagnostics?: PDFParseDiagnostics,
 ): Promise<RefItem[]> {
-  const onProgress: ParseProgress = options.onProgress || (() => {});
+  const session = new PDFReadSession(reader, options);
+  const onProgress: ParseProgress = (...args) => {
+    session.check("progress");
+    options.onProgress?.(...args);
+    session.check("progress");
+  };
   const probeText: ProbeTextCache = new Map();
   try {
-    const viewer = await getViewerApp(reader, !!options.fromCurrentPage);
+    const viewer = await getViewerApp(
+      reader,
+      !!options.fromCurrentPage,
+      session,
+    );
     if (!viewer) {
       if (diagnostics) diagnostics.status = "unavailable";
       ztoolkit.log("[pdfparser] PDFViewerApplication unavailable");
@@ -3131,7 +3214,9 @@ async function parsePDFReferencesImpl(
       onProgress,
       probeText,
       diagnostics,
+      session,
     );
+    session.check("segmentation");
     if (refLines.length == 0) {
       ztoolkit.log("[pdfparser] getRefLines: 0 refLines");
       return [];
@@ -3139,7 +3224,7 @@ async function parsePDFReferencesImpl(
     // Region selection/probes retain their established merger. Only the final
     // confirmed block may use the conservative grouped-study sequence path.
     const grouped = segmentGroupedStudyReferences(refLines);
-    const merged = grouped?.refs ?? mergeSameRef(refLines);
+    const merged = grouped?.refs ?? mergeSameRef(refLines, diagnostics);
     if (diagnostics) {
       diagnostics.segmentation = {
         strategy: grouped ? "grouped-study" : "legacy-merge",
@@ -3181,6 +3266,7 @@ async function parsePDFReferencesImpl(
           (numAtStart(line.text) || yearFirstNumber(line.text)) === i + 1,
       );
     for (let i = 0; i < merged.length; i++) {
+      session.check("references");
       const line = merged[i];
       const raw = compactLeadingDigits(line.text.trim());
       // leading bibliography number: "(1)", "[12]", "12.", "1 " ...
@@ -3225,19 +3311,30 @@ async function parsePDFReferencesImpl(
           diagnostics.warnings.push("missing-source-start-anchor");
       }
     }
+    session.check("complete");
     return references;
   } catch (e) {
     ztoolkit.log("[pdfparser] parse failed", e);
     if (diagnostics) {
-      diagnostics.status = "error";
+      diagnostics.status =
+        e instanceof PDFReadInterrupted
+          ? e.reason === "deadline"
+            ? "limited"
+            : "cancelled"
+          : "error";
       diagnostics.entries = [];
       diagnostics.segmentation = undefined;
-      diagnostics.warnings.push("parser-error");
+      diagnostics.warnings.push(
+        e instanceof PDFReadInterrupted ? e.message : "parser-error",
+      );
+      if (e instanceof PDFReadInterrupted)
+        diagnostics.interruption = { reason: e.reason, phase: e.phase };
     }
     return [];
   } finally {
     // Release unconsumed probes on every success, early return and failure.
     probeText.clear();
+    session.dispose();
   }
 }
 
@@ -3249,7 +3346,28 @@ export interface PDFParseDiagnostics {
     | "unavailable"
     | "partial"
     | "ambiguous"
+    | "limited"
+    | "cancelled"
     | "error";
+  interruption?: {
+    reason: "deadline" | "cancelled" | "source-changed";
+    phase: string;
+  };
+  /** Known text-budget loss; retainedText and the first omitted raw line make
+   * the cut reviewable without asserting that the selected block is complete. */
+  truncations?: {
+    reason: "tail-character-budget";
+    entryOrdinal: number;
+    printedNumber: number | null;
+    limit: number;
+    retainedText: string;
+    firstOmittedLine: {
+      text: string;
+      page: number | null;
+      x: number;
+      y: number;
+    };
+  }[];
   /** The existing parser does not establish complete source-line coverage. */
   completeness: "not-assessed";
   pageCount: number | null;
@@ -3286,10 +3404,11 @@ export interface PDFParseDiagnostics {
   };
 }
 
-type PDFParseOptions = {
+export interface PDFParseOptions extends PDFReadOptions {
   fromCurrentPage?: boolean;
   onProgress?: ParseProgress;
-};
+  onDiagnostics?: (diagnostics: PDFParseDiagnostics) => void;
+}
 
 function diagnoseNumbering(
   entries: PDFParseDiagnostics["entries"],
@@ -3332,7 +3451,7 @@ export async function parsePDFReferences(
   reader: any,
   options: PDFParseOptions = {},
 ): Promise<RefItem[]> {
-  return parsePDFReferencesImpl(reader, options);
+  return (await parsePDFReferencesDetailed(reader, options)).refs;
 }
 
 /** Explicit diagnostic route using the same parser and same reference output. */
@@ -3364,5 +3483,10 @@ export async function parsePDFReferencesDetailed(
   if (diagnostics.numbering.kind === "mixed")
     diagnostics.warnings.push("mixed-numbering-evidence");
   diagnostics.warnings = [...new Set(diagnostics.warnings)];
+  try {
+    options.onDiagnostics?.(diagnostics);
+  } catch (error) {
+    ztoolkit.log("[pdfparser] diagnostics callback failed", error);
+  }
   return { refs, diagnostics };
 }

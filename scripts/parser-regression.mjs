@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import console from "node:console";
 import fs from "node:fs";
+import { setTimeout, clearTimeout } from "node:timers";
 import { fileURLToPath, URL } from "node:url";
 import { transformSync } from "esbuild";
 
@@ -44,6 +45,9 @@ function compile(relative, imports = {}, extra = "", mapClass = Map) {
 const text = compile("src/core/text.ts");
 const grouped = compile("src/pdf/groupedReferences.ts");
 const groupedStudy = compile("src/pdf/groupedStudyReferences.ts");
+const session = compile("src/pdf/parserSession.ts", {
+  "../utils/window": { setTimeout, clearTimeout },
+});
 const parser = compile(
   "src/pdf/parser.ts",
   {
@@ -52,6 +56,7 @@ const parser = compile(
     "./groupedStudyReferences": groupedStudy,
     "../utils/prefs": { getPref: () => 4 },
     "../utils/locale": { getString: (key) => key },
+    "./parserSession": session,
   },
   "\nexport { mergeSameLine, mergeSameRef, mergeNumberedRefs, numAtStart, findLineNumbers, restoreNumberedColumnOrder, readPdfPage, restoreGutterNumberItems, hasLineNumbers, updateItemsAnnotions };\n",
 );
@@ -2673,6 +2678,7 @@ await check(
         "./groupedStudyReferences": groupedStudy,
         "../utils/prefs": { getPref: () => 4 },
         "../utils/locale": { getString: (key) => key },
+        "./parserSession": session,
       },
       "",
       ProbeMap,

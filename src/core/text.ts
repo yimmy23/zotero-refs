@@ -216,15 +216,26 @@ export function cleanText<T extends string | undefined>(s: T): T {
   );
 }
 
-/** lowercase, keep only letters / digits / CJK — for title matching */
+/** Loose retrieval key only. Never use this to establish a paper's identity. */
+export function normalizeSearchTitle(s?: string): string {
+  return cleanText(s || "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]/gu, "");
+}
+
+/**
+ * Identity key: keep Unicode letters, combining marks, numbers and semantic
+ * symbols (HER2+/HER2−, α/β, CD4⁺/CD4⁻). NFC preserves superscripts/subscripts;
+ * compatibility folding would silently turn these into ordinary characters.
+ * Typographic hyphens are equivalent, but a hyphen/minus is never deleted.
+ */
 export function normalizeTitle(s?: string): string {
-  if (!s) return "";
-  return (
-    s
-      .toLowerCase()
-      .match(/[0-9a-z一-龥]+/g)
-      ?.join("") || ""
-  );
+  return cleanText(s || "")
+    .normalize("NFC")
+    .toLowerCase()
+    .replace(/[‐‑‒–—﹘﹣－−]/g, "-")
+    .replace(/[^\p{L}\p{M}\p{N}\p{S}-]/gu, "");
 }
 
 /** Only exact normalized titles may promote a search result to metadata. */

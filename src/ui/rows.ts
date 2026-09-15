@@ -53,6 +53,8 @@ export interface RowContext {
   editable?: boolean;
   /** persist edited text (References section cache) */
   onEdited?: (ref: RefItem, index: number) => void;
+  /** Let the panel protect an in-progress edit from a late refresh. */
+  onEditStart?: () => void;
   /** compact style (related list) */
   compact?: boolean;
 }
@@ -417,7 +419,7 @@ async function locateReference(ref: RefItem, libraryID: number) {
       if (isChinese(ref.text || ref.title || "")) {
         url = (await getCNKIURL(ref.title || ref.text || "")) || undefined;
       } else if (ref.title) {
-        const DOI = await resolveDOIByTitle(ref.title);
+        const DOI = await resolveDOIByTitle(ref);
         if (DOI) url = `https://doi.org/${DOI}`;
       }
     } finally {
@@ -478,6 +480,7 @@ async function addReference(
       (msg) => {
         if (current()) popupWin.changeLine({ text: collapseText(msg, 45) });
       },
+      current,
     );
     if (!current()) {
       popupWin.close();
@@ -665,7 +668,35 @@ export function renderRefRow(
   action.type = "button";
   action.className = "references-row-action zotero-clicky";
   setActionState(action, "+");
-  row.append(action);
+
+  const details = doc.createElement("button");
+  details.type = "button";
+  details.className = "references-button references-row-details";
+  details.textContent = getString("row-details");
+  details.title = getString("row-details-tip");
+  details.setAttribute("aria-haspopup", "dialog");
+  row.append(details, action);
+
+  const openDetails = () => {
+    if (!row.isConnected) return;
+    const rect = row.getBoundingClientRect();
+    const position =
+      Zotero.Prefs.get("extensions.zotero.layout", true) === "stacked"
+        ? ("top center" as const)
+        : ("left" as const);
+    const popup = showRefPopup(
+      ref,
+      { x: rect.x - 5, y: rect.y, width: rect.width, height: rect.height },
+      position,
+      idText(),
+    );
+    popup.focusFrom(details);
+  };
+  details.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openDetails();
+  });
 
   // resolve in-library state asynchronously (index lookup is cheap)
   void (async () => {
@@ -685,6 +716,7 @@ export function renderRefRow(
   const enterEdit = () => {
     if (!ctx.editable || editing || !row.isConnected) return;
     editing = true;
+    ctx.onEditStart?.();
     label.style.display = "none";
     const textarea = doc.createElement("textarea");
     textarea.className = "references-row-edit";
@@ -742,6 +774,11 @@ export function renderRefRow(
     editTimer = undefined;
   });
   label.addEventListener("keydown", (event: KeyboardEvent) => {
+    if (event.key === "Enter" && event.altKey) {
+      event.preventDefault();
+      openDetails();
+      return;
+    }
     if (event.key === "F2" && ctx.editable) {
       event.preventDefault();
       enterEdit();
@@ -772,7 +809,8 @@ export function renderRefRow(
     if (
       event.button !== 0 ||
       editing ||
-      (event.target as HTMLElement) === action
+      (event.target as HTMLElement) === action ||
+      details.contains(event.target as Node)
     )
       return;
     event.preventDefault();

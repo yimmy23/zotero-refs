@@ -5,10 +5,13 @@ import { normalizeAbstractText } from "../core/abstractText";
 import {
   identifiersToURL,
   normalizeTitle,
+  identifiersConflict,
   refTextToInfo,
   cleanText,
 } from "../core/text";
 import type { Identifiers, MetaSource, RefItem, RefTag } from "../core/types";
+import type { SourceRequestOptions } from "../core/types";
+import { authorFamilyName } from "../core/authorNames";
 
 /**
  * Crossref (api.crossref.org) — the official DOI registration agency
@@ -100,7 +103,10 @@ function mapWork(w: any): RefItem {
     : [];
 
   const dateParts =
-    w.published?.["date-parts"]?.[0] || w.created?.["date-parts"]?.[0];
+    w.published?.["date-parts"]?.[0] ||
+    w.issued?.["date-parts"]?.[0] ||
+    w["published-print"]?.["date-parts"]?.[0] ||
+    w["published-online"]?.["date-parts"]?.[0];
   const year = dateParts?.[0] !== undefined ? String(dateParts[0]) : undefined;
   const publishDate = dateParts?.length ? dateParts.join("-") : undefined;
 
@@ -143,42 +149,118 @@ function mapWork(w: any): RefItem {
 }
 
 export const crossref: MetaSource & {
-  getInfoByDOI(doi: string): Promise<RefItem | null>;
-  getInfoByTitle(title: string, refText?: string): Promise<RefItem | null>;
-  getReferences(ids: Identifiers): Promise<RefItem[] | null>;
+  getInfoByDOI(
+    doi: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem | null>;
+  getInfoByTitle(
+    title: string,
+    refText?: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem | null>;
+  getTitleCandidates(
+    title: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem[] | null>;
+  getInfoByReference(
+    ref: RefItem,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem | null>;
+  getReferences(
+    ids: Identifiers,
+    title?: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem[] | null>;
 } = {
   id: "crossref",
 
-  async getInfoByDOI(doi: string): Promise<RefItem | null> {
+  async getInfoByDOI(
+    doi: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem | null> {
     const url = withMailto(`${BASE}/works/${encodeURIComponent(doi)}`);
-    const res = await http.getJSON(url);
+    const res = await http.getJSON(url, options);
     const message = res?.message;
     if (!message) return null;
     return mapWork(message);
   },
 
-  async getInfoByTitle(title: string): Promise<RefItem | null> {
+  async getTitleCandidates(
+    title: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem[] | null> {
     const url = withMailto(
-      `${BASE}/works?query.bibliographic=${encodeURIComponent(title)}&rows=5`,
+      `${BASE}/works?query.bibliographic=${encodeURIComponent(title)}&rows=20`,
     );
-    const res = await http.getJSON(url);
+    const res = await http.getJSON(url, options);
     const items: any[] = res?.message?.items;
-    if (!Array.isArray(items) || !items.length) return null;
+    if (!Array.isArray(items)) return null;
     // derivative records (peer reviews, datasets like Faculty Opinions
     // recommendations) often outrank the actual article
     const SKIP_TYPES = new Set(["component", "peer-review", "dataset"]);
-    const candidates = items.filter((it) => !SKIP_TYPES.has(it.type));
-    if (!candidates.length) return null;
-    const want = normalizeTitle(title);
-    const exact = candidates.find(
-      (it) => normalizeTitle(it.title?.[0]) === want,
-    );
-    return mapWork(exact || candidates[0]);
+    return items.filter((it) => it && !SKIP_TYPES.has(it.type)).map(mapWork);
   },
 
-  async getReferences(ids: Identifiers): Promise<RefItem[] | null> {
+  async getInfoByReference(
+    ref: RefItem,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem | null> {
+    const title = normalizeTitle(ref.title);
+    const author = normalizeTitle(authorFamilyName(ref.authors?.[0]));
+    const year = String(ref.year || "").match(/^\d{4}$/)?.[0];
+    // A bare title is a search query, not sufficient evidence to write a DOI.
+    if (title.length < 8 || !author || !year) return null;
+    const candidates = await crossref.getTitleCandidates(ref.title!, options);
+    if (!candidates) return null;
+    const plausible = candidates.filter((candidate) => {
+      if (
+        normalizeTitle(candidate.title) !== title ||
+        identifiersConflict(ref.identifiers, candidate.identifiers)
+      )
+        return false;
+      const candidateAuthor = normalizeTitle(
+        authorFamilyName(candidate.authors?.[0]),
+      );
+      return (
+        !(candidate.year && candidate.year !== year) &&
+        !(candidateAuthor && candidateAuthor !== author)
+      );
+    });
+    // A same-title record lacking corroboration remains a plausible rival;
+    // do not discard it just to manufacture a unique candidate.
+    const byDOI = new Map<string, RefItem>();
+    for (const candidate of plausible) {
+      const doi = candidate.identifiers.DOI?.trim().toLowerCase();
+      if (!doi || !/^10\.\d{4,9}\/\S+$/.test(doi)) return null;
+      byDOI.set(doi, candidate);
+    }
+    if (byDOI.size !== 1) return null;
+    const selected = [...byDOI.values()][0];
+    return selected.year === year &&
+      normalizeTitle(authorFamilyName(selected.authors?.[0])) === author
+      ? selected
+      : null;
+  },
+
+  async getInfoByTitle(
+    title: string,
+    refText?: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem | null> {
+    const parsed: Partial<RefItem> = refText ? refTextToInfo(refText) : {};
+    return crossref.getInfoByReference(
+      { authors: [], ...parsed, title, identifiers: parsed.identifiers || {} },
+      options,
+    );
+  },
+
+  async getReferences(
+    ids: Identifiers,
+    _title?: string,
+    options?: SourceRequestOptions,
+  ): Promise<RefItem[] | null> {
     if (!ids.DOI) return null;
-    const info = await crossref.getInfoByDOI(ids.DOI);
+    const info = await crossref.getInfoByDOI(ids.DOI, options);
     return info?.references?.length ? info.references : null;
   },
 };

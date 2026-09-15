@@ -1,3 +1,4 @@
+import type { SourceRequestOptions } from "../core/types";
 import { identifiersToURL } from "../core/text";
 import type { MetaSource, RefItem } from "../core/types";
 import { http } from "../core/http";
@@ -15,9 +16,12 @@ function tagText(el: any, tag: string): string | undefined {
   return typeof text === "string" ? text.trim() : undefined;
 }
 
-async function getInfoByArXiv(arxiv: string): Promise<RefItem | null> {
+async function getInfoByArXiv(
+  arxiv: string,
+  options: SourceRequestOptions = {},
+): Promise<RefItem | null> {
   const url = `https://export.arxiv.org/api/query?id_list=${encodeURIComponent(arxiv)}`;
-  const xml = await http.getText(url);
+  const xml = await http.getText(url, options);
   if (!xml) return null;
 
   let entry: any;

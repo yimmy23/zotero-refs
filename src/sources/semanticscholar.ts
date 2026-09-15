@@ -5,6 +5,9 @@ import type {
   PagedRefs,
   RefItem,
   RefTag,
+  SourceRequestOptions,
+  ReferenceResult,
+  RequestFailure,
 } from "../core/types";
 import { http } from "../core/http";
 import { relatedLimit, withRelatedRank } from "../core/related";
@@ -101,74 +104,132 @@ function mapPaper(data: any): RefItem {
   };
 }
 
-async function fetchByPid(pid: string): Promise<RefItem | null> {
+async function fetchByPid(
+  pid: string,
+  options: SourceRequestOptions = {},
+): Promise<RefItem | null> {
   const data = await http.getJSON<any>(
     `${GRAPH_API}/paper/${encodeURIComponent(pid)}?fields=${FIELDS}`,
-    { headers: authHeaders() },
+    { ...options, headers: authHeaders() },
   );
   if (!data) return null;
   return mapPaper(data);
 }
 
-async function getInfoByDOI(doi: string): Promise<RefItem | null> {
-  return fetchByPid(`DOI:${doi}`);
+async function getInfoByDOI(
+  doi: string,
+  options: SourceRequestOptions = {},
+): Promise<RefItem | null> {
+  return fetchByPid(`DOI:${doi}`, options);
 }
 
-async function getInfoByArXiv(arxiv: string): Promise<RefItem | null> {
-  return fetchByPid(`arXiv:${arxiv}`);
+async function getInfoByArXiv(
+  arxiv: string,
+  options: SourceRequestOptions = {},
+): Promise<RefItem | null> {
+  return fetchByPid(`arXiv:${arxiv}`, options);
 }
 
-async function getInfoByPMID(pmid: string): Promise<RefItem | null> {
-  return fetchByPid(`PMID:${pmid}`);
+async function getInfoByPMID(
+  pmid: string,
+  options: SourceRequestOptions = {},
+): Promise<RefItem | null> {
+  return fetchByPid(`PMID:${pmid}`, options);
 }
 
-async function firstFromList(url: string): Promise<any | null> {
-  const res = await http.getJSON<any>(url, { headers: authHeaders() });
+async function firstFromList(
+  url: string,
+  options: SourceRequestOptions,
+): Promise<any | null> {
+  const res = await http.getJSON<any>(url, {
+    ...options,
+    headers: authHeaders(),
+  });
   return res?.data?.[0] || null;
 }
 
 async function getInfoByTitle(
   title: string,
   _refText?: string,
+  options: SourceRequestOptions = {},
 ): Promise<RefItem | null> {
   const matchUrl = `${GRAPH_API}/paper/search/match?query=${encodeURIComponent(title)}&fields=${FIELDS}`;
-  let data = await firstFromList(matchUrl);
+  let data = await firstFromList(matchUrl, options);
   if (!data) {
     const searchUrl = `${GRAPH_API}/paper/search?query=${encodeURIComponent(title)}&limit=1&fields=${FIELDS}`;
-    data = await firstFromList(searchUrl);
+    data = await firstFromList(searchUrl, options);
   }
   if (!data) return null;
   return mapPaper(data);
 }
 
-async function getReferences(
+async function getReferencesResult(
   ids: Identifiers,
   _title?: string,
-): Promise<RefItem[] | null> {
+  options: SourceRequestOptions = {},
+): Promise<ReferenceResult> {
   const pid = pidFromIdentifiers(ids);
-  if (!pid) return null;
+  if (!pid) return { items: [], status: "unavailable" };
   const fields = `${REFERENCE_FIELDS},contexts,intents`;
   const url = `${GRAPH_API}/paper/${encodeURIComponent(pid)}/references?fields=${fields}&limit=${REFERENCE_PAGE_SIZE}`;
   const refs: RefItem[] = [];
   const seen = new Set<string>();
+  // One pagination operation shares the same budget across all pages.
+  options = { ...options, deadline: options.deadline ?? Date.now() + 30000 };
+  const partial = (
+    error: RequestFailure,
+    nextOffset?: number,
+  ): ReferenceResult => ({
+    items: refs,
+    status: refs.length
+      ? "partial"
+      : error.kind === "rate_limited"
+        ? "rate_limited"
+        : "unavailable",
+    nextOffset,
+    error,
+  });
   let offset = 0;
   for (let page = 0; page < MAX_REFERENCE_PAGES; page++) {
-    // Each page uses the shared cache, in-flight deduplication and host gate.
-    const res = await http.getJSON<any>(`${url}&offset=${offset}`, {
+    const response = await http.getJSONResult<any>(`${url}&offset=${offset}`, {
+      ...options,
       headers: authHeaders(),
     });
-    if (!Array.isArray(res?.data) || !res.data.length) break;
+    if (!response.ok) return partial(response.error, offset);
+    const res = response.data;
+    if (!Array.isArray(res?.data)) {
+      return partial({ kind: "invalid_response", recoverable: true }, offset);
+    }
+    if (!res.data.length) {
+      if (res.next != null)
+        return partial({ kind: "pagination", recoverable: true }, offset);
+      return { items: refs, status: refs.length ? "ok" : "empty" };
+    }
     const before = refs.length;
+    let malformed = false;
     for (const entry of res.data) {
-      if (!entry?.citedPaper) continue;
-      const item = mapPaper(entry.citedPaper);
+      // A null citedPaper is an unresolved S2 edge, not a failed page.
+      if (entry?.citedPaper == null) continue;
+      let item: RefItem;
+      try {
+        if (
+          typeof entry.citedPaper !== "object" ||
+          (entry.citedPaper.authors != null &&
+            !Array.isArray(entry.citedPaper.authors))
+        ) {
+          malformed = true;
+          continue;
+        }
+        item = mapPaper(entry.citedPaper);
+      } catch {
+        malformed = true;
+        continue;
+      }
       const keys = Object.entries(item.identifiers).flatMap(([name, value]) =>
         typeof value === "string" && value.trim()
           ? [`${name}:${value.trim().toLowerCase()}`]
           : [],
       );
-      // Identifier-free entries need a stable fallback without collapsing
-      // distinct, identified papers that happen to share a title.
       if (!keys.length && item.title) {
         keys.push(
           `title:${JSON.stringify([item.title.normalize("NFKC").toLowerCase(), item.year || "", item.authors || []])}`,
@@ -179,42 +240,57 @@ async function getReferences(
       for (const key of keys) seen.add(key);
       if (duplicate) continue;
       item.number = refs.length + 1;
-      const contexts: string[] = entry.contexts || [];
-      const intents: string[] = entry.intents || [];
-      if (contexts.length) {
+      const contexts = Array.isArray(entry.contexts) ? entry.contexts : [];
+      const intents = Array.isArray(entry.intents) ? entry.intents : [];
+      if (contexts.length)
         item.description = `${intents[0] || "unknown"}: ${contexts[0]}`;
-      }
       refs.push(item);
     }
+    if (malformed)
+      return partial({ kind: "invalid_response", recoverable: true }, offset);
     const next = res.next;
-    if (next == null) break;
-    // Reject looping/invalid cursors and repeated pages, even when a broken
-    // endpoint keeps claiming that more data is available.
+    if (next == null)
+      return { items: refs, status: refs.length ? "ok" : "empty" };
     if (
       !Number.isSafeInteger(next) ||
       next <= offset ||
       refs.length === before
     ) {
       ztoolkit.log("[s2] stopped reference pagination without progress");
-      break;
+      return partial({ kind: "pagination", recoverable: true }, offset);
     }
     if (page === MAX_REFERENCE_PAGES - 1) {
       ztoolkit.log("[s2] reached reference pagination limit", refs.length);
+      return partial({ kind: "pagination", recoverable: true }, next);
     }
     offset = next;
   }
-  return refs.length ? refs : null;
+  return partial({ kind: "pagination", recoverable: true }, offset);
+}
+
+/** Preserve the legacy array contract; completeness-aware callers use the result. */
+async function getReferences(
+  ids: Identifiers,
+  title?: string,
+  options: SourceRequestOptions = {},
+): Promise<RefItem[] | null> {
+  const result = await getReferencesResult(ids, title, options);
+  return result.items.length ? result.items : null;
 }
 
 async function getCitations(
   ids: Identifiers,
   offset = 0,
   limit = 25,
+  options: SourceRequestOptions = {},
 ): Promise<PagedRefs | null> {
   const pid = pidFromIdentifiers(ids);
   if (!pid) return null;
   const url = `${GRAPH_API}/paper/${encodeURIComponent(pid)}/citations?offset=${offset}&limit=${limit}&fields=${FIELDS}`;
-  const res = await http.getJSON<any>(url, { headers: authHeaders() });
+  const res = await http.getJSON<any>(url, {
+    ...options,
+    headers: authHeaders(),
+  });
   if (!res?.data) return null;
   const items: RefItem[] = res.data
     .filter((entry: any) => entry?.citingPaper)
@@ -225,13 +301,17 @@ async function getCitations(
 async function getRelated(
   ids: Identifiers,
   limit = 40,
+  options: SourceRequestOptions = {},
 ): Promise<RefItem[] | null> {
   const pid = pidFromIdentifiers(ids);
   if (!pid) return null;
   const fields = "title,year,authors,abstract,externalIds,venue,citationCount";
   const bounded = relatedLimit(limit);
   const url = `${RECOMMENDATIONS_API}/papers/forpaper/${encodeURIComponent(pid)}?fields=${fields}&limit=${bounded}`;
-  const res = await http.getJSON<any>(url, { headers: authHeaders() });
+  const res = await http.getJSON<any>(url, {
+    ...options,
+    headers: authHeaders(),
+  });
   const list: unknown = res?.recommendedPapers;
   if (!Array.isArray(list)) return null;
   const refs: RefItem[] = [];
@@ -255,6 +335,7 @@ export const semanticscholar: MetaSource = {
   getInfoByPMID,
   getInfoByTitle,
   getReferences,
+  getReferencesResult,
   getCitations,
   getRelated,
 };
