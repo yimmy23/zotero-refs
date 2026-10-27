@@ -458,7 +458,7 @@ async function fetchReferences(
         }));
         options.onAvailable?.(
           snapshot,
-          `${(api.source && SOURCE_NAME[api.source]) || api.source || "API"} · ${getString("panel-pdf-pending")}`,
+          (api.source && SOURCE_NAME[api.source]) || api.source || "API",
         );
       }
     })
@@ -711,6 +711,7 @@ async function refresh(
     if (list && !state.refs.length)
       setListMessage(list, getString("panel-loading"));
   }
+  let previewSource = "";
   try {
     const hadViews = state.renders.size > 0;
     const refs = await fetchReferences(item, state, {
@@ -727,7 +728,8 @@ async function refresh(
         // Retain an existing list until final success, including its edits.
         if (state.refs.length) return;
         state.refs = available;
-        state.sourceUsed = source;
+        state.sourceUsed = `${source} · ${getString("panel-pdf-pending")}`;
+        previewSource = source;
         state.provisional = true;
         for (const [live, summary] of state.renders)
           if (isCurrent(live, state)) renderList(live, item, state, summary);
@@ -760,6 +762,15 @@ async function refresh(
     if (cancelled && state.provisional) {
       Object.assign(state, previous);
       state.provisional = false;
+    } else if (state.provisional && state.stateKey === itemStateKey(item)) {
+      // The fetch ended without a final list (failure or declined repair).
+      // Keep the online rows, but no longer claim that the PDF is loading:
+      // they remain an incomplete, read-only list that is never persisted.
+      state.provisional = false;
+      state.partial = true;
+      state.sourceUsed = `${previewSource} · ${getString("panel-partial")}`;
+      for (const [live, summary] of state.renders)
+        if (isCurrent(live, state)) renderList(live, item, state, summary);
     }
     for (const live of state.renders.keys()) {
       if (!isCurrent(live, state)) {

@@ -11,6 +11,7 @@ import { http } from "../core/http";
 import { CITED_CHIP_COLOR } from "../core/types";
 import { getString } from "../utils/locale";
 import { getPref, setPref } from "../utils/prefs";
+import { getCNKIPassword } from "../utils/credentials";
 
 /**
  * 中国知网 CNKI — no public API.
@@ -629,7 +630,12 @@ async function getReferences(
   options: SourceRequestOptions = {},
 ): Promise<RefItem[] | null> {
   const username = ((getPref("CNKI.username") as string) || "").trim();
-  const password = ((getPref("CNKI.password") as string) || "").trim();
+  // A legacy pref remains only when migration to the login manager failed.
+  const password = (
+    getCNKIPassword() ||
+    (getPref("CNKI.password") as string) ||
+    ""
+  ).trim();
   // no 知网研学 credentials configured — the caller's UI explains how to
   // set them, we just decline silently here.
   if (!username || !password) return null;

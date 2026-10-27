@@ -71,7 +71,7 @@ pref-cache-hint = 用于本次运行的网络响应缓存，0 表示关闭；已
 pref-network-intro = 设置题录数据源的联系信息与可选凭证。
 pref-email-hint = 请求 Crossref 和 Unpaywall 时附带此邮箱。
 pref-key-hint = 可选。Semantic Scholar 密钥可提高请求配额。
-pref-cnki-hint = 仅用于获取知网参考文献列表。修改任一字段会清除已缓存的登录会话。
+pref-cnki-hint = 仅用于获取知网参考文献列表。密码保存在 Zotero 的登录凭据存储中，不写入设置文件。修改任一字段会清除已缓存的登录会话。
 pref-autosave = 修改自动保存。
 
 pref-openAlexApiKey = OpenAlex API 密钥（可选）

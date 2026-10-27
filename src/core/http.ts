@@ -98,6 +98,12 @@ const HOST_LIMITS: Record<string, number> = {
   default: 4,
 };
 
+/**
+ * Newest waiter first keeps hover/UI lookups responsive. A waiter queued this
+ * long is served first instead, so a burst cannot starve it to its deadline.
+ */
+const MAX_QUEUE_WAIT = 3000;
+
 const HOST_INTERVALS: Record<string, number> = {
   "export.arxiv.org": 3000,
   "eutils.ncbi.nlm.nih.gov": 350,
@@ -105,7 +111,7 @@ const HOST_INTERVALS: Record<string, number> = {
 
 class HostGate {
   private active = 0;
-  private queue: Array<() => void> = [];
+  private queue: Array<{ wake: () => void; at: number }> = [];
   private nextStart = 0;
   private starting: Promise<void> = Promise.resolve();
   private deferred?: RequestFailure;
@@ -133,17 +139,20 @@ class HostGate {
       return false;
     if (this.active < this.limit) this.active++;
     else {
-      let wake!: () => void;
+      let waiter!: { wake: () => void; at: number };
       let entered = false;
       const waiting = new Promise<boolean>((resolve) => {
-        wake = () => {
-          entered = true;
-          resolve(true);
+        waiter = {
+          wake: () => {
+            entered = true;
+            resolve(true);
+          },
+          at: Date.now(),
         };
-        this.queue.push(wake);
+        this.queue.push(waiter);
       });
       if (!(await untilDeadline(waiting, deadline, false))) {
-        const index = this.queue.indexOf(wake);
+        const index = this.queue.indexOf(waiter);
         if (index >= 0) this.queue.splice(index, 1);
         else if (entered) this.release();
         return false;
@@ -184,9 +193,13 @@ class HostGate {
   }
 
   release() {
-    // Transfer the reserved slot to the newest waiting consumer (LIFO).
-    const next = this.queue.pop();
-    if (next) next();
+    // Transfer the reserved slot to the newest waiting consumer (LIFO), unless
+    // the oldest has already waited past MAX_QUEUE_WAIT (bounded starvation).
+    const next =
+      this.queue.length && Date.now() - this.queue[0].at >= MAX_QUEUE_WAIT
+        ? this.queue.shift()
+        : this.queue.pop();
+    if (next) next.wake();
     else this.active--;
   }
 }

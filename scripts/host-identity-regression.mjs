@@ -2521,6 +2521,50 @@ test("cancelled API preview is discarded and the first fetch remains retryable",
   assert.equal(state.refs.length, 0);
 });
 
+test("failed fetch demotes its API preview to a partial list instead of a pending one", async () => {
+  const env = fixture(),
+    item = host(),
+    pdf = deferred();
+  attachSyntheticReader(env, item);
+  const section = env.section({
+    "../pdf/parser": { parsePDFReferences: () => pdf.promise },
+    "../core/fuse": {
+      fuseReferences: async () => {
+        throw new Error("injected fusion failure");
+      },
+    },
+    "../sources": {
+      sources: { crossref: {} },
+      getReferencesByAPI: async () => ({
+        refs: [reference("Preview")],
+        source: "crossref",
+        status: "ok",
+      }),
+    },
+  });
+  section.registerReferencesSection();
+  const pane = env.panes.get("references"),
+    doc = document();
+  await pane.onAsyncRender({ body: doc.body, item, setSectionSummary() {} });
+  const state = section.getState(item);
+  const pending = section.refresh(doc.body, item, state, () => {}, {
+    useCache: false,
+    fromCurrentPage: false,
+  });
+  await tick();
+  assert.equal(state.provisional, true);
+  assert.match(state.sourceUsed, /panel-pdf-pending/);
+  pdf.resolve([reference("Printed PDF entry")]);
+  await pending;
+  assert.equal(state.provisional, false);
+  assert.equal(state.partial, true);
+  assert.equal(state.refs[0].title, "Preview");
+  assert.doesNotMatch(state.sourceUsed, /panel-pdf-pending/);
+  assert.match(state.sourceUsed, /panel-partial/);
+  assert.doesNotMatch(doc.body.textContent, /panel-pdf-pending/);
+  assert.equal(await env.storage.refStorage.get(item, "FUSED"), undefined);
+});
+
 test("edit evidence rejects a conflicting original DOI despite identical citation text", async () => {
   const env = fixture(),
     item = host();

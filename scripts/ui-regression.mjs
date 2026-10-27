@@ -924,13 +924,24 @@ test("Escape cancels editing without changing reference data", async () => {
   assert.equal(list.querySelector("textarea"), null);
 });
 
-test("built full preference keys restore invalid values and invalidate CNKI sessions", async () => {
+test("built full preference keys restore invalid values; CNKI password uses the login store", async () => {
   const env = environment(),
     doc = document(),
     panel = append(doc.root, "vbox");
   panel.setAttribute("id", "refs-preferences");
+  const password = append(panel, "input");
+  password.setAttribute("id", "refs-pref-CNKI-password");
+  password.type = "password";
+  let stored = "from-login-store";
   const module = env.load("src/modules/preferenceScript.ts", {
     "../utils/prefs": env.prefs,
+    "../utils/credentials": {
+      getCNKIPassword: () => stored,
+      setCNKIPassword: async (value) => {
+        stored = value;
+        return true;
+      },
+    },
   });
   await module.registerPrefsScripts(doc.defaultView);
   await module.registerPrefsScripts(doc.defaultView);
@@ -952,15 +963,24 @@ test("built full preference keys restore invalid values and invalidate CNKI sess
   assert.ok(event.stopped);
   assert.ok(input.reported);
   assert.equal(env.prefs.getPref("citationsPageSize"), 25);
-  for (const key of ["CNKI.username", "CNKI.password"]) {
-    env.prefs.setPref("CNKI.token", "synthetic-token");
-    input.type = "text";
-    input.validity.valid = true;
-    input.value = "changed";
-    input.setAttribute("preference", `${pkg.config.prefsPrefix}.${key}`);
-    await panel.emit("change", { target: input });
-    assert.equal(env.prefs.getPref("CNKI.token"), "");
-  }
+  env.prefs.setPref("CNKI.token", "synthetic-token");
+  input.type = "text";
+  input.validity.valid = true;
+  input.value = "changed";
+  input.setAttribute("preference", `${pkg.config.prefsPrefix}.CNKI.username`);
+  await panel.emit("change", { target: input });
+  assert.equal(env.prefs.getPref("CNKI.token"), "");
+  // The password is not a declarative pref: it loads from and saves to the
+  // login store, signs out the session and clears any legacy plaintext copy.
+  assert.equal(password.value, "from-login-store");
+  assert.equal(password.getAttribute("preference"), null);
+  env.prefs.setPref("CNKI.token", "synthetic-token");
+  env.prefs.setPref("CNKI.password", "legacy-plaintext");
+  password.value = " changed-secret ";
+  await password.emit("change");
+  assert.equal(stored, "changed-secret");
+  assert.equal(env.prefs.getPref("CNKI.token"), "");
+  assert.equal(env.prefs.getPref("CNKI.password"), "");
 });
 
 test("details opens from keyboard activation without hover or citation copying", async () => {

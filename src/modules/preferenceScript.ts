@@ -1,5 +1,6 @@
 import { config } from "../../package.json";
 import { getPref, setPref } from "../utils/prefs";
+import { getCNKIPassword, setCNKIPassword } from "../utils/credentials";
 
 /** Keep Zotero's declarative preference bindings; wire only UI behavior. */
 export async function registerPrefsScripts(_window: Window) {
@@ -13,6 +14,19 @@ export async function registerPrefsScripts(_window: Window) {
   ) as HTMLElement | null;
   if (!root || root.hasAttribute("data-wired")) return;
   root.setAttribute("data-wired", "true");
+  // Not a declarative preference: the password is kept in the login manager.
+  const cnkiPassword = root.querySelector<HTMLInputElement>(
+    "#refs-pref-CNKI-password",
+  );
+  if (cnkiPassword) {
+    cnkiPassword.value =
+      getCNKIPassword() || ((getPref("CNKI.password") as string) ?? "");
+    cnkiPassword.addEventListener("change", async () => {
+      setPref("CNKI.token", "");
+      if (await setCNKIPassword(cnkiPassword.value.trim()))
+        setPref("CNKI.password", "");
+    });
+  }
   const tabs = Array.from(
     root.querySelectorAll("[role=tab]"),
   ) as HTMLButtonElement[];

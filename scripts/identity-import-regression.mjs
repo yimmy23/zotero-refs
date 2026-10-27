@@ -436,6 +436,39 @@ test("completed import is immediately reusable without a notifier and adds a lat
   assert.deepEqual([...b.collections].sort(), [1, 2]);
 });
 
+test("host collections file only newly created items; existing items keep their filing", async () => {
+  const f = fixture();
+  const host = f.create({ title: "Host" });
+  host.collections = [5];
+  const existing = f.create({
+    title: "Existing paper",
+    DOI: "10.5555/existing",
+    date: "2020",
+  });
+  existing.collections = [7];
+  const matched = await f.importReference(
+    host,
+    ref({ identifiers: { DOI: "10.5555/existing" } }),
+  );
+  assert.equal(matched.id, existing.id);
+  assert.deepEqual(existing.collections, [7]);
+  assert.equal(f.calls.translate.length, 0);
+  // An explicitly chosen collection still applies to an existing item.
+  await f.importReference(
+    host,
+    ref({ identifiers: { DOI: "10.5555/existing" } }),
+    [9],
+  );
+  assert.deepEqual([...existing.collections].sort(), [7, 9]);
+  const created = await f.importReference(
+    host,
+    ref({ identifiers: { DOI: "10.5555/new" } }),
+  );
+  assert.notEqual(created.id, existing.id);
+  assert.equal(f.calls.translate.length, 1);
+  assert.deepEqual(created.collections, [5]);
+});
+
 test("failed creation releases its pending key so a subsequent retry can run", async () => {
   const options = { translateFailure: true };
   const f = fixture(options);

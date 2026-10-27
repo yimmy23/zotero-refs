@@ -18,10 +18,12 @@ import { itemStateKey } from "./storage";
  * related-item links.
  */
 
+/** `created` is false when an existing library item satisfied the import. */
+type ImportOutcome = { item: Zotero.Item; created: boolean };
 type PendingImport = {
   identifiers: Identifiers;
   keys: Set<string>;
-  promise: Promise<Zotero.Item | null>;
+  promise: Promise<ImportOutcome | null>;
 };
 // Public host methods present in Zotero 7–10, omitted by zotero-types 4.1.3.
 type RelationIndexUpdate = (
@@ -58,8 +60,8 @@ function importKeys(ids: Identifiers, libraryID: number): string[] {
 function shareImport(
   ids: Identifiers,
   libraryID: number,
-  create: () => Promise<Zotero.Item | null>,
-): Promise<Zotero.Item | null> {
+  create: () => Promise<ImportOutcome | null>,
+): Promise<ImportOutcome | null> {
   const keys = importKeys(ids, libraryID);
   const matches = [
     ...new Set(
@@ -215,6 +217,9 @@ export async function importReference(
   }
   const libraryID = hostItem.libraryID;
   const identity = itemStateKey(hostItem);
+  // The host's collections file only items this import creates. An item
+  // already in the library keeps its filing unless collections were chosen.
+  const explicit = collections !== undefined;
   const cols = [...(collections ?? hostItem.getCollections())];
   const active = () =>
     shouldContinue() &&
@@ -223,19 +228,20 @@ export async function importReference(
   if (!active()) return null;
   const hasIdentity = importKeys(ref.identifiers, libraryID).length > 0;
   const create = async () => {
-    const item = await importReferenceItem(
+    const outcome = await importReferenceItem(
       libraryID,
       ref,
       onStatus,
       hasIdentity,
     );
-    if (item) libraryIndex.invalidate();
-    return item;
+    if (outcome) libraryIndex.invalidate();
+    return outcome;
   };
-  const item = hasIdentity
+  const outcome = hasIdentity
     ? await shareImport(ref.identifiers, libraryID, create)
     : await create();
-  if (!item || !active()) return null;
+  if (!outcome || !active()) return null;
+  const { item, created } = outcome;
   const targetIdentity = itemStateKey(item);
   // Each subscriber keeps its own collection/cancellation intent. No caller's
   // collections are committed by the shared translator before it completes.
@@ -252,7 +258,8 @@ export async function importReference(
     )
       return null;
     const existing = new Set(current.getCollections());
-    const added = cols.filter((id) => !existing.has(id));
+    const added =
+      created || explicit ? cols.filter((id) => !existing.has(id)) : [];
     if (added.length) {
       for (const id of added) current.addToCollection(id);
       await current.saveTx();
@@ -266,15 +273,17 @@ async function importReferenceItem(
   ref: RefItem,
   onStatus: ((msg: string) => void) | undefined,
   identityAlreadyShared: boolean,
-): Promise<Zotero.Item | null> {
+): Promise<ImportOutcome | null> {
   const cols: number[] = [];
+  const created = (item: Zotero.Item | null | undefined) =>
+    item ? { item, created: true } : null;
 
   // 1. already in library?
   let refItem: Zotero.Item | null | undefined = await libraryIndex.match(
     ref,
     libraryID,
   );
-  if (refItem) return refItem;
+  if (refItem) return { item: refItem, created: false };
 
   const text = ref.text || ref.title || "";
   const chinese = isChinese(text);
@@ -288,7 +297,7 @@ async function importReferenceItem(
     );
     if (row) {
       refItem = await importCNKIItem(row, libraryID, cols);
-      if (refItem) return refItem;
+      if (refItem) return created(refItem);
     }
     const info = await sources.cnki.getInfoByTitle?.(ref.title || text, text);
     if (info) {
@@ -301,7 +310,7 @@ async function importReferenceItem(
         cols,
         libraryID,
       );
-      return refItem;
+      return created(refItem);
     }
     // A CNKI miss does not invalidate identifiers printed in the citation.
     // Keep the existing no-identifier path conservative: an unverified
@@ -328,14 +337,14 @@ async function importReferenceItem(
       ids = { DOI };
     }
   }
-  const create = async (): Promise<Zotero.Item | null> => {
+  const create = async (): Promise<ImportOutcome | null> => {
     if (Object.keys(ids).length) {
       // The resolver may finish after another entry point imported this DOI.
       const existing = await libraryIndex.match(
         { ...ref, identifiers: ids },
         libraryID,
       );
-      if (existing) return existing;
+      if (existing) return { item: existing, created: false };
       onStatus?.(
         `${getString("importer-importing")}: ${Object.values(ids)[0]}`,
       );
@@ -345,7 +354,7 @@ async function importReferenceItem(
         ztoolkit.log("[importer] translate failed", e);
         refItem = null;
       }
-      if (refItem) return refItem;
+      if (refItem) return created(refItem);
     }
 
     if (chinese) return null;
@@ -354,7 +363,7 @@ async function importReferenceItem(
     if (ref.title && (ref.authors?.length || ref.year)) {
       onStatus?.(`${getString("importer-create")}: ${ref.title}`);
       refItem = await createItemFromInfo(ref, cols, libraryID);
-      return refItem;
+      return created(refItem);
     }
     return null;
   };

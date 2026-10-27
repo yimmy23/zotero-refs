@@ -2,6 +2,7 @@ import { cancelAllTimers } from "./utils/window";
 import { unregisterItemPaneSections } from "./utils/itemPaneLifecycle";
 import { initLocale } from "./utils/locale";
 import { registerPrefsScripts } from "./modules/preferenceScript";
+import { migrateCNKIPassword } from "./utils/credentials";
 import { createZToolkit } from "./utils/ztoolkit";
 import { config } from "../package.json";
 import { libraryIndex } from "./core/libmatch";
@@ -69,6 +70,11 @@ async function onStartup() {
   );
   // library index for O(1) in-library matching
   step("libraryIndex", () => libraryIndex.register());
+  step("cnkiPassword", () => {
+    void migrateCNKIPassword().catch((e) =>
+      ztoolkit.log("[startup] CNKI password migration failed", e),
+    );
+  });
   // Remove old reader callbacks before registering the same pane IDs.
   // This also repairs readers left open while upgrading an older version.
   step("itemPaneCleanup", () => unregisterItemPaneSections());

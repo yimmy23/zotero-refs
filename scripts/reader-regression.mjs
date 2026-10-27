@@ -944,6 +944,7 @@ function addonLifecycleFixture() {
     },
     "./utils/locale": { initLocale: noop },
     "./modules/preferenceScript": { registerPrefsScripts: noop },
+    "./utils/credentials": { migrateCNKIPassword: async () => {} },
     "./utils/ztoolkit": { createZToolkit: noop },
     "../package.json": { config: f.config },
     "./core/libmatch": { libraryIndex: { register: noop, unregister: noop } },

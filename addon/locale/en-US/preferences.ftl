@@ -71,7 +71,7 @@ pref-cache-hint = Applies to network responses in this session. 0 disables that 
 pref-network-intro = Configure contact details and optional credentials for metadata sources.
 pref-email-hint = Sent to Crossref and Unpaywall with requests.
 pref-key-hint = Optional. A Semantic Scholar key can increase request limits.
-pref-cnki-hint = Used only for CNKI reference lists. Changing either field signs out the cached session.
+pref-cnki-hint = Used only for CNKI reference lists. The password is kept in Zotero’s login store, not in the settings file. Changing either field signs out the cached session.
 pref-autosave = Changes are saved automatically.
 
 pref-openAlexApiKey = OpenAlex API key (optional)

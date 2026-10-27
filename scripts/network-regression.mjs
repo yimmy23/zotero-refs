@@ -471,6 +471,43 @@ test("A late follower can continue after an active XHR exhausts the old owner's 
   );
 });
 
+test("A long-queued waiter is served before newer ones so bursts cannot starve it", async () => {
+  let offset = 0;
+  class ClockDate extends Date {
+    static now() {
+      return Date.now() + offset;
+    }
+  }
+  const releases = [];
+  const f = await fixture(
+    () => new Promise((resolve) => releases.push(() => resolve(ok({})))),
+    { Date: ClockDate },
+  );
+  const active = [1, 2, 3].map((id) =>
+    f.http.getJSON(`https://api.crossref.org/busy-${id}`),
+  );
+  await flush();
+  assert.equal(f.calls.length, 3);
+  const oldest = f.http.getJSON("https://api.crossref.org/oldest");
+  await flush();
+  // Within the bound, the newest waiter still wins (hover responsiveness).
+  const recent = f.http.getJSON("https://api.crossref.org/recent");
+  await flush();
+  releases.shift()();
+  await flush();
+  assert.equal(f.calls.at(-1).url.pathname, "/recent");
+  offset += 3500;
+  const newest = f.http.getJSON("https://api.crossref.org/newest-burst");
+  await flush();
+  releases.shift()();
+  await flush();
+  assert.equal(f.calls.at(-1).url.pathname, "/oldest");
+  for (const release of releases.splice(0)) release();
+  await flush();
+  for (const release of releases.splice(0)) release();
+  await Promise.all([...active, oldest, recent, newest]);
+});
+
 test("A queued shared request retains its longer subscriber after the owner expires", async () => {
   const releases = [];
   const f = await fixture(
